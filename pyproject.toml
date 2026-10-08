@@ -1,0 +1,104 @@
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "yggdrasil"
+module-root = ""
+
+[project]
+name = "yggdrasil-bot"
+version = "0.1.0"
+description = "QQ group-chat LLM bot: TL;DR, replies and background memory"
+readme = "README.md"
+requires-python = ">=3.13, <3.14"
+authors = [{ name = "FYWinds", email = "i@windis.cn" }]
+dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.32.0",
+    "cryptography>=50.0.2",
+    "httpx>=0.28.1",
+    "jieba>=0.42.1",
+    "jinja2>=3.1.6",
+    "loguru>=0.7.3",
+    "lxml-html-clean>=0.4.5",
+    "markdownify>=1.2.3",
+    "markitdown[docx,pptx,xlsx]>=0.1.8",
+    "nonebot-adapter-onebot>=2.4.6",
+    "nonebot-plugin-alconna>=0.62.1",
+    "nonebot-plugin-uninfo>=0.11.2",
+    "nonebot2[fastapi]>=2.5.0",
+    "openai>=3.26.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
+    "opentelemetry-instrumentation-httpx>=0.66b1",
+    "opentelemetry-instrumentation-redis>=0.66b1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.66b1",
+    "opentelemetry-instrumentation-system-metrics>=0.66b1",
+    "opentelemetry-sdk>=1.45.1",
+    "orjson>=3.13.0",
+    "pgvector>=0.5.0",
+    "playwright>=1.63.0",
+    "pyahocorasick>=2.3.1",
+    "pydantic-ai-slim[openai]>=2.54.0",
+    "pydantic-settings>=2.15.0",
+    "pypdfium2>=5.14.0",
+    "readability-lxml>=0.9",
+    "redis>=8.1.0",
+    "sqlalchemy-paradedb>=0.12.0",
+    "sqlalchemy[asyncio]>=2.1.4",
+    "taskiq>=0.13.0",
+    "taskiq-redis>=1.2.4",
+    "trafilatura>=2.3.1",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright",
+    "ruff",
+]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "nonebug",
+]
+
+[tool.uv]
+default-groups = ["dev", "test"]
+
+[tool.nonebot]
+adapters = [{ name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }]
+plugin_dirs = []
+
+[tool.nonebot.plugins]
+"@local" = []
+nonebot-plugin-alconna = ["nonebot_plugin_alconna"]
+nonebot-plugin-uninfo = ["nonebot_plugin_uninfo"]
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["yggdrasil", "tests"]
+
+[tool.ruff.lint]
+select = ["F", "W", "E", "I", "UP", "ASYNC", "C4", "T10", "T20", "PYI", "PT", "Q", "TID", "RUF"]
+ignore = ["E402", "UP037", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["yggdrasil", "tests"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.basedpyright]
+typeCheckingMode = "basic"
+include = ["yggdrasil", "tests", "migration"]
+pythonVersion = "3.13"
