@@ -1,0 +1,151 @@
+"""Customizable behaviour, stored as JSON in the database.
+
+The global document (``settings`` row ``global``) is validated by :class:`Settings`;
+a group's ``groups.settings`` is deep-merged over it. The dashboard renders forms
+from ``Settings.model_json_schema()``, so every field here is editable.
+"""
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class PersonaSettings(BaseModel):
+    name: str = Field("尤克特拉希尔", description="bot 的名字，出现在提示词里")
+    aliases: list[str] = Field(
+        default_factory=lambda: ["ygg", "世界树"], description="点名触发词（name_mention 规则使用）"
+    )
+
+
+class InteractionSettings(BaseModel):
+    ack_delay_s: float = Field(2.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
+    react_emoji_whitelist: list[str] = Field(
+        default_factory=lambda: ["76", "124", "128064", "128077", "129300", "128514", "10068", "128170"],
+        description="tldr 快速响应可用的表情 id（QQ face id 或 Unicode 码点）",
+    )
+    react_default: str = Field("128064", description="quick 模型失败时用的表情（👀）")
+    input_blocked_emoji: str = Field("10060", description="输入被审核拦截时 react 的表情（❌）")
+    sticker_ack: bool = Field(True, description="快速响应允许发表情包")
+    inline_max_chars: int = Field(240, ge=0, description="超过这个长度改用合并转发")
+    forward_max_nodes: int = Field(12, ge=1, le=60)
+    node_max_chars: int = Field(1500, ge=200)
+    forward_render: Literal["plain", "nested_markdown", "image"] = "plain"
+    forward_follow_up: str = Field("↑ 展开看看", description="合并转发后补发的回复文字；留空不发")
+    metadata_node: bool = True
+    metadata_fields: list[Literal["model", "tokens", "tools", "latency", "moderation", "trace"]] = Field(
+        default_factory=lambda: ["model", "tokens", "tools", "latency", "moderation", "trace"]
+    )
+
+
+class ModerationCategoryRule(BaseModel):
+    threshold: float = Field(0.5, ge=0, le=1)
+    action: Literal["pass", "review", "drop"] = "review"
+
+
+class ModerationSettings(BaseModel):
+    enabled: bool = True
+    check_input: bool = True
+    check_ack: bool = True
+    check_output: bool = True
+    default_rule: ModerationCategoryRule = Field(default_factory=ModerationCategoryRule)
+    category_rules: dict[str, ModerationCategoryRule] = Field(
+        default_factory=lambda: {
+            "Politically Sensitive Topics": ModerationCategoryRule(threshold=0.4, action="review"),
+            "Sexual Content or Sexual Acts": ModerationCategoryRule(threshold=0.4, action="review"),
+            "Jailbreak": ModerationCategoryRule(threshold=0.6, action="drop"),
+        },
+        description="按 Qwen3Guard 类别覆盖阈值和动作",
+    )
+    input_action_on_hit: Literal["drop", "pass"] = Field("drop", description="输入超阈值时：不响应 / 放行")
+    notify_admins_on_input_block: bool = False
+    notify_group_on_review: bool = Field(True, description="进入审核时群里先回一句（模型生成）")
+    review_expire_minutes: int = Field(120, ge=5)
+
+
+class RateLimitSettings(BaseModel):
+    user_per_minute: int = 4
+    user_per_day: int = 80
+    group_per_minute: int = 20
+    group_daily_tokens: int = 3_000_000
+    max_concurrent_per_group: int = 3
+
+
+class ContextSettings(BaseModel):
+    recent_messages: int = Field(40, ge=0, le=300)
+    recent_minutes: int = Field(30, ge=0)
+    max_context_chars: int = Field(12000, ge=1000)
+    include_profiles: bool = True
+    include_glossary: bool = True
+    include_open_topics: bool = True
+
+
+class ToolSettings(BaseModel):
+    enabled: list[str] = Field(
+        default_factory=lambda: [
+            "read_url",
+            "web_search",
+            "read_file",
+            "view_image",
+            "expand_forward",
+            "search_history",
+            "get_messages_around",
+            "lookup_glossary",
+            "get_profile",
+        ]
+    )
+    read_url_max_chars: int = 16000
+    browser_fallback: bool = True
+    file_max_mb: int = 30
+    file_max_pages: int = 40
+    search_results: int = 6
+    history_top_k: int = 12
+    request_limit: int = 12
+    tool_calls_limit: int = 16
+
+
+class MemorySettings(BaseModel):
+    enabled: bool = True
+    chunk_gap_minutes: int = Field(20, description="消息间隔超过这个时间就切块")
+    chunk_max_messages: int = 60
+    chunk_max_chars: int = 2400
+    topic_min_new_messages: int = Field(120, description="新增消息达到这个数量触发话题分段")
+    topic_window_messages: int = 400
+    topic_close_after_minutes: int = 120
+    digest_hour: int = Field(4, ge=0, le=23, description="每日摘要生成时间（Asia/Shanghai）")
+    profile_min_messages: int = 15
+    glossary_min_count: int = 6
+    glossary_max_candidates: int = 30
+    backfill_messages: int = Field(3000, description="群加入白名单时回填的历史消息数")
+
+
+class PrivacySettings(BaseModel):
+    log_message_content: bool = False
+    capture_llm_content: bool = Field(False, description="trace 里记录提示词和回复原文（排障用）")
+
+
+class Settings(BaseModel):
+    persona: PersonaSettings = Field(default_factory=PersonaSettings)
+    interaction: InteractionSettings = Field(default_factory=InteractionSettings)
+    moderation: ModerationSettings = Field(default_factory=ModerationSettings)
+    ratelimit: RateLimitSettings = Field(default_factory=RateLimitSettings)
+    context: ContextSettings = Field(default_factory=ContextSettings)
+    tools: ToolSettings = Field(default_factory=ToolSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
+    privacy: PrivacySettings = Field(default_factory=PrivacySettings)
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def effective_settings(global_doc: dict[str, Any], group_doc: dict[str, Any] | None) -> Settings:
+    merged = deep_merge(Settings().model_dump(mode="json"), global_doc)
+    if group_doc:
+        merged = deep_merge(merged, group_doc)
+    return Settings.model_validate(merged)
