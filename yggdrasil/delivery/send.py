@@ -1,5 +1,6 @@
 """Sending replies: inline replies, merged forwards with a metadata node, reactions, stickers."""
 
+import base64
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Sticker
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
-from yggdrasil.napcat.api import NapCatAPI, markdown_seg, mface_seg, node_seg, reply_seg, text_seg
+from yggdrasil.napcat.api import NapCatAPI, image_seg, markdown_seg, mface_seg, node_seg, reply_seg, text_seg
 from yggdrasil.settings import InteractionSettings
 
 _MD_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
@@ -136,11 +137,15 @@ async def send_sticker(api: NapCatAPI, *, group_id: int, sticker_id: int, self_i
 
 
 def build_nodes(
-    reply: BotReply, meta_text: str | None, cfg: InteractionSettings, *, self_id: int, nickname: str
+    reply: BotReply,
+    meta_text: str | None,
+    cfg: InteractionSettings,
+    *,
+    self_id: int,
+    nickname: str,
+    images: list[tuple[bytes, str]] | None = None,
 ) -> list[dict[str, Any]]:
     bodies: list[str] = []
-    if reply.inline_text:
-        bodies.append(reply.inline_text)
     for section in reply.sections:
         content = section.content if cfg.forward_render == "nested_markdown" else strip_markdown(section.content)
         title = f"【{section.title}】\n" if section.title else ""
@@ -162,6 +167,12 @@ def build_nodes(
         return node_seg(self_id, nickname, [text_seg(text)])
 
     nodes = [node(b) for b in bodies]
+    for png, caption in images or []:
+        segs = [image_seg("base64://" + base64.b64encode(png).decode())]
+        if caption:
+            segs.insert(0, text_seg(caption + "\n"))
+        # Keep sources last among text nodes but before metadata: insert images after the sections.
+        nodes.insert(len(nodes) - (1 if reply.sources else 0), node_seg(self_id, nickname, segs))
     if meta_text:
         nodes.append(node_seg(self_id, nickname, [text_seg(meta_text)]))
     return nodes
@@ -177,8 +188,9 @@ async def send_forward(
     cfg: InteractionSettings,
     self_id: int,
     nickname: str,
+    images: list[tuple[bytes, str]] | None = None,
 ) -> int:
-    nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname)
+    nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname, images=images)
     title = (reply.title or "回复")[:30]
     news = [s.title or strip_markdown(s.content)[:30] for s in reply.sections[:4]] or [title]
     kwargs = {

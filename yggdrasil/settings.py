@@ -10,10 +10,26 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class PersonaExample(BaseModel):
+    user: str
+    bot: str
+
+
 class PersonaSettings(BaseModel):
     name: str = Field(default="尤克特拉希尔", description="bot 的名字，出现在提示词里")
     aliases: list[str] = Field(
         default_factory=lambda: ["ygg", "世界树"], description="点名触发词（name_mention 规则使用）"
+    )
+    description: str = Field(
+        default="一个懂行、靠谱、有点毒舌但心软的老群友。说话轻松口语化，偶尔吐槽，但从不敷衍正经问题。",
+        description="人设：性格、说话风格、口癖等，会写进所有对话类提示词",
+    )
+    examples: list[PersonaExample] = Field(
+        default_factory=lambda: [
+            PersonaExample(user="这个报错啥意思", bot="依赖版本对不上了，你把 lock 文件删了重装一下试试。"),
+            PersonaExample(user="中午吃什么", bot="这种世纪难题别问我，抛硬币吧。"),
+        ],
+        description="对话示例，用来固定语气（每条 bot 回复应符合风格规则）",
     )
 
 
@@ -26,7 +42,9 @@ class InteractionSettings(BaseModel):
     react_default: str = Field(default="128064", description="quick 模型失败时用的表情（👀）")
     input_blocked_emoji: str = Field(default="10060", description="输入被审核拦截时 react 的表情（❌）")
     sticker_ack: bool = Field(default=True, description="快速响应允许发表情包")
-    inline_max_chars: int = Field(default=240, ge=0, description="超过这个长度改用合并转发")
+    messages_max_count: int = Field(default=3, ge=1, le=10, description="短消息模式最多连发几条，超出改用合并转发")
+    message_max_chars: int = Field(default=20, ge=1, description="短消息模式下每条的字数上限，任一条超出就改用合并转发")
+    message_interval_s: float = Field(default=0.3, ge=0, description="连发短消息之间的间隔")
     forward_max_nodes: int = Field(default=12, ge=1, le=60)
     node_max_chars: int = Field(default=1500, ge=200)
     forward_render: Literal["plain", "nested_markdown"] = Field(
@@ -34,7 +52,6 @@ class InteractionSettings(BaseModel):
     )
     failure_emoji: str = Field(default="128531", description="agent 出错时 react 的表情（😓）")
     ratelimited_emoji: str = Field(default="9203", description="被限流时 react 的表情（⏳）；留空不 react")
-    forward_follow_up: str = Field(default="", description="合并转发后补发的回复文字；留空不发")
     quote_reply: Literal["always", "when_busy", "never"] = Field(
         default="when_busy",
         description="回复时是否引用触发消息：always 总是；when_busy 触发消息之后群里已有别人发言才引用；never 从不",
@@ -75,7 +92,10 @@ class RateLimitSettings(BaseModel):
     user_per_day: int = 80
     group_per_minute: int = 20
     group_daily_tokens: int = 3_000_000
-    max_concurrent_per_group: int = 3
+    max_concurrent_per_group: int = Field(default=4, ge=1, description="每个群同时运行的请求数，超出排队")
+    max_concurrent_per_user: int = Field(default=2, ge=1, description="每个人同时运行的请求数，超出排队")
+    max_queued_per_user: int = Field(default=3, ge=0, description="每个人最多排队几个请求，再多就丢弃")
+    queue_timeout_s: float = Field(default=180, gt=0, description="排队超过这个时间就放弃")
 
 
 class ContextSettings(BaseModel):
@@ -99,6 +119,7 @@ class ToolSettings(BaseModel):
             "get_messages_around",
             "lookup_glossary",
             "get_profile",
+            "render_mermaid",
         ]
     )
     read_url_max_chars: int = 16000

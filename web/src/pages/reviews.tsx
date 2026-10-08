@@ -15,16 +15,18 @@ type Status = "pending" | "approved" | "rejected" | "expired";
 const STATUS_LABELS: Record<Status, string> = { pending: "待审核", approved: "已通过", rejected: "已拒绝", expired: "已过期" };
 const LIMIT = 20;
 
-/** Best-effort plain text of a serialized BotReply (inline_text, or title + sections). */
+/** Best-effort plain text of a serialized BotReply (messages, then title + sections). */
 function replyText(reply: Record<string, unknown>): string {
-  if (typeof reply.inline_text === "string" && reply.inline_text) return reply.inline_text;
   const parts: string[] = [];
+  if (Array.isArray(reply.messages)) {
+    parts.push(...reply.messages.filter((m): m is string => typeof m === "string" && m.length > 0));
+  }
   if (typeof reply.title === "string" && reply.title) parts.push(reply.title);
   if (Array.isArray(reply.sections)) {
     for (const s of reply.sections) {
       if (s && typeof s === "object") {
-        const { title, body } = s as { title?: unknown; body?: unknown };
-        parts.push([title, body].filter((x) => typeof x === "string" && x).join("\n"));
+        const { title, content } = s as { title?: unknown; content?: unknown };
+        parts.push([title, content].filter((x) => typeof x === "string" && x).join("\n"));
       }
     }
   }

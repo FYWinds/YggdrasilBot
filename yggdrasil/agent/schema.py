@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class Section(BaseModel):
     title: str | None = Field(default=None, description="节标题（可选，短）")
-    content: str = Field(description="正文，纯文本或轻量 markdown")
+    content: str = Field(description="正文，纯文本，不要 markdown")
 
 
 class SourceRef(BaseModel):
@@ -16,16 +16,19 @@ class SourceRef(BaseModel):
 class BotReply(BaseModel):
     """The structured answer of the chat / tldr agents."""
 
-    mode: Literal["inline", "forward"] = Field(
-        description="inline：一两句话直接回复；forward：长内容，用合并转发分节展示"
+    mode: Literal["messages", "forward"] = Field(
+        description="messages：像群友一样发 1–4 条短消息；forward：内容确实很长或结构化时用合并转发"
     )
-    inline_text: str | None = Field(default=None, description="mode=inline 时的回复文本")
+    messages: list[str] = Field(
+        default_factory=list,
+        description="mode=messages 时依次发送的短消息，每条一句话；mode=forward 时可选一条在转发前发送的引导语",
+    )
     title: str | None = Field(default=None, description="mode=forward 时合并转发卡片的标题（≤20 字）")
     sections: list[Section] = Field(default_factory=list, description="mode=forward 时的各节")
     sources: list[SourceRef] = Field(default_factory=list, description="引用过的来源")
 
     def full_text(self) -> str:
-        parts = [self.inline_text or ""]
+        parts = list(self.messages)
         for s in self.sections:
             parts.append(f"{s.title or ''}\n{s.content}")
         return "\n\n".join(p for p in parts if p.strip())

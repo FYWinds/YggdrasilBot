@@ -107,7 +107,7 @@ class TriggerIndex:
             args, captures = hit
             if rule.arg_template:
                 try:
-                    args = rule.arg_template.format(*captures, rest=args)
+                    args = rule.arg_template.format(*captures, rest=args.strip())
                 except (IndexError, KeyError):
                     pass
             return Resolved(rule.handler, rule.id, args.strip(), captures, rule.target, rule.cooldown_s, named)
