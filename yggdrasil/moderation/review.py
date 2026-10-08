@@ -134,17 +134,18 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
                 )
             else:
                 reply = BotReply.model_validate(item.reply)
-                if reply.mode == "inline" and reply.inline_text and not reply.sections:
+                lead = reply.messages[0] if reply.messages else None
+                if lead:
                     await send_text(
                         api,
                         group_id=item.group_id,
                         user_id=item.user_id,
                         reply_to=item.trigger_qq_message_id,
-                        text=reply.inline_text,
+                        text=lead if reply.mode == "forward" else "\n".join(reply.messages),
                         self_id=ident.self_id,
                         nickname=ident.nickname,
                     )
-                else:
+                if reply.mode == "forward" or reply.sections:
                     await send_forward(
                         api,
                         group_id=item.group_id,

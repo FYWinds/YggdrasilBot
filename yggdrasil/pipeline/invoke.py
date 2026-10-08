@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.schema import AckDecision, BotReply
+from yggdrasil.agent.schema import AckDecision, BotReply, Section
 from yggdrasil.agent.tools import tools_for
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
@@ -24,7 +24,7 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import Meta, react, send_forward, send_sticker, send_text
+from yggdrasil.delivery.send import Meta, react, send_forward, send_sticker, send_text, strip_markdown
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
@@ -50,13 +50,14 @@ async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handle
         if settings.interaction.ratelimited_emoji:
             await react(api, event.message_id, settings.interaction.ratelimited_emoji)
         return
-    if not await ratelimit.acquire(group_id, event.user_id, settings.ratelimit):
-        INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
-        return
-    try:
+    async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
+        if not granted:
+            LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
+            INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
+            if settings.interaction.ratelimited_emoji:
+                await react(api, event.message_id, settings.interaction.ratelimited_emoji)
+            return
         await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id).run()
-    finally:
-        await ratelimit.release(group_id, event.user_id)
 
 
 class Invocator:
@@ -78,6 +79,7 @@ class Invocator:
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
         self._finished = False
+        self.images: list[tuple[bytes, str]] = []
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -197,10 +199,13 @@ class Invocator:
             deps_type=Deps,
             instructions=render(
                 f"{self.handler}_system",
-                persona_name=persona,
+                persona=self.settings.persona,
                 group_name=group_name or "本群",
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
                 tools=tools_cfg.enabled,
+                style=render("style_rules"),
+                max_messages=self.settings.interaction.messages_max_count,
+                max_chars=self.settings.interaction.message_max_chars,
             ),
             tools=tools_for(tools_cfg.enabled),
             name=self.handler,
@@ -260,6 +265,7 @@ class Invocator:
             self.meta.tokens_in += tin
             self.meta.tokens_out += tout
         self.meta.tools = dict(deps.tool_counts)
+        self.images = deps.images
         record_usage(
             self.handler,
             resolved_model.label,
@@ -302,19 +308,28 @@ class Invocator:
         await self._finish("rejected", None, **verdicts)
         return "rejected"
 
-    async def _send_text(self, text: str) -> None:
+    async def _send_text(self, text: str, *, allow_quote: bool = True) -> None:
         ident = await identity(self.bot)
+        quote = allow_quote and should_quote(
+            self.group_id, self.event.message_id, self.settings.interaction.quote_reply
+        )
         await send_text(
             self.api,
             group_id=self.group_id,
             user_id=self.event.user_id,
-            reply_to=self.event.message_id
-            if should_quote(self.group_id, self.event.message_id, self.settings.interaction.quote_reply)
-            else None,
+            reply_to=self.event.message_id if quote else None,
             text=text,
             self_id=ident.self_id,
             nickname=ident.nickname,
         )
+
+    async def _send_messages(self, messages: list[str]) -> None:
+        """Send short messages one by one like a person typing; only the first may quote."""
+        interval = self.settings.interaction.message_interval_s
+        for i, text in enumerate(messages):
+            if i and interval:
+                await asyncio.sleep(interval)
+            await self._send_text(text, allow_quote=i == 0)
 
     async def _quick_ack(self, ctx: BuiltContext, agent_task: asyncio.Task, ack_task: asyncio.Task) -> None:
         cfg = self.settings.interaction
@@ -363,10 +378,23 @@ class Invocator:
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
         ident = await identity(self.bot)
-        inline = reply.inline_text or ""
-        if reply.mode == "inline" and inline and not reply.sections and len(inline) <= cfg.inline_max_chars:
-            await self._send_text(inline)
-            return
+        messages = [m for m in (strip_markdown(m) for m in reply.messages) if m]
+        fits = len(messages) <= cfg.messages_max_count and all(len(m) <= cfg.message_max_chars for m in messages)
+        if reply.mode == "messages" and not reply.sections:
+            # tldr always answers in a forward (it was already acknowledged with a reaction).
+            if messages and fits and not self.images and self.handler != "tldr":
+                await self._send_messages(messages)
+                return
+            # Too long for chat-style delivery: fall back to a forward with the same text.
+            reply = reply.model_copy(update={"sections": [Section(content="\n".join(messages))], "messages": []})
+            messages = []
+        if self.handler == "tldr":
+            messages = []  # no lead line before a tldr forward
+        lead, rest = (messages[0], messages[1:]) if messages else (None, [])
+        if rest:
+            reply = reply.model_copy(update={"sections": [Section(content="\n".join(rest)), *reply.sections]})
+        if lead:
+            await self._send_text(lead)
         self.meta.total_s = self.elapsed()
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
         await send_forward(
@@ -378,6 +406,5 @@ class Invocator:
             cfg=cfg,
             self_id=ident.self_id,
             nickname=ident.nickname,
+            images=self.images,
         )
-        if cfg.forward_follow_up and self.group_id is not None:
-            await self._send_text(cfg.forward_follow_up)

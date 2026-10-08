@@ -105,7 +105,8 @@ async def test_global_settings_roundtrip_is_sparse(
         assert body["effective"]["interaction"]["ack_delay_s"] == 4
         # Untouched keys keep their defaults rather than being frozen into the document.
         assert (
-            body["effective"]["interaction"]["inline_max_chars"] == body["defaults"]["interaction"]["inline_max_chars"]
+            body["effective"]["interaction"]["message_max_chars"]
+            == body["defaults"]["interaction"]["message_max_chars"]
         )
         assert published == ["settings.update global"]
         got = (await client.get("/api/settings/global")).json()

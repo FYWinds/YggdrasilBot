@@ -1,7 +1,9 @@
-"""Fixed-window rate limits and daily token budgets in Redis."""
+"""Fixed-window rate limits, daily token budgets (Redis) and per-process concurrency slots."""
 
 import asyncio
-from collections import defaultdict
+import contextlib
+from collections import Counter
+from collections.abc import AsyncIterator
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -10,9 +12,8 @@ from yggdrasil.kv import redis_client
 from yggdrasil.settings import RateLimitSettings
 
 _TZ = ZoneInfo("Asia/Shanghai")
-_inflight_users: set[tuple[int | None, int]] = set()
-_group_slots: dict[int | None, int] = defaultdict(int)
-_lock = asyncio.Lock()
+_semaphores: dict[tuple[str, int | None, int], asyncio.Semaphore] = {}
+_waiting: Counter[tuple[int | None, int]] = Counter()
 
 
 async def _hit(key: str, window_s: int, limit: int) -> bool:
@@ -61,24 +62,46 @@ async def add_tokens(group_id: int | None, tokens: int) -> None:
     await pipe.execute()
 
 
-async def acquire(group_id: int | None, user_id: int, cfg: RateLimitSettings) -> bool:
-    """One in-flight run per user and at most ``max_concurrent_per_group`` per group (this process)."""
-    async with _lock:
-        if (group_id, user_id) in _inflight_users:
-            RATELIMIT_REJECTED.add(1, {"scope": "user_inflight"})
-            return False
-        if _group_slots[group_id] >= max(cfg.max_concurrent_per_group, 1):
-            RATELIMIT_REJECTED.add(1, {"scope": "group_concurrency"})
-            return False
-        _inflight_users.add((group_id, user_id))
-        _group_slots[group_id] += 1
-        return True
+def _sem(kind: str, key: int | None, limit: int) -> asyncio.Semaphore:
+    # Keyed by the limit too, so a changed setting takes effect for new requests.
+    k = (kind, key, max(limit, 1))
+    sem = _semaphores.get(k)
+    if sem is None:
+        sem = _semaphores[k] = asyncio.Semaphore(k[2])
+    return sem
 
 
-async def release(group_id: int | None, user_id: int) -> None:
-    async with _lock:
-        _inflight_users.discard((group_id, user_id))
-        _group_slots[group_id] = max(0, _group_slots[group_id] - 1)
+@contextlib.asynccontextmanager
+async def slot(group_id: int | None, user_id: int, cfg: RateLimitSettings) -> AsyncIterator[bool]:
+    """Wait for a run slot: at most ``max_concurrent_per_user`` runs per user and
+    ``max_concurrent_per_group`` per group run at once, the rest queue. Yields False (without
+    running) when the user already has ``max_queued_per_user`` requests waiting or the wait
+    exceeds ``queue_timeout_s``."""
+    user_key = (group_id, user_id)
+    if _waiting[user_key] >= cfg.max_queued_per_user:
+        RATELIMIT_REJECTED.add(1, {"scope": "user_queue"})
+        yield False
+        return
+    user_sem = _sem("user", user_id, cfg.max_concurrent_per_user)
+    group_sem = _sem("group", group_id, cfg.max_concurrent_per_group)
+    _waiting[user_key] += 1
+    acquired: list[asyncio.Semaphore] = []
+    try:
+        try:
+            async with asyncio.timeout(cfg.queue_timeout_s):
+                for sem in (user_sem, group_sem):
+                    await sem.acquire()
+                    acquired.append(sem)
+        except TimeoutError:
+            RATELIMIT_REJECTED.add(1, {"scope": "queue_timeout"})
+            yield False
+            return
+        finally:
+            _waiting[user_key] -= 1
+        yield True
+    finally:
+        for sem in acquired:
+            sem.release()
 
 
 async def cooldown(rule_id: int, user_id: int, seconds: int) -> bool:

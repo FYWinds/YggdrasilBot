@@ -53,7 +53,8 @@ async def draft_ack(request: str, recent: str, settings: Settings) -> AckDecisio
     agent = Agent(resolved.model, output_type=AckDecision, name="quick_ack")
     prompt = render(
         "quick_ack",
-        persona_name=settings.persona.name,
+        persona=settings.persona,
+        style=render("style_rules"),
         request=request[:800],
         recent=recent[-1500:],
         stickers=stickers,
@@ -72,7 +73,7 @@ async def review_notice(request: str, settings: Settings) -> str:
     resolved = chat_model("quick_ack")
     agent = Agent(resolved.model, name="review_notice")
     result = await agent.run(
-        render("review_notice", persona_name=settings.persona.name, request=request[:800]),
+        render("review_notice", persona=settings.persona, request=request[:800]),
         model_settings=resolved.settings,
     )
     return result.output.strip()[:60]

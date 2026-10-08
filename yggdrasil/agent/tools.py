@@ -279,6 +279,21 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     return f"{p.display_name}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
 
 
+@_tool("render_mermaid")
+async def render_mermaid(ctx: RunContext[Deps], code: str, caption: str = "") -> str:
+    """把 Mermaid 代码（flowchart、sequenceDiagram、classDiagram 等）渲染成图片，附在合并转发里发出。
+    节点文字用中文即可，含特殊字符的文字用双引号包起来。语法错误会返回报错，改好后重试。"""
+    from yggdrasil.tools.diagram import render_mermaid as _render
+
+    if not APP_CONFIG.browser_ws_url:
+        raise ToolError("没有可用的渲染浏览器")
+    if len(ctx.deps.images) >= 4:
+        raise ToolError("这次回复已经有 4 张图了")
+    png = await _render(code, browser_ws_url=APP_CONFIG.browser_ws_url)
+    ctx.deps.images.append((png, caption.strip()))
+    return f"已生成图 {len(ctx.deps.images)}（{caption or '无标题'}），会附在合并转发末尾，正文里不用再贴代码。"
+
+
 ALL_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
     "read_url": read_url,
     "web_search": web_search,
@@ -289,6 +304,7 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
     "get_messages_around": get_messages_around,
     "lookup_glossary": lookup_glossary,
     "get_profile": get_profile,
+    "render_mermaid": render_mermaid,
 }
 
 
