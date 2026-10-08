@@ -1,0 +1,86 @@
+"""Import recent group history via NapCat ``get_group_msg_history`` (throttled)."""
+
+import asyncio
+from datetime import UTC, datetime
+
+from sqlalchemy import select, update
+
+from yggdrasil.bot.state import any_bot
+from yggdrasil.core.log import LOGGER
+from yggdrasil.db.models import Group, Message
+from yggdrasil.db.session import get_session
+from yggdrasil.ingest.writer import WRITER, IncomingMessage
+from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.runtime import snapshot
+
+_PAGE = 50
+_PAUSE_S = 1.5
+_running: dict[int, asyncio.Task] = {}
+
+
+def request_backfill(group_id: int) -> bool:
+    """Start a background backfill; False if one is already running for the group."""
+    task = _running.get(group_id)
+    if task and not task.done():
+        return False
+    _running[group_id] = asyncio.create_task(backfill(group_id), name=f"backfill-{group_id}")
+    return True
+
+
+async def backfill(group_id: int) -> int:
+    bot = any_bot()
+    if bot is None:
+        LOGGER.warning("backfill {}: no bot connected", group_id)
+        return 0
+    api = NapCatAPI(bot)
+    target = snapshot().settings(group_id).memory.backfill_messages
+    async with get_session() as session:
+        known = set(
+            (
+                await session.scalars(
+                    select(Message.message_seq).where(Message.group_id == group_id, Message.message_seq.is_not(None))
+                )
+            ).all()
+        )
+    seen: set[int] = set()
+    imported = 0
+    cursor: int | None = None
+    while len(seen) < target:
+        try:
+            history = await api.get_group_msg_history(group_id=group_id, count=_PAGE, message_seq=cursor)
+        except Exception as e:
+            LOGGER.warning("backfill {} page failed: {}", group_id, e)
+            break
+        batch = [m for m in history.messages if m.message_seq is not None and m.message_seq not in seen]
+        if not batch:
+            break
+        for m in batch:
+            seq = m.message_seq
+            assert seq is not None
+            seen.add(seq)
+            if seq in known or m.message_id is None or m.user_id is None:
+                continue
+            WRITER.submit(
+                IncomingMessage(
+                    group_id=group_id,
+                    user_id=m.user_id,
+                    qq_message_id=m.message_id,
+                    message_seq=seq,
+                    sent_at=datetime.fromtimestamp(m.time, UTC),
+                    sender_name=m.sender.card or m.sender.nickname,
+                    segments=[s.model_dump() for s in m.segments],
+                    is_self=str(m.user_id) == bot.self_id,
+                )
+            )
+            imported += 1
+        oldest = min(m.message_seq for m in batch if m.message_seq is not None)
+        if cursor is not None and oldest >= cursor:
+            break
+        cursor = oldest
+        await WRITER.flush()
+        await asyncio.sleep(_PAUSE_S)
+    await WRITER.flush()
+    async with get_session() as session:
+        await session.execute(update(Group).where(Group.group_id == group_id).values(backfilled_at=datetime.now(UTC)))
+    LOGGER.info("backfill {}: imported {} messages ({} scanned)", group_id, imported, len(seen))
+    return imported

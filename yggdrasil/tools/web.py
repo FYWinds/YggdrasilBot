@@ -1,0 +1,619 @@
+"""``read_url``: fetch a web page (or a document link) and return readable, paginated text.
+
+Pipeline: site adapter (official APIs) -> httpx + trafilatura (readability-lxml +
+markdownify fallback) -> remote Playwright render when the page is a JS app or
+blocks plain clients. Verification / login walls raise :class:`ToolError` instead of
+returning junk; we never try to defeat captchas.
+"""
+
+import asyncio
+import re
+import time
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
+from urllib.parse import unquote
+
+import httpx
+
+from yggdrasil.core.log import LOGGER
+from yggdrasil.core.telemetry import TRACER
+from yggdrasil.tools.docs import decode_html, parse_document
+from yggdrasil.tools.errors import ToolError
+from yggdrasil.tools.ssrf import check_url, guarded_client
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+)
+# Official JSON APIs (Bilibili in particular) answer 412 to browser user agents without a full
+# cookie fingerprint, but serve honest non-browser clients normally.
+API_USER_AGENT = "yggdrasil-bot/0.1"
+_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+_MB = 1024 * 1024
+MAX_HTML_BYTES = 5 * _MB
+MAX_DOC_BYTES = 20 * _MB
+# Extracted text shorter than this is treated as a JS shell worth rendering in the browser.
+_MIN_TEXT_CHARS = 200
+# Walls are short pages; keyword hits in long articles are ignored.
+_WALL_MAX_CHARS = 2000
+_WALL_KEYWORDS = (
+    "验证码",
+    "安全验证",
+    "人机验证",
+    "滑动验证",
+    "拖动滑块",
+    "完成验证",
+    "请登录",
+    "登录后查看",
+    "登录后继续",
+    "环境异常",
+    "访问异常",
+    "请求存在异常",
+    "限制本次访问",
+    "异常流量",
+    "访问过于频繁",
+    "captcha",
+    "verify you are human",
+    "are you a robot",
+    "unusual traffic",
+    "just a moment...",
+    "attention required",
+    "checking your browser",
+    "enable javascript and cookies",
+)
+_BROWSER_RETRY_STATUSES = frozenset({401, 403, 429, 503})
+_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+_CACHE_TTL = 600.0
+_CACHE_SIZE = 32
+_DOC_TYPES = (
+    "application/pdf",
+    "application/msword",
+    "application/vnd.ms-",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/epub+zip",
+    "application/zip",
+    "application/json",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/x-",
+)
+_DOC_EXTS = frozenset(".pdf .docx .pptx .xlsx .epub .zip .txt .md .csv .json .doc .xls .ppt".split())
+_HTML_TYPES = frozenset({"", "text/html", "application/xhtml+xml", "application/octet-stream"})
+_PARA_SPLIT_RE = re.compile(r"\n\s*\n")
+# Lines that are only stray punctuation (left over from stripped inline widgets).
+_JUNK_LINE_RE = re.compile(r"^[ \t]*[，。、：；！？,.:;!?·…]{1,3}[ \t]*(?:\n|$)", re.MULTILINE)
+_CN_TZ = timezone(timedelta(hours=8))
+
+
+@dataclass(slots=True)
+class PageResult:
+    url: str
+    final_url: str
+    title: str
+    text: str
+    page: int
+    pages: int
+    truncated: bool
+    """More content exists beyond this page (later pages, or the source hit a size cap)."""
+    via: str
+    """``http`` / ``browser`` / ``document:<kind>`` / adapter name (``bilibili`` / ``github``)."""
+
+
+@dataclass(slots=True)
+class Extracted:
+    """Whole-document result of one fetch, before pagination."""
+
+    final_url: str
+    title: str
+    text: str
+    via: str
+    capped: bool = False
+
+
+type AdapterResult = Extracted | str | None
+"""An adapter returns the content, a rewritten URL to restart with, or ``None`` to use the generic path."""
+type AdapterFn = Callable[[httpx.AsyncClient, httpx.URL], Awaitable[AdapterResult]]
+
+_ADAPTERS: dict[str, AdapterFn] = {}
+_cache: OrderedDict[tuple[str, bool], tuple[float, Extracted]] = OrderedDict()
+
+
+def site_adapter(*hosts: str) -> Callable[[AdapterFn], AdapterFn]:
+    """Register an adapter for exact host names (lower-case)."""
+
+    def register(fn: AdapterFn) -> AdapterFn:
+        for host in hosts:
+            _ADAPTERS[host] = fn
+        return fn
+
+    return register
+
+
+async def read_url(
+    url: str,
+    *,
+    max_chars: int = 16000,
+    page: int = 1,
+    browser_ws_url: str | None = None,
+    timeout: float = 20,  # noqa: ASYNC109 - per-request network timeout, not a cancel scope
+) -> PageResult:
+    """Read ``url`` and return page ``page`` of its text split into ``max_chars`` pages."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    if page < 1:
+        raise ToolError("页码从 1 开始")
+    target = await check_url(url)
+    key = (target, browser_ws_url is not None)
+    extracted = _cache_get(key)
+    with TRACER.start_as_current_span("tool.read_url") as span:
+        if extracted is None:
+            extracted = await _fetch(target, browser_ws_url, timeout)
+            _cache_put(key, extracted)
+        span.set_attribute("ygg.read_url.via", extracted.via)
+    pages = paginate(extracted.text, max_chars)
+    if page > len(pages):
+        raise ToolError(f"页码超出范围，共 {len(pages)} 页")
+    return PageResult(
+        url=target,
+        final_url=extracted.final_url,
+        title=extracted.title,
+        text=pages[page - 1],
+        page=page,
+        pages=len(pages),
+        truncated=page < len(pages) or extracted.capped,
+        via=extracted.via,
+    )
+
+
+def paginate(text: str, max_chars: int) -> list[str]:
+    """Split ``text`` into pages of at most ``max_chars``, on paragraph, then line, then hard boundaries."""
+    blocks: list[str] = []
+    for para in _PARA_SPLIT_RE.split(text.strip()):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) <= max_chars:
+            blocks.append(para)
+        else:
+            blocks += _pack(_hard_lines(para, max_chars), "\n", max_chars)
+    return _pack(blocks, "\n\n", max_chars) or [""]
+
+
+def _hard_lines(para: str, limit: int) -> Iterable[str]:
+    for line in para.split("\n"):
+        for start in range(0, len(line), limit):
+            yield line[start : start + limit]
+
+
+def _pack(parts: Iterable[str], sep: str, limit: int) -> list[str]:
+    out: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = f"{current}{sep}{part}" if current else part
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                out.append(current)
+            current = part
+    if current:
+        out.append(current)
+    return out
+
+
+def detect_wall(title: str, text: str) -> str | None:
+    """Return the matched keyword if the page looks like a captcha / verification / login wall."""
+    lowered_title = title.lower()
+    for keyword in _WALL_KEYWORDS:
+        if keyword in lowered_title:
+            return keyword
+    if len(text) <= _WALL_MAX_CHARS:
+        lowered = text.lower()
+        for keyword in _WALL_KEYWORDS:
+            if keyword in lowered:
+                return keyword
+    return None
+
+
+def _raise_if_wall(extracted: Extracted) -> None:
+    if keyword := detect_wall(extracted.title, extracted.text):
+        raise ToolError(f"该页面需要人机验证或登录（检测到「{keyword}」），无法读取")
+
+
+def extract_html(html: str, url: str) -> tuple[str, str]:
+    """Return ``(title, markdown-ish text)`` of the main content of an HTML document."""
+    import trafilatura
+
+    text = (
+        trafilatura.extract(
+            html,
+            url=url,
+            output_format="markdown",
+            include_tables=True,
+            include_links=False,
+            include_images=False,
+            include_comments=False,
+            favor_recall=True,
+            deduplicate=True,
+        )
+        or ""
+    ).strip()
+    meta = trafilatura.extract_metadata(html, default_url=url)
+    title = (meta.title or "") if meta is not None else ""
+    if len(text) < _MIN_TEXT_CHARS:
+        fallback_title, fallback = _readability(html)
+        if len(fallback) > len(text):
+            text = fallback
+        title = title or fallback_title
+    return title.strip(), _JUNK_LINE_RE.sub("", text).strip()
+
+
+def _readability(html: str) -> tuple[str, str]:
+    from markdownify import markdownify
+    from readability import Document
+
+    try:
+        doc = Document(html)
+        summary = doc.summary(html_partial=True)
+        title = doc.short_title()
+    except Exception:
+        return "", ""
+    text = markdownify(summary, heading_style="ATX", strip=["a", "img"])
+    return title or "", re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# --------------------------------------------------------------------------- fetch pipeline
+
+
+async def _fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
+    async with guarded_client(timeout=timeout_s, headers=_HEADERS) as client:
+        try:
+            for _ in range(3):
+                adapter = _ADAPTERS.get(httpx.URL(url).host.lower())
+                if adapter is None:
+                    break
+                result = await adapter(client, httpx.URL(url))
+                if isinstance(result, str):
+                    url = await check_url(result)
+                    continue
+                if result is not None:
+                    return result
+                break
+            return await _fetch_generic(client, url, browser_ws_url, timeout_s)
+        except httpx.TooManyRedirects as exc:
+            raise ToolError("重定向次数过多") from exc
+        except httpx.TimeoutException as exc:
+            raise ToolError("网页加载超时") from exc
+        except httpx.HTTPError as exc:
+            raise ToolError("网页无法访问") from exc
+
+
+async def _fetch_generic(
+    client: httpx.AsyncClient, url: str, browser_ws_url: str | None, timeout_s: float
+) -> Extracted:
+    async with client.stream("GET", url) as resp:
+        final_url = str(resp.url)
+        if resp.status_code >= 400:
+            if resp.status_code in _BROWSER_RETRY_STATUSES and browser_ws_url:
+                await resp.aclose()
+                return await _render_or_raise(final_url, browser_ws_url, timeout_s, None)
+            raise ToolError(f"网页返回错误（HTTP {resp.status_code}）")
+        ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        filename = _filename(resp, final_url)
+        if ctype.startswith("image/"):
+            raise ToolError("这是图片链接，不是网页，请用看图工具查看")
+        if ctype.startswith(("audio/", "video/")):
+            raise ToolError("这是音视频文件链接，无法读取内容")
+        is_doc = ctype.startswith(_DOC_TYPES) or (ctype in _HTML_TYPES and _ext(filename) in _DOC_EXTS)
+        if not is_doc and ctype not in _HTML_TYPES:
+            raise ToolError(f"不支持的内容类型：{ctype}")
+        limit = MAX_DOC_BYTES if is_doc else MAX_HTML_BYTES
+        declared = resp.headers.get("content-length", "")
+        if is_doc and declared.isdigit() and int(declared) > limit:
+            raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
+        data, capped = await _read_capped(resp.aiter_bytes(), limit)
+        charset = resp.charset_encoding
+
+    if is_doc or data[:1024].lstrip().startswith(b"%PDF-"):
+        if capped:
+            raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
+        doc = await asyncio.to_thread(parse_document, data, filename)
+        if not doc.text.strip():
+            if doc.scanned_pages:
+                raise ToolError("这是扫描版 PDF，没有文字层，无法直接读取")
+            raise ToolError("文档中没有可读取的文字")
+        return Extracted(final_url, filename, doc.text, f"document:{doc.kind}", capped=doc.truncated)
+
+    title, text = await asyncio.to_thread(extract_html, decode_html(data, charset), final_url)
+    extracted = Extracted(final_url, title, text, "http", capped=capped)
+    _raise_if_wall(extracted)
+    if len(text) < _MIN_TEXT_CHARS and browser_ws_url:
+        return await _render_or_raise(final_url, browser_ws_url, timeout_s, extracted)
+    if not text:
+        raise ToolError("页面没有可读取的正文")
+    return extracted
+
+
+async def _read_capped(chunks: AsyncIterator[bytes], limit: int) -> tuple[bytes, bool]:
+    buf = bytearray()
+    async for chunk in chunks:
+        buf += chunk
+        if len(buf) > limit:
+            return bytes(buf[:limit]), True
+    return bytes(buf), False
+
+
+def _filename(resp: httpx.Response, final_url: str) -> str:
+    disposition = resp.headers.get("content-disposition", "")
+    if match := re.search(r"filename\*=(?:UTF-8'')?([^;]+)", disposition, re.IGNORECASE):
+        return unquote(match.group(1).strip().strip('"'))
+    if match := re.search(r'filename="?([^";]+)"?', disposition, re.IGNORECASE):
+        return match.group(1).strip()
+    return unquote(httpx.URL(final_url).path.rsplit("/", 1)[-1])
+
+
+def _ext(filename: str) -> str:
+    _, dot, ext = filename.lower().rpartition(".")
+    return f".{ext}" if dot else ""
+
+
+async def _render_or_raise(url: str, ws_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
+    """Render with the remote browser; keep the plain-http result if rendering fails."""
+    try:
+        final_url, html = await render_page(url, ws_url, timeout=timeout_s)
+    except ToolError:
+        raise
+    except Exception as exc:
+        LOGGER.warning("browser render failed for {}: {!r}", httpx.URL(url).host, exc)
+        if fallback is not None and fallback.text:
+            return fallback
+        raise ToolError("网页渲染失败，无法读取") from exc
+    title, text = await asyncio.to_thread(extract_html, html, final_url)
+    extracted = Extracted(final_url, title, text, "browser")
+    _raise_if_wall(extracted)
+    if not text:
+        if fallback is not None and fallback.text:
+            return fallback
+        raise ToolError("页面没有可读取的正文")
+    return extracted
+
+
+async def render_page(url: str, ws_url: str, *, timeout: float = 20) -> tuple[str, str]:  # noqa: ASYNC109
+    """Load ``url`` in the remote Playwright browser and return ``(final_url, html)``.
+
+    Every request the page makes is SSRF-checked (per host, cached for the render); images,
+    media and fonts are skipped.
+    """
+    from playwright.async_api import Route, async_playwright
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+    verdicts: dict[str, bool] = {}
+
+    async def guard(route: Route) -> None:
+        request = route.request
+        if request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            await route.abort("blockedbyclient")
+            return
+        if not request.url.startswith(("http://", "https://")):
+            await route.continue_()
+            return
+        origin = httpx.URL(request.url).copy_with(path="/", query=None, fragment=None)
+        key = str(origin)
+        if key not in verdicts:
+            try:
+                await check_url(key)
+                verdicts[key] = True
+            except ToolError:
+                verdicts[key] = False
+        if verdicts[key]:
+            await route.continue_()
+        else:
+            await route.abort("blockedbyclient")
+
+    deadline_ms = timeout * 1000
+    async with async_playwright() as pw:
+        browser = await pw.chromium.connect(ws_url, timeout=deadline_ms)
+        try:
+            context = await browser.new_context(
+                user_agent=USER_AGENT, locale="zh-CN", timezone_id="Asia/Shanghai", service_workers="block"
+            )
+            await context.route("**/*", guard)
+            page = await context.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=deadline_ms)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=min(deadline_ms / 2, 8000))
+            except PlaywrightTimeout:
+                pass  # long-polling pages never go idle; use what has rendered
+            return page.url, await page.content()
+        finally:
+            await browser.close()
+
+
+def _cache_get(key: tuple[str, bool]) -> Extracted | None:
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    stored_at, extracted = entry
+    if time.monotonic() - stored_at > _CACHE_TTL:
+        del _cache[key]
+        return None
+    _cache.move_to_end(key)
+    return extracted
+
+
+def _cache_put(key: tuple[str, bool], extracted: Extracted) -> None:
+    _cache[key] = (time.monotonic(), extracted)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_SIZE:
+        _cache.popitem(last=False)
+
+
+# --------------------------------------------------------------------------- site adapters
+
+_BILI_VIDEO_RE = re.compile(r"/video/(BV[0-9A-Za-z]{10}|av\d+)", re.IGNORECASE)
+_BILI_GONE_CODES = frozenset({-404, 62002, 62004, 62012})
+
+
+@site_adapter("b23.tv", "www.b23.tv", "bili2233.cn")
+async def _bilibili_short_link(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    resp = await client.get(url, follow_redirects=False)
+    location = resp.headers.get("location")
+    if resp.is_redirect and location:
+        return str(resp.url.join(location))
+    return None
+
+
+@site_adapter("www.bilibili.com", "bilibili.com", "m.bilibili.com")
+async def _bilibili_video(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    match = _BILI_VIDEO_RE.search(url.path)
+    if match is None:
+        return None
+    vid = match.group(1)
+    params = {"bvid": vid} if vid[:2].upper() == "BV" else {"aid": vid[2:]}
+    resp = await client.get(
+        "https://api.bilibili.com/x/web-interface/view", params=params, headers={"User-Agent": API_USER_AGENT}
+    )
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    code = payload.get("code")
+    if code in _BILI_GONE_CODES:
+        raise ToolError("B 站视频不存在、已删除或需要登录才能看")
+    if code != 0 or not isinstance(payload.get("data"), dict):
+        return None  # risk control etc.; the generic path may still get something
+    data = payload["data"]
+    bvid = data.get("bvid") or vid
+    return Extracted(
+        final_url=f"https://www.bilibili.com/video/{bvid}",
+        title=str(data.get("title", "")),
+        text=format_bilibili_video(data),
+        via="bilibili",
+    )
+
+
+def format_bilibili_video(data: dict) -> str:
+    owner = data.get("owner") or {}
+    stat = data.get("stat") or {}
+    lines = [f"UP主：{owner.get('name', '未知')}"]
+    if pubdate := data.get("pubdate"):
+        lines.append(f"发布时间：{datetime.fromtimestamp(pubdate, UTC).astimezone(_CN_TZ):%Y-%m-%d %H:%M}")
+    if duration := data.get("duration"):
+        lines.append(f"时长：{_fmt_duration(int(duration))}")
+    if tname := data.get("tname") or data.get("tname_v2"):
+        lines.append(f"分区：{tname}")
+    counters = (
+        ("播放", "view"),
+        ("弹幕", "danmaku"),
+        ("点赞", "like"),
+        ("投币", "coin"),
+        ("收藏", "favorite"),
+        ("分享", "share"),
+        ("评论", "reply"),
+    )
+    lines.append("数据：" + " · ".join(f"{label} {_cn_count(stat[key])}" for label, key in counters if key in stat))
+    desc = str(data.get("desc") or "").strip()
+    if desc and desc != "-":
+        lines += ["", "简介：", desc]
+    parts = data.get("pages") or []
+    if len(parts) > 1:
+        lines += ["", f"分P（共 {len(parts)} 个）："]
+        lines += [
+            f"P{p.get('page', i)} {p.get('part', '')}（{_fmt_duration(int(p.get('duration', 0)))}）"
+            for i, p in enumerate(parts[:50], 1)
+        ]
+    return "\n".join(lines)
+
+
+def _fmt_duration(seconds: int) -> str:
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def _cn_count(value: int) -> str:
+    if value >= 100_000_000:
+        return f"{value / 100_000_000:.1f}亿"
+    if value >= 10_000:
+        return f"{value / 10_000:.1f}万"
+    return str(value)
+
+
+_GITHUB_RESERVED = frozenset(
+    "about collections enterprise explore features login marketplace notifications orgs pricing search settings "
+    "sponsors topics trending users".split()
+)
+
+
+@site_adapter("github.com", "www.github.com")
+async def _github(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    segments = [s for s in url.path.split("/") if s]
+    if len(segments) < 2 or segments[0].lower() in _GITHUB_RESERVED:
+        return None
+    owner, repo = segments[0], segments[1].removesuffix(".git")
+    rest = segments[2:]
+    if len(rest) >= 3 and rest[0] == "blob":
+        return await _github_blob(client, owner, repo, rest[1], "/".join(rest[2:]))
+    if rest and not (rest[0] == "tree" and len(rest) == 2):
+        return None  # issues, PRs, sub-trees: generic HTML extraction handles them
+    ref = rest[1] if rest else None
+    return await _github_repo(client, owner, repo, ref)
+
+
+async def _github_blob(client: httpx.AsyncClient, owner: str, repo: str, ref: str, path: str) -> AdapterResult:
+    raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+    resp = await client.get(raw)
+    if resp.status_code != 200 or len(resp.content) > MAX_HTML_BYTES:
+        return None
+    doc = await asyncio.to_thread(parse_document, resp.content, path.rsplit("/", 1)[-1])
+    return Extracted(raw, f"{owner}/{repo}: {path}", doc.text, "github", capped=doc.truncated)
+
+
+async def _github_repo(client: httpx.AsyncClient, owner: str, repo: str, ref: str | None) -> AdapterResult:
+    api = f"https://api.github.com/repos/{owner}/{repo}"
+    info_resp = await client.get(api, headers={"Accept": "application/vnd.github+json"})
+    if info_resp.status_code == 404:
+        raise ToolError("GitHub 仓库不存在或是私有仓库")
+    info = info_resp.json() if info_resp.status_code == 200 else {}
+    readme = ""
+    raw = await client.get(f"https://raw.githubusercontent.com/{owner}/{repo}/{ref or 'HEAD'}/README.md")
+    if raw.status_code == 200:
+        readme = raw.text
+    else:
+        params = {"ref": ref} if ref else None
+        api_readme = await client.get(f"{api}/readme", params=params, headers={"Accept": "application/vnd.github.raw"})
+        if api_readme.status_code == 200:
+            readme = api_readme.text
+    if not info and not readme:
+        return None
+    full_name = info.get("full_name") or f"{owner}/{repo}"
+    lines = [f"仓库：{full_name}"]
+    if description := info.get("description"):
+        lines.append(f"简介：{description}")
+    if homepage := info.get("homepage"):
+        lines.append(f"主页：{homepage}")
+    if info:
+        facts = [
+            f"语言 {info.get('language') or '未知'}",
+            f"★ {info.get('stargazers_count', 0)}",
+            f"Fork {info.get('forks_count', 0)}",
+            f"开放 issue {info.get('open_issues_count', 0)}",
+        ]
+        lines.append(" · ".join(facts))
+        if (license_ := info.get("license")) and license_.get("spdx_id"):
+            lines.append(f"许可证：{license_['spdx_id']}")
+        if topics := info.get("topics"):
+            lines.append("主题：" + "、".join(topics))
+        if pushed := info.get("pushed_at"):
+            lines.append(f"最近推送：{pushed[:10]}")
+        if info.get("archived"):
+            lines.append("（仓库已归档）")
+    if readme:
+        lines += ["", "README：", "", readme.strip()]
+    return Extracted(f"https://github.com/{full_name}", full_name, "\n".join(lines), "github")

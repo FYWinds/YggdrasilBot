@@ -15,12 +15,12 @@ _COMMON = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="
 class DbConfig(BaseSettings):
     model_config = _COMMON
 
-    host: str = Field("127.0.0.1", alias="POSTGRES_HOST")
-    port: int = Field(5432, alias="POSTGRES_PORT")
-    user: str = Field("ygg", alias="POSTGRES_USER")
-    password: str = Field("ygg", alias="POSTGRES_PASSWORD")
-    database: str = Field("ygg", alias="POSTGRES_DB")
-    pool_size: int = Field(10, alias="POSTGRES_POOL_SIZE")
+    host: str = Field(default="127.0.0.1", alias="POSTGRES_HOST")
+    port: int = Field(default=5432, alias="POSTGRES_PORT")
+    user: str = Field(default="ygg", alias="POSTGRES_USER")
+    password: str = Field(default="ygg", alias="POSTGRES_PASSWORD")
+    database: str = Field(default="ygg", alias="POSTGRES_DB")
+    pool_size: int = Field(default=10, alias="POSTGRES_POOL_SIZE")
 
     @computed_field
     @cached_property
@@ -38,22 +38,22 @@ class DbConfig(BaseSettings):
 class RedisConfig(BaseSettings):
     model_config = _COMMON
 
-    url: RedisDsn = Field(RedisDsn("redis://127.0.0.1:6379/0"), alias="REDIS_URL")
+    url: RedisDsn = Field(default=RedisDsn("redis://127.0.0.1:6379/0"), alias="REDIS_URL")
 
 
 class LogConfig(BaseSettings):
     model_config = _COMMON
 
-    level: str = Field("INFO", alias="LOG_LEVEL")
-    json_output: bool = Field(False, alias="LOG_JSON")
+    level: str = Field(default="INFO", alias="LOG_LEVEL")
+    json_output: bool = Field(default=False, alias="LOG_JSON")
     format: str = "<g>{time:MM-DD HH:mm:ss}</g> [<lvl>{level: <7}</lvl>] <c>{name}:{line}</c> | {message}{extra[trace]}"
 
 
 class TelemetryConfig(BaseSettings):
     model_config = _COMMON
 
-    otlp_endpoint: str | None = Field(None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")
-    sdk_disabled: bool = Field(False, alias="OTEL_SDK_DISABLED")
+    otlp_endpoint: str | None = Field(default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT")
+    sdk_disabled: bool = Field(default=False, alias="OTEL_SDK_DISABLED")
 
     @property
     def enabled(self) -> bool:
@@ -63,23 +63,25 @@ class TelemetryConfig(BaseSettings):
 class AppConfig(BaseSettings):
     model_config = _COMMON
 
-    environment: str = Field("dev", alias="YGG_ENV")
-    host: str = Field("0.0.0.0", alias="YGG_HOST")
-    port: int = Field(8080, alias="YGG_PORT")
-    onebot_access_token: str = Field("", alias="ONEBOT_ACCESS_TOKEN")
+    environment: str = Field(default="dev", alias="YGG_ENV")
+    host: str = Field(default="0.0.0.0", alias="YGG_HOST")
+    port: int = Field(default=8080, alias="YGG_PORT")
+    onebot_access_token: str = Field(default="", alias="ONEBOT_ACCESS_TOKEN")
     # Fernet key (urlsafe base64, 32 bytes) used to encrypt provider API keys at rest.
     secret_key: str = Field(alias="YGG_SECRET_KEY")
     # Bootstrap admins; the dashboard manages the rest.
     bootstrap_superusers: list[int] = Field(default_factory=list, alias="YGG_SUPERUSERS")
     bootstrap_admin_emails: list[str] = Field(default_factory=list, alias="YGG_ADMIN_EMAILS")
     # Header set by oauth2-proxy forwardAuth; dev mode trusts YGG_DEV_ADMIN_EMAIL instead.
-    auth_email_header: str = Field("X-Forwarded-Email", alias="YGG_AUTH_EMAIL_HEADER")
-    dev_admin_email: str | None = Field(None, alias="YGG_DEV_ADMIN_EMAIL")
-    browser_ws_url: str | None = Field(None, alias="YGG_BROWSER_WS_URL")
-    searxng_url: str | None = Field(None, alias="YGG_SEARXNG_URL")
-    web_dist: str = Field("web/dist", alias="YGG_WEB_DIST")
+    auth_email_header: str = Field(default="X-Forwarded-Email", alias="YGG_AUTH_EMAIL_HEADER")
+    dev_admin_email: str | None = Field(default=None, alias="YGG_DEV_ADMIN_EMAIL")
+    browser_ws_url: str | None = Field(default=None, alias="YGG_BROWSER_WS_URL")
+    searxng_url: str | None = Field(default=None, alias="YGG_SEARXNG_URL")
+    web_dist: str = Field(default="web/dist", alias="YGG_WEB_DIST")
     # Extra headers for outbound LLM calls; Cloudflare in front of new-api rejects default SDK user agents.
-    llm_user_agent: str = Field("yggdrasil-bot/0.1", alias="YGG_LLM_USER_AGENT")
+    llm_user_agent: str = Field(default="yggdrasil-bot/0.1", alias="YGG_LLM_USER_AGENT")
+    # Dashboard links invocations to their Tempo trace in this Grafana.
+    grafana_url: str = Field(default="https://grafana.example.com", alias="YGG_GRAFANA_URL")
 
 
 DB_CONFIG = DbConfig()

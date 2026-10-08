@@ -43,6 +43,7 @@ class ProviderInfo:
     headers: dict[str, str]
     enabled: bool
     models: tuple[str, ...]
+    api_format: str = "openai"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +141,14 @@ async def load() -> Snapshot:
                 except Exception:
                     LOGGER.error("cannot decrypt api key of provider {} (YGG_SECRET_KEY changed?)", p.name)
             providers[p.id] = ProviderInfo(
-                p.id, p.name, p.base_url.rstrip("/"), key, dict(p.headers), p.enabled, tuple(p.models or ())
+                p.id,
+                p.name,
+                p.base_url.rstrip("/"),
+                key,
+                dict(p.headers),
+                p.enabled,
+                tuple(p.models or ()),
+                p.api_format,
             )
         routes = {
             r.task: Route(

@@ -16,6 +16,9 @@ class Provider(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(Text, unique=True)
+    # Wire format for chat: openai (Chat Completions) | anthropic (Messages API). Embeddings, rerank
+    # and /models always use the OpenAI-compatible routes.
+    api_format: Mapped[str] = mapped_column(Text, default="openai", server_default="openai")
     base_url: Mapped[str] = mapped_column(Text)  # including /v1
     api_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     headers: Mapped[dict[str, Any]] = mapped_column(default=dict)
