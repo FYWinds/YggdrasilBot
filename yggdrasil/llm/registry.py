@@ -1,16 +1,22 @@
 """Task → model resolution against the runtime config, plus embedding/rerank clients.
 
-All providers speak the OpenAI-compatible API (new-api, TEI, llama.cpp server).
+Chat models use the provider's ``api_format``: OpenAI Chat Completions or the Anthropic
+Messages API (new-api serves both; its Claude channels only support tool calling via the
+latter). Embeddings, rerank and model listing always use OpenAI-compatible routes.
 """
 
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
@@ -55,20 +61,42 @@ class TaskNotConfigured(RuntimeError):
 
 
 _clients: dict[tuple[int, str, str | None, str], AsyncOpenAI] = {}
+_anthropic_clients: dict[tuple[int, str, str | None, str], AsyncAnthropic] = {}
+
+
+def _client_key(p: ProviderInfo) -> tuple[int, str, str | None, str]:
+    return (p.id, p.base_url, p.api_key, repr(sorted(p.headers.items())))
 
 
 def openai_client(p: ProviderInfo) -> AsyncOpenAI:
-    key = (p.id, p.base_url, p.api_key, repr(sorted(p.headers.items())))
+    key = _client_key(p)
     client = _clients.get(key)
     if client is None:
         client = AsyncOpenAI(
             base_url=p.base_url,
             api_key=p.api_key or "unused",
             max_retries=1,
-            timeout=httpx.Timeout(180, connect=10),
+            timeout=180.0,
             default_headers={"User-Agent": APP_CONFIG.llm_user_agent, **p.headers},
         )
         _clients[key] = client
+    return client
+
+
+def anthropic_client(p: ProviderInfo) -> AsyncAnthropic:
+    key = _client_key(p)
+    client = _anthropic_clients.get(key)
+    if client is None:
+        # The SDK appends /v1/messages itself; providers store base URLs including /v1.
+        base = p.base_url.removesuffix("/v1")
+        client = AsyncAnthropic(
+            base_url=base,
+            api_key=p.api_key or "unused",
+            max_retries=1,
+            timeout=180.0,
+            default_headers={"User-Agent": APP_CONFIG.llm_user_agent, **p.headers},
+        )
+        _anthropic_clients[key] = client
     return client
 
 
@@ -96,18 +124,30 @@ class ResolvedModel:
     label: str  # "provider/model" of the primary
 
 
+# Newer Claude models (and some gateways) reject a forced tool_choice, which pydantic-ai sends for
+# structured output. Without it the model gets tool_choice=auto and pydantic-ai retries if it answers
+# in plain text. Route param ``forced_tool_choice: true`` restores forcing.
+_NO_FORCED_TOOL_CHOICE = ModelProfile(supports_forced_tool_choice=False)
+
+
+def _build_model(name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
+    profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
+    if p.api_format == "anthropic":
+        return AnthropicModel(name, provider=AnthropicProvider(anthropic_client=anthropic_client(p)), profile=profile)
+    return OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
+
+
 def chat_model(task: str, snap: Snapshot | None = None, *, default_limits: UsageLimits | None = None) -> ResolvedModel:
     snap = snap or snapshot()
     r = route(task, snap)
     primary_p = _provider(snap, r.provider_id, task)
-    primary: Model = OpenAIChatModel(r.model, provider=OpenAIProvider(openai_client=openai_client(primary_p)))
+    forced = bool(r.params.get("forced_tool_choice", False))
+    primary = _build_model(r.model, primary_p, forced)
     model = primary
     if r.fallback_provider_id and r.fallback_model:
         fb_p = snap.providers.get(r.fallback_provider_id)
         if fb_p and fb_p.enabled:
-            model = FallbackModel(
-                primary, OpenAIChatModel(r.fallback_model, provider=OpenAIProvider(openai_client=openai_client(fb_p)))
-            )
+            model = FallbackModel(primary, _build_model(r.fallback_model, fb_p, forced))
     settings: dict[str, Any] = {k: v for k, v in r.params.items() if k in _SETTING_KEYS}
     limits = default_limits or UsageLimits()
     if r.limits:

@@ -11,26 +11,34 @@ from pydantic import BaseModel, Field
 
 
 class PersonaSettings(BaseModel):
-    name: str = Field("尤克特拉希尔", description="bot 的名字，出现在提示词里")
+    name: str = Field(default="尤克特拉希尔", description="bot 的名字，出现在提示词里")
     aliases: list[str] = Field(
         default_factory=lambda: ["ygg", "世界树"], description="点名触发词（name_mention 规则使用）"
     )
 
 
 class InteractionSettings(BaseModel):
-    ack_delay_s: float = Field(2.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
+    ack_delay_s: float = Field(default=4.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
     react_emoji_whitelist: list[str] = Field(
         default_factory=lambda: ["76", "124", "128064", "128077", "129300", "128514", "10068", "128170"],
         description="tldr 快速响应可用的表情 id（QQ face id 或 Unicode 码点）",
     )
-    react_default: str = Field("128064", description="quick 模型失败时用的表情（👀）")
-    input_blocked_emoji: str = Field("10060", description="输入被审核拦截时 react 的表情（❌）")
-    sticker_ack: bool = Field(True, description="快速响应允许发表情包")
-    inline_max_chars: int = Field(240, ge=0, description="超过这个长度改用合并转发")
-    forward_max_nodes: int = Field(12, ge=1, le=60)
-    node_max_chars: int = Field(1500, ge=200)
-    forward_render: Literal["plain", "nested_markdown", "image"] = "plain"
-    forward_follow_up: str = Field("↑ 展开看看", description="合并转发后补发的回复文字；留空不发")
+    react_default: str = Field(default="128064", description="quick 模型失败时用的表情（👀）")
+    input_blocked_emoji: str = Field(default="10060", description="输入被审核拦截时 react 的表情（❌）")
+    sticker_ack: bool = Field(default=True, description="快速响应允许发表情包")
+    inline_max_chars: int = Field(default=240, ge=0, description="超过这个长度改用合并转发")
+    forward_max_nodes: int = Field(default=12, ge=1, le=60)
+    node_max_chars: int = Field(default=1500, ge=200)
+    forward_render: Literal["plain", "nested_markdown"] = Field(
+        default="plain", description="plain：去掉 markdown 语法；nested_markdown：双层合并转发里发 markdown 段"
+    )
+    failure_emoji: str = Field(default="128531", description="agent 出错时 react 的表情（😓）")
+    ratelimited_emoji: str = Field(default="9203", description="被限流时 react 的表情（⏳）；留空不 react")
+    forward_follow_up: str = Field(default="", description="合并转发后补发的回复文字；留空不发")
+    quote_reply: Literal["always", "when_busy", "never"] = Field(
+        default="when_busy",
+        description="回复时是否引用触发消息：always 总是；when_busy 触发消息之后群里已有别人发言才引用；never 从不",
+    )
     metadata_node: bool = True
     metadata_fields: list[Literal["model", "tokens", "tools", "latency", "moderation", "trace"]] = Field(
         default_factory=lambda: ["model", "tokens", "tools", "latency", "moderation", "trace"]
@@ -38,7 +46,7 @@ class InteractionSettings(BaseModel):
 
 
 class ModerationCategoryRule(BaseModel):
-    threshold: float = Field(0.5, ge=0, le=1)
+    threshold: float = Field(default=0.5, ge=0, le=1)
     action: Literal["pass", "review", "drop"] = "review"
 
 
@@ -56,10 +64,10 @@ class ModerationSettings(BaseModel):
         },
         description="按 Qwen3Guard 类别覆盖阈值和动作",
     )
-    input_action_on_hit: Literal["drop", "pass"] = Field("drop", description="输入超阈值时：不响应 / 放行")
+    input_action_on_hit: Literal["drop", "pass"] = Field(default="drop", description="输入超阈值时：不响应 / 放行")
     notify_admins_on_input_block: bool = False
-    notify_group_on_review: bool = Field(True, description="进入审核时群里先回一句（模型生成）")
-    review_expire_minutes: int = Field(120, ge=5)
+    notify_group_on_review: bool = Field(default=True, description="进入审核时群里先回一句（模型生成）")
+    review_expire_minutes: int = Field(default=120, ge=5)
 
 
 class RateLimitSettings(BaseModel):
@@ -71,9 +79,9 @@ class RateLimitSettings(BaseModel):
 
 
 class ContextSettings(BaseModel):
-    recent_messages: int = Field(40, ge=0, le=300)
-    recent_minutes: int = Field(30, ge=0)
-    max_context_chars: int = Field(12000, ge=1000)
+    recent_messages: int = Field(default=40, ge=0, le=300)
+    recent_minutes: int = Field(default=30, ge=0)
+    max_context_chars: int = Field(default=12000, ge=1000)
     include_profiles: bool = True
     include_glossary: bool = True
     include_open_topics: bool = True
@@ -105,22 +113,22 @@ class ToolSettings(BaseModel):
 
 class MemorySettings(BaseModel):
     enabled: bool = True
-    chunk_gap_minutes: int = Field(20, description="消息间隔超过这个时间就切块")
+    chunk_gap_minutes: int = Field(default=20, description="消息间隔超过这个时间就切块")
     chunk_max_messages: int = 60
     chunk_max_chars: int = 2400
-    topic_min_new_messages: int = Field(120, description="新增消息达到这个数量触发话题分段")
+    topic_min_new_messages: int = Field(default=120, description="新增消息达到这个数量触发话题分段")
     topic_window_messages: int = 400
     topic_close_after_minutes: int = 120
-    digest_hour: int = Field(4, ge=0, le=23, description="每日摘要生成时间（Asia/Shanghai）")
+    digest_hour: int = Field(default=4, ge=0, le=23, description="每日摘要生成时间（Asia/Shanghai）")
     profile_min_messages: int = 15
     glossary_min_count: int = 6
     glossary_max_candidates: int = 30
-    backfill_messages: int = Field(3000, description="群加入白名单时回填的历史消息数")
+    backfill_messages: int = Field(default=3000, description="群加入白名单时回填的历史消息数")
 
 
 class PrivacySettings(BaseModel):
     log_message_content: bool = False
-    capture_llm_content: bool = Field(False, description="trace 里记录提示词和回复原文（排障用）")
+    capture_llm_content: bool = Field(default=False, description="trace 里记录提示词和回复原文（排障用）")
 
 
 class Settings(BaseModel):
