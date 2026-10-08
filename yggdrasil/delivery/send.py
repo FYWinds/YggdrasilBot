@@ -204,7 +204,29 @@ async def send_forward(
         res = await api.send_private_forward_msg(user_id=user_id, **kwargs)
     else:
         res = await api.send_group_forward_msg(group_id=group_id, **kwargs)
+        # Keep the node texts with our own record: QQ hands self-sent forwards back as an opaque
+        # card, so this is how a later "reply to the bot's forward" can read what was in it.
+        stored = [_textual_node(n) for n in nodes]
         _record_self(
-            group_id, self_id, nickname, res.message_id, [{"type": "forward", "data": {"id": res.res_id or ""}}]
+            group_id,
+            self_id,
+            nickname,
+            res.message_id,
+            [{"type": "forward", "data": {"id": res.res_id or "", "title": title, "content": stored}}],
         )
     return res.message_id
+
+
+def _textual_node(node: dict[str, Any]) -> dict[str, Any]:
+    """Node with images replaced by placeholders (don't store base64 PNGs in the message log)."""
+    data = dict(node.get("data") or {})
+    content = []
+    for seg in data.get("content") or []:
+        if seg.get("type") == "image":
+            content.append({"type": "text", "data": {"text": "[图片]"}})
+        elif seg.get("type") == "node":
+            content.append(_textual_node(seg))
+        else:
+            content.append(seg)
+    data["content"] = content
+    return {"type": "node", "data": data}

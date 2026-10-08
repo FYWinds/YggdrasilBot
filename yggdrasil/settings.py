@@ -120,6 +120,8 @@ class ToolSettings(BaseModel):
             "lookup_glossary",
             "get_profile",
             "render_mermaid",
+            "render_markdown",
+            "render_html",
         ]
     )
     read_url_max_chars: int = 16000

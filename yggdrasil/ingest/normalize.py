@@ -48,6 +48,20 @@ def _card(raw: str) -> tuple[str, str | None]:
     return str(title).strip() or "卡片", url
 
 
+def _multimsg_resid(raw: str) -> str | None:
+    """Merged forwards the bot itself sent come back from get_msg as a ``com.tencent.multimsg``
+    json card instead of a ``forward`` segment; its ``resid`` works with get_forward_msg."""
+    try:
+        doc = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("app") != "com.tencent.multimsg":
+        return None
+    detail = (doc.get("meta") or {}).get("detail") or {}
+    resid = detail.get("resid") if isinstance(detail, dict) else None
+    return str(resid) if resid else None
+
+
 def normalize(segments: list[dict[str, Any]], names: dict[int, str] | None = None) -> Normalized:
     names = names or {}
     out = Normalized(text="")
@@ -96,6 +110,9 @@ def normalize(segments: list[dict[str, Any]], names: dict[int, str] | None = Non
             case "forward":
                 parts.append("[合并转发]")
                 out.attachments.append(Attachment("forward", data))
+            case "json" if resid := _multimsg_resid(str(data.get("data", ""))):
+                parts.append("[合并转发]")
+                out.attachments.append(Attachment("forward", {"id": resid}))
             case "json":
                 title, url = _card(str(data.get("data", "")))
                 parts.append(f"[卡片:{title}]")

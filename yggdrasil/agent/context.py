@@ -2,14 +2,17 @@
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import ahocorasick
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
+from sqlalchemy import select
 
 from yggdrasil.agent.deps import Handles
 from yggdrasil.core.log import LOGGER
+from yggdrasil.db.models import Message
+from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.ingest.writer import WRITER
 from yggdrasil.settings import Settings
@@ -61,17 +64,37 @@ def trigger_message(event: MessageEvent, self_id: int) -> TargetMessage:
     )
 
 
-def target_message(event: MessageEvent, resolved: Resolved, self_id: int) -> TargetMessage:
+async def _own_segments(group_id: int, qq_message_id: int) -> list[dict[str, Any]] | None:
+    """Segments we stored when sending (incl. forward node texts that QQ won't give back)."""
+    async with get_session() as session:
+        return await session.scalar(
+            select(Message.segments)
+            .where(
+                Message.group_id == group_id,
+                Message.qq_message_id == qq_message_id,
+                Message.is_self,
+                Message.sent_at > datetime.now(UTC) - timedelta(days=7),
+            )
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+        )
+
+
+async def target_message(event: MessageEvent, resolved: Resolved, self_id: int) -> TargetMessage:
     if resolved.target in ("quoted_or_self", "quoted") and event.reply is not None:
         r = event.reply
         segs = _segments(r.message)
+        is_self = r.sender.user_id == self_id
+        if is_self and isinstance(event, GroupMessageEvent):
+            await WRITER.flush()
+            segs = await _own_segments(event.group_id, r.message_id) or segs
         return TargetMessage(
             qq_message_id=r.message_id,
             user_id=r.sender.user_id or 0,
             sender_name=_sender_name(r.sender) or str(r.sender.user_id),
             text=normalize(segs).text,
             segments=segs,
-            is_self=r.sender.user_id == self_id,
+            is_self=is_self,
             sent_at=datetime.fromtimestamp(r.time).astimezone(),
         )
     return trigger_message(event, self_id)
@@ -137,7 +160,7 @@ async def build_context(
 
     handles = Handles()
     trigger = trigger_message(event, self_id)
-    target = target_message(event, resolved, self_id)
+    target = await target_message(event, resolved, self_id)
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     cfg = settings.context
     blocks: list[str] = []
