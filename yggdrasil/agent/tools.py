@@ -197,6 +197,8 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
         if records is None:
             records = [m.model_dump() for m in (await ctx.deps.api.get_forward_msg(id=forward_id)).messages]
         for rec in records:
+            if rec.get("type") == "node":  # OneBot node format (our own stored forwards)
+                rec = rec.get("data") or {}
             sender = rec.get("sender") or {}
             segs = rec.get("message") or rec.get("content") or []
             if isinstance(segs, str):
@@ -279,19 +281,41 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     return f"{p.display_name}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
 
 
+_MAX_IMAGES = 4
+
+
+async def _attach_render(ctx: RunContext[Deps], kind: str, source: str, caption: str) -> str:
+    from yggdrasil.tools import render as renderer
+
+    if not APP_CONFIG.browser_ws_url:
+        raise ToolError("没有可用的渲染浏览器")
+    if len(ctx.deps.images) >= _MAX_IMAGES:
+        raise ToolError(f"这次回复已经有 {_MAX_IMAGES} 张图了")
+    fn = {"mermaid": renderer.render_mermaid, "markdown": renderer.render_markdown, "html": renderer.render_html}[kind]
+    png = await fn(source, browser_ws_url=APP_CONFIG.browser_ws_url)
+    ctx.deps.images.append((png, caption.strip()))
+    return f"已生成图 {len(ctx.deps.images)}（{caption or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"
+
+
 @_tool("render_mermaid")
 async def render_mermaid(ctx: RunContext[Deps], code: str, caption: str = "") -> str:
     """把 Mermaid 代码（flowchart、sequenceDiagram、classDiagram 等）渲染成图片，附在合并转发里发出。
     节点文字用中文即可，含特殊字符的文字用双引号包起来。语法错误会返回报错，改好后重试。"""
-    from yggdrasil.tools.diagram import render_mermaid as _render
+    return await _attach_render(ctx, "mermaid", code, caption)
 
-    if not APP_CONFIG.browser_ws_url:
-        raise ToolError("没有可用的渲染浏览器")
-    if len(ctx.deps.images) >= 4:
-        raise ToolError("这次回复已经有 4 张图了")
-    png = await _render(code, browser_ws_url=APP_CONFIG.browser_ws_url)
-    ctx.deps.images.append((png, caption.strip()))
-    return f"已生成图 {len(ctx.deps.images)}（{caption or '无标题'}），会附在合并转发末尾，正文里不用再贴代码。"
+
+@_tool("render_markdown")
+async def render_markdown(ctx: RunContext[Deps], markdown: str, caption: str = "") -> str:
+    """把 Markdown（表格、代码块、标题、列表都支持）排版渲染成一张图片，附在合并转发里发出。
+    适合对比表、代码、带格式的长内容这类纯文本消息里不好看的东西。"""
+    return await _attach_render(ctx, "markdown", markdown, caption)
+
+
+@_tool("render_html")
+async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> str:
+    """把一段 HTML（可以用内联 style，不能用脚本和外部资源）渲染成图片，附在合并转发里发出。
+    Markdown 表达不了的排版（卡片、色块、复杂表格）再用它。"""
+    return await _attach_render(ctx, "html", html, caption)
 
 
 ALL_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
@@ -305,6 +329,8 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
     "lookup_glossary": lookup_glossary,
     "get_profile": get_profile,
     "render_mermaid": render_mermaid,
+    "render_markdown": render_markdown,
+    "render_html": render_html,
 }
 
 
