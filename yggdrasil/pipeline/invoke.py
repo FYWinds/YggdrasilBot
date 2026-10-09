@@ -11,7 +11,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic_ai import Agent
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
@@ -245,6 +245,7 @@ class Invocator:
             name=self.handler,
             retries=2,
         )
+        run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         agent_task = asyncio.create_task(
             agent.run(
                 ctx.prompt,
@@ -253,51 +254,38 @@ class Invocator:
                 usage_limits=UsageLimits(
                     request_limit=tools_cfg.request_limit, tool_calls_limit=tools_cfg.tool_calls_limit
                 ),
+                usage=run_usage,
             )
         )
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
+        blocked: Verdict | None = None
         try:
             v_in = await input_task
             await self._save_verdict(v_in)
-            policy = self.settings.moderation
-            if v_in.action != "pass" and policy.input_action_on_hit == "drop":
-                agent_task.cancel()
-                await self._status(self.settings.interaction.review_emoji)
-                if policy.notify_admins_on_input_block:
-                    from yggdrasil.moderation.review import notify_admins
-
-                    await notify_admins(
-                        self.bot,
-                        f"输入被拦截（{v_in.verdict} {v_in.score:.2f} {','.join(v_in.categories)}）\n{mod_text[:500]}",
-                    )
-                await self._finish("blocked_input", None, input_verdict=v_in.as_dict())
-                return "blocked_input"
-
-            result = await agent_task
+            if v_in.action != "pass" and self.settings.moderation.input_action_on_hit == "drop":
+                blocked = v_in
+            else:
+                result = await agent_task
         finally:
             for t in (agent_task, input_task):
                 if not t.done():
                     t.cancel()
+            self._account(resolved_model.label, run_usage, deps)
+
+        if blocked is not None:
+            await self._status(self.settings.interaction.review_emoji)
+            if self.settings.moderation.notify_admins_on_input_block:
+                from yggdrasil.moderation.review import notify_admins
+
+                cats = ",".join(blocked.categories)
+                await notify_admins(
+                    self.bot, f"输入被拦截（{blocked.verdict} {blocked.score:.2f} {cats}）\n{mod_text[:500]}"
+                )
+            await self._finish("blocked_input", None, input_verdict=blocked.as_dict())
+            return "blocked_input"
 
         reply = result.output
-        usage = result.usage
-        self.meta.models.append(resolved_model.label)
-        self.meta.tokens_in += usage.input_tokens or 0
-        self.meta.tokens_out += usage.output_tokens or 0
-        self.meta.tokens_cached += usage.cache_read_tokens or 0
-        for label, tin, tout in deps.vision_tokens:
-            self.meta.models.append(label)
-            self.meta.tokens_in += tin
-            self.meta.tokens_out += tout
-        self.meta.tools = dict(deps.tool_counts)
         self.images = deps.images
-        record_usage(
-            self.handler,
-            resolved_model.label,
-            input_tokens=usage.input_tokens or 0,
-            output_tokens=usage.output_tokens or 0,
-            cached=usage.cache_read_tokens or 0,
-        )
 
         if reply.mode == "done" and deps.actions:
             await self._status(self.settings.interaction.action_emoji)
@@ -376,6 +364,25 @@ class Invocator:
         if not self._slow_marked:
             self._slow_marked = True
             await self._status(self.settings.interaction.slow_tool_emoji)
+
+    def _account(self, model_label: str, usage: RunUsage, deps: Deps) -> None:
+        """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""
+        self.meta.models.append(model_label)
+        self.meta.tokens_in += usage.input_tokens
+        self.meta.tokens_out += usage.output_tokens
+        self.meta.tokens_cached += usage.cache_read_tokens
+        for label, tin, tout in deps.vision_tokens:
+            self.meta.models.append(label)
+            self.meta.tokens_in += tin
+            self.meta.tokens_out += tout
+        self.meta.tools = dict(deps.tool_counts)
+        record_usage(
+            self.handler,
+            model_label,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached=usage.cache_read_tokens,
+        )
 
     async def _stay_silent(self, reply: BotReply) -> str:
         """The model chose not to answer: send nothing, only mark the trigger with silent_emoji."""
