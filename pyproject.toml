@@ -8,7 +8,8 @@ module-root = ""
 
 [project]
 name = "yggdrasil-bot"
-version = "0.1.7"
+# Fixed on purpose: release versions come from git tags (YGG_VERSION build arg).
+version = "0.0.0"
 description = "QQ group-chat LLM bot: TL;DR, replies and background memory"
 readme = "README.md"
 requires-python = ">=3.13, <3.14"
