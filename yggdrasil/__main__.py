@@ -88,6 +88,19 @@ def _health_routes(app: FastAPI) -> None:
             return JSONResponse({"status": "db unavailable", "error": str(e)[:200]}, status_code=503)
         return JSONResponse({"status": "ok", "bots": list(nonebot.get_bots())})
 
+    @app.get("/drainz", include_in_schema=False)
+    async def drainz(max_wait: float = 170) -> dict[str, int]:
+        """preStop hook: hold the pod (and its OneBot connection) until in-flight replies are sent.
+
+        The terminating pod is already out of the Service, so the dashboard is served by the new pod;
+        the connection moves when SIGTERM closes it and NapCat reconnects.
+        """
+        from yggdrasil.bot.inflight import drain
+
+        left = await drain(min(max_wait, 600))
+        LOGGER.info("drained for shutdown; {} tasks still running", left)
+        return {"left": left}
+
 
 def main() -> None:
     nonebot.init(
