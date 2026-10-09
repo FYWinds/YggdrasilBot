@@ -146,7 +146,13 @@ def build_nodes(
     images: list[tuple[bytes, str]] | None = None,
 ) -> list[dict[str, Any]]:
     bodies: list[str] = []
-    for section in reply.sections:
+    sections = list(reply.sections)
+    if len(sections) > cfg.max_sections:
+        # Hard cap behind the prompt's "at most two sections": fold the rest into the last kept one.
+        keep, extra = sections[: cfg.max_sections - 1], sections[cfg.max_sections - 1 :]
+        merged = "\n\n".join(f"{s.title}：{s.content}" if s.title and i else s.content for i, s in enumerate(extra))
+        sections = [*keep, extra[0].model_copy(update={"content": merged})]
+    for section in sections:
         content = section.content if cfg.forward_render == "nested_markdown" else strip_markdown(section.content)
         title = f"【{section.title}】\n" if section.title else ""
         for i, part in enumerate(split_text(content, cfg.node_max_chars)):

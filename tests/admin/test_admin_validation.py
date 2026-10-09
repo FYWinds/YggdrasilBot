@@ -68,8 +68,8 @@ async def test_trigger_roundtrip_and_test_endpoint_unaffected_by_unknown_stored_
 @pytest.mark.parametrize(
     "doc",
     [
-        {"interaction": {"message_interval_s": "soon"}},
-        {"interaction": {"message_interval_s": -1}},
+        {"interaction": {"forward_max_nodes": "many"}},
+        {"interaction": {"forward_max_nodes": 0}},
         {"interaction": {"forward_render": "html"}},
         {"interaction": {"metadata_fields": ["model", "password"]}},
         {"moderation": {"category_rules": {"Jailbreak": {"threshold": 2}}}},
@@ -98,19 +98,16 @@ async def test_global_settings_roundtrip_is_sparse(
         before = await s.get(SettingsDoc, "global")
         before_value = dict(before.value) if before else None
     try:
-        resp = await client.put("/api/settings/global", json={"interaction": {"message_interval_s": 0.5}})
+        resp = await client.put("/api/settings/global", json={"interaction": {"forward_max_nodes": 8}})
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["value"] == {"interaction": {"message_interval_s": 0.5}}
-        assert body["effective"]["interaction"]["message_interval_s"] == 0.5
+        assert body["value"] == {"interaction": {"forward_max_nodes": 8}}
+        assert body["effective"]["interaction"]["forward_max_nodes"] == 8
         # Untouched keys keep their defaults rather than being frozen into the document.
-        assert (
-            body["effective"]["interaction"]["message_max_chars"]
-            == body["defaults"]["interaction"]["message_max_chars"]
-        )
+        assert body["effective"]["interaction"]["node_max_chars"] == body["defaults"]["interaction"]["node_max_chars"]
         assert published == ["settings.update global"]
         got = (await client.get("/api/settings/global")).json()
-        assert got["value"] == {"interaction": {"message_interval_s": 0.5}}
+        assert got["value"] == {"interaction": {"forward_max_nodes": 8}}
     finally:
         async with get_session() as s:
             doc = await s.get(SettingsDoc, "global")

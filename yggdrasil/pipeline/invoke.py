@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.schema import BotReply, Section
+from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import tools_for
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
@@ -24,7 +24,7 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import Meta, react, send_forward, send_text, strip_markdown
+from yggdrasil.delivery.send import Meta, react, send_forward, send_text
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
@@ -209,8 +209,7 @@ class Invocator:
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
                 tools=tools_cfg.enabled,
                 style=render("style_rules"),
-                max_messages=self.settings.interaction.messages_max_count,
-                max_chars=self.settings.interaction.message_max_chars,
+                data_rules=render("data_rules", nonce=ctx.nonce),
             ),
             tools=tools_for(tools_cfg.enabled),
             name=self.handler,
@@ -324,14 +323,6 @@ class Invocator:
             nickname=ident.nickname,
         )
 
-    async def _send_messages(self, messages: list[str]) -> None:
-        """Send short messages one by one like a person typing; only the first may quote."""
-        interval = self.settings.interaction.message_interval_s
-        for i, text in enumerate(messages):
-            if i and interval:
-                await asyncio.sleep(interval)
-            await self._send_text(text, allow_quote=i == 0)
-
     def _mark_ack(self, kind: str) -> None:
         """Record the first visible response's latency."""
         self.ack_kind = kind
@@ -364,23 +355,6 @@ class Invocator:
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
         ident = await identity(self.bot)
-        messages = [m for m in (strip_markdown(m) for m in reply.messages) if m]
-        fits = len(messages) <= cfg.messages_max_count and all(len(m) <= cfg.message_max_chars for m in messages)
-        if reply.mode == "messages" and not reply.sections:
-            # tldr always answers in a forward (it was already acknowledged with a reaction).
-            if messages and fits and not self.images and self.handler != "tldr":
-                await self._send_messages(messages)
-                return
-            # Too long for chat-style delivery: fall back to a forward with the same text.
-            reply = reply.model_copy(update={"sections": [Section(content="\n".join(messages))], "messages": []})
-            messages = []
-        if self.handler == "tldr":
-            messages = []  # no lead line before a tldr forward
-        lead, rest = (messages[0], messages[1:]) if messages else (None, [])
-        if rest:
-            reply = reply.model_copy(update={"sections": [Section(content="\n".join(rest)), *reply.sections]})
-        if lead:
-            await self._send_text(lead)
         self.meta.total_s = self.elapsed()
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
         await send_forward(
