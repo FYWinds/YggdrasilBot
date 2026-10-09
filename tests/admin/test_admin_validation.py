@@ -6,8 +6,10 @@ import pytest
 from sqlalchemy import delete, select
 
 from tests.admin.conftest import ADMIN
-from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SettingsDoc
+from yggdrasil.admin import providers as providers_api
+from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SettingsDoc, TaskRoute
 from yggdrasil.db.session import get_session
+from yggdrasil.llm.catalog import Catalog
 
 VALID_TRIGGER = {"handler": "tldr", "match_type": "regex", "patterns": [r"总结最近(\d+)条"], "arg_template": "-n {0}"}
 
@@ -199,3 +201,63 @@ async def _audit_details(provider_id: int) -> list[dict]:
             )
         )
         return list(rows.all())
+
+
+_CATALOG = Catalog(
+    {
+        "anthropic": {"models": {"claude-x": {"modalities": {"input": ["text", "image"]}, "tool_call": True}}},
+        "acme": {"models": {"text-only": {"modalities": {"input": ["text"]}, "tool_call": False}}},
+    }
+)
+
+
+async def test_aliases_resolve_caps_and_routes_reject_incapable_models(
+    client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _load() -> Catalog:
+        return _CATALOG
+
+    monkeypatch.setattr(providers_api, "load_catalog", _load)
+    name = f"pytest-{uuid.uuid4().hex[:8]}"
+    resp = await client.post("/api/providers", json={"name": name, "base_url": "http://127.0.0.1:9/v1"})
+    pid = resp.json()["id"]
+    try:
+        async with get_session() as s:
+            row = await s.get(Provider, pid)
+            assert row is not None
+            row.models = ["gw/claude-x", "gw/text-only", "house-model"]
+        res = await client.put(
+            f"/api/providers/{pid}/aliases", json={"aliases": {"house-model": "anthropic/claude-x", "ghost": "no/such"}}
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        caps = body["provider"]["model_caps"]
+        assert set(caps) == {"gw/claude-x", "gw/text-only", "house-model"}
+        assert caps["house-model"]["vision"] is True
+        assert body["unmatched"] == ["ghost"]
+
+        before = await _route("vision")
+        bad = await client.put("/api/routes/vision", json={"provider_id": pid, "model": "gw/text-only"})
+        assert bad.status_code == 422
+        assert "不支持看图" in bad.text
+        bad_fb = await client.put(
+            "/api/routes/chat",
+            json={
+                "provider_id": pid,
+                "model": "gw/claude-x",
+                "fallback_provider_id": pid,
+                "fallback_model": "gw/text-only",
+            },
+        )
+        assert bad_fb.status_code == 422
+        assert "不支持工具调用" in bad_fb.text
+        assert await _route("vision") == before
+    finally:
+        async with get_session() as s:
+            await s.execute(delete(Provider).where(Provider.id == pid))
+
+
+async def _route(task: str) -> tuple[int, str] | None:
+    async with get_session() as s:
+        r = await s.get(TaskRoute, task)
+        return (r.provider_id, r.model) if r else None

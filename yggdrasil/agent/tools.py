@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import io
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -9,24 +10,28 @@ from functools import wraps
 from typing import Any
 
 import httpx
-from pydantic_ai import Agent, BinaryContent, RunContext, Tool
+from PIL import Image
+from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.deps import Deps, Handle
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.ingest.normalize import normalize
-from yggdrasil.llm.registry import TaskNotConfigured, chat_model
+from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
 from yggdrasil.prompts import render
 from yggdrasil.tools.errors import ToolError
 
 _MAX_DOWNLOAD = 64 * 1024 * 1024
 
 
-def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[str]]], Callable[P, Awaitable[str]]]:
-    def deco(fn: Callable[P, Awaitable[str]]) -> Callable[P, Awaitable[str]]:
+type ToolResult = str | ToolReturn
+
+
+def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], Callable[P, Awaitable[ToolResult]]]:
+    def deco(fn: Callable[P, Awaitable[ToolResult]]) -> Callable[P, Awaitable[ToolResult]]:
         @wraps(fn)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolResult:
             ctx = args[0]
             assert isinstance(ctx, RunContext)
             ctx.deps.tool_counts[name] += 1
@@ -112,6 +117,28 @@ def _media_type(blob: bytes) -> str:
     return "image/jpeg"
 
 
+_IMAGE_MAX_SIDE = 1568  # Claude downsizes anything larger; also keeps payloads well under the 5 MB cap
+_IMAGE_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _fit_image(blob: bytes) -> bytes:
+    """Downscale/re-encode images that are too large or in a format models don't take (BMP, ...)."""
+    try:
+        img = Image.open(io.BytesIO(blob))
+        too_big = max(img.size) > _IMAGE_MAX_SIDE or len(blob) > _IMAGE_MAX_BYTES
+        if not too_big and img.format in ("PNG", "JPEG", "GIF", "WEBP"):
+            return blob
+        img.thumbnail((_IMAGE_MAX_SIDE, _IMAGE_MAX_SIDE))
+        out = io.BytesIO()
+        if img.mode in ("RGBA", "LA", "P"):
+            img.convert("RGBA").save(out, "PNG", optimize=True)
+        else:
+            img.convert("RGB").save(out, "JPEG", quality=85)
+        return out.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return blob  # not decodable here; let the model API judge
+
+
 async def _vision(ctx: RunContext[Deps], images: list[bytes], question: str) -> str:
     resolved = chat_model("vision")
     agent = Agent(resolved.model, instructions=render("vision_system"), name="vision")
@@ -175,12 +202,18 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> str:
 
 
 @_tool("view_image")
-async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> str:
-    """查看图片：描述内容并转写文字。参数是 img#N 句柄，可附带具体问题。"""
+async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> ToolResult:
+    """查看图片，参数是 img#N 句柄，可附带具体问题。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
     h = _handle(ctx, handle, "image")
     blob, _ = await _media_bytes(ctx, h, 20 * 1024 * 1024)
+    blob = await asyncio.to_thread(_fit_image, blob)
+    if sees_images(ctx.deps.task):
+        return ToolReturn(
+            return_value=f"{handle} 的原图附在下一条消息里，直接看图。",
+            content=[f"{handle}：", BinaryContent(data=blob, media_type=_media_type(blob))],
+        )
     try:
-        return await _vision(ctx, [blob], question)
+        return "（以下是另一个模型写的图片描述）\n" + await _vision(ctx, [blob], question)
     except TaskNotConfigured:
         result = await ctx.deps.api.ocr_image(image=str(h.data.get("url") or h.data.get("file")))
         return "（无视觉模型，以下为 OCR 结果）\n" + "\n".join(t.text for t in result.texts)
@@ -320,7 +353,7 @@ async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> st
     return await _attach_render(ctx, "html", html, caption)
 
 
-ALL_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
+ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
     "read_url": read_url,
     "web_search": web_search,
     "read_file": read_file,

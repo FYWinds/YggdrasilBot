@@ -72,8 +72,11 @@ async def provider_refresh(args: argparse.Namespace) -> None:
         p.models = sorted(m["id"] for m in resp.json().get("data", []))
         from datetime import UTC, datetime
 
+        from yggdrasil.llm.catalog import load_catalog
+
         p.models_fetched_at = datetime.now(UTC)
-        _out(p.name, json.dumps(p.models, ensure_ascii=False))
+        p.model_caps = (await load_catalog()).resolve(p.models, p.model_aliases or {})
+        _out(p.name, json.dumps(p.models, ensure_ascii=False), f"caps={len(p.model_caps)}")
     await _publish(f"provider {args.name} models")
 
 

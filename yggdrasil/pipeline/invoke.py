@@ -191,7 +191,13 @@ class Invocator:
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
         deps = Deps(
-            self.api, self.group_id, self.event.user_id, self.settings, ctx.handles, on_slow_tool=self._mark_slow
+            self.api,
+            self.group_id,
+            self.event.user_id,
+            self.settings,
+            ctx.handles,
+            self.handler,
+            on_slow_tool=self._mark_slow,
         )
         tools_cfg = self.settings.tools
         group_name = ""
