@@ -30,6 +30,8 @@ def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[str]]], Callable[P,
             ctx = args[0]
             assert isinstance(ctx, RunContext)
             ctx.deps.tool_counts[name] += 1
+            if ctx.deps.on_slow_tool is not None and name in ctx.deps.settings.tools.slow_tools:
+                await ctx.deps.on_slow_tool()
             started = time.perf_counter()
             outcome = "ok"
             try:

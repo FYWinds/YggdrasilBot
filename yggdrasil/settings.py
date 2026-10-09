@@ -35,10 +35,13 @@ class PersonaSettings(BaseModel):
 
 class InteractionSettings(BaseModel):
     ack_delay_s: float = Field(default=4.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
-    working_emoji: str = Field(default="129300", description="tldr 开始处理时贴在目标消息上的表情（🤔），完成后撤回")
-    done_emoji: str = Field(default="127881", description="tldr 完成时贴的表情（🎉）；留空不贴")
-    silent_emoji: str = Field(default="479", description="bot 决定不回复时贴在触发消息上的表情；留空不贴")
-    input_blocked_emoji: str = Field(default="10060", description="输入被审核拦截时 react 的表情（❌）")
+    # Status reactions on the trigger message; added only, never removed (frequent removals look like
+    # automation to QQ's risk control). Empty disables one.
+    received_emoji: str = Field(default="424", description="收到请求后立刻贴的表情")
+    slow_tool_emoji: str = Field(default="314", description="第一次调用耗时工具（见 tools.slow_tools）时贴的表情")
+    done_emoji: str = Field(default="127881", description="回复完成时贴的表情（🎉）")
+    silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
+    review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
     sticker_ack: bool = Field(default=True, description="快速响应允许发表情包")
     messages_max_count: int = Field(default=3, ge=1, le=10, description="短消息模式最多连发几条，超出改用合并转发")
     message_max_chars: int = Field(default=20, ge=1, description="短消息模式下每条的字数上限，任一条超出就改用合并转发")
@@ -48,8 +51,8 @@ class InteractionSettings(BaseModel):
     forward_render: Literal["plain", "nested_markdown"] = Field(
         default="plain", description="plain：去掉 markdown 语法；nested_markdown：双层合并转发里发 markdown 段"
     )
-    failure_emoji: str = Field(default="128531", description="agent 出错时 react 的表情（😓）")
-    ratelimited_emoji: str = Field(default="9203", description="被限流时 react 的表情（⏳）；留空不 react")
+    failure_emoji: str = Field(default="5", description="出错时贴的表情")
+    ratelimited_emoji: str = Field(default="38", description="被限流或排队超时时贴的表情")
     quote_reply: Literal["always", "when_busy", "never"] = Field(
         default="when_busy",
         description="回复时是否引用触发消息：always 总是；when_busy 触发消息之后群里已有别人发言才引用；never 从不",
@@ -121,6 +124,19 @@ class ToolSettings(BaseModel):
             "render_markdown",
             "render_html",
         ]
+    )
+    slow_tools: list[str] = Field(
+        default_factory=lambda: [
+            "read_url",
+            "web_search",
+            "read_file",
+            "view_image",
+            "expand_forward",
+            "render_mermaid",
+            "render_markdown",
+            "render_html",
+        ],
+        description="耗时工具：第一次调用时贴 interaction.slow_tool_emoji",
     )
     read_url_max_chars: int = 16000
     browser_fallback: bool = True

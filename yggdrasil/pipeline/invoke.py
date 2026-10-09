@@ -78,7 +78,7 @@ class Invocator:
         self.meta = Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
-        self._ack_reaction: tuple[int, str] | None = None
+        self._slow_marked = False
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
 
@@ -93,14 +93,15 @@ class Invocator:
             self.meta.trace_id = current_trace_id()
             status, error = "failed", None
             try:
+                if await self._status(self.settings.interaction.received_emoji):
+                    self._mark_ack("react")
                 status = await self._run()
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:1000]
                 LOGGER.exception("invocation {} failed", self.handler)
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
-                await self._clear_working()
-                await react(self.api, self.event.message_id, self.settings.interaction.failure_emoji)
+                await self._status(self.settings.interaction.failure_emoji)
             finally:
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
@@ -189,7 +190,9 @@ class Invocator:
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
-        deps = Deps(self.api, self.group_id, self.event.user_id, self.settings, ctx.handles)
+        deps = Deps(
+            self.api, self.group_id, self.event.user_id, self.settings, ctx.handles, on_slow_tool=self._mark_slow
+        )
         tools_cfg = self.settings.tools
         group_name = ""
         if self.group_id is not None:
@@ -226,10 +229,7 @@ class Invocator:
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
         recent_tail = ctx.prompt[-1500:]
         ack_task: asyncio.Task[AckDecision] | None = None
-        if self.handler == "tldr":
-            # Immediate feedback on the message being summarized; swapped for done_emoji at the end.
-            await self._set_working(ctx.target.qq_message_id)
-        else:
+        if self.handler != "tldr":
             ack_task = asyncio.create_task(
                 ack_mod.draft_ack(ctx.request_text or ctx.trigger.text, recent_tail, self.settings)
             )
@@ -241,8 +241,7 @@ class Invocator:
                 agent_task.cancel()
                 if ack_task is not None:
                     ack_task.cancel()
-                await self._clear_working()
-                await react(self.api, self.event.message_id, self.settings.interaction.input_blocked_emoji)
+                await self._status(self.settings.interaction.review_emoji)
                 if policy.notify_admins_on_input_block:
                     from yggdrasil.moderation.review import notify_admins
 
@@ -291,7 +290,7 @@ class Invocator:
 
         if v_out.action == "pass":
             await self.deliver(reply)
-            await self._swap_working(self.settings.interaction.done_emoji)
+            await self._status(self.settings.interaction.done_emoji)
             await self._finish("ok", None, **verdicts)
             return "ok"
         if v_out.action == "review" and self.group_id is not None:
@@ -313,11 +312,10 @@ class Invocator:
                     notice = await ack_mod.review_notice(mod_text, self.settings)
                     if notice:
                         await self._send_text(notice)
-            await self._clear_working()
+            await self._status(self.settings.interaction.review_emoji)
             await self._finish("review", None, **verdicts)
             return "review"
-        await self._clear_working()
-        await react(self.api, self.event.message_id, self.settings.interaction.input_blocked_emoji)
+        await self._status(self.settings.interaction.review_emoji)
         await self._finish("rejected", None, **verdicts)
         return "rejected"
 
@@ -376,43 +374,31 @@ class Invocator:
                 self._mark_ack("text")
 
     def _mark_ack(self, kind: str) -> None:
+        """Record the first visible response's latency; ack_kind keeps the latest form."""
         self.ack_kind = kind
-        self.meta.ack_s = self.elapsed()
-        INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.handler, "kind": kind})
+        if self.meta.ack_s is None:
+            self.meta.ack_s = self.elapsed()
+            INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.handler, "kind": kind})
 
-    async def _set_working(self, message_id: int) -> None:
-        emoji = self.settings.interaction.working_emoji
+    async def _status(self, emoji: str) -> bool:
+        """Add a status reaction to the trigger message. Reactions are never removed: frequent
+        add/remove pairs look automated to QQ's risk control."""
         if not emoji:
-            return
-        await react(self.api, message_id, emoji)
-        self._ack_reaction = (message_id, emoji)
-        self._mark_ack("react")
+            return False
+        await react(self.api, self.event.message_id, emoji)
+        return True
 
-    async def _clear_working(self) -> None:
-        if self._ack_reaction is None:
-            return
-        message_id, emoji = self._ack_reaction
-        self._ack_reaction = None
-        with contextlib.suppress(Exception):
-            await self.api.set_msg_emoji_like(message_id=message_id, emoji_id=emoji, set=False)
-
-    async def _swap_working(self, emoji: str) -> None:
-        """Replace the working reaction with ``emoji`` on the same message (no-op without one)."""
-        if self._ack_reaction is None:
-            return
-        message_id = self._ack_reaction[0]
-        await self._clear_working()
-        if emoji:
-            await react(self.api, message_id, emoji)
+    async def _mark_slow(self) -> None:
+        if not self._slow_marked:
+            self._slow_marked = True
+            await self._status(self.settings.interaction.slow_tool_emoji)
 
     async def _stay_silent(self, reply: BotReply) -> str:
-        """The model chose not to answer: drop the working reaction and mark the trigger with silent_emoji."""
+        """The model chose not to answer: send nothing, only mark the trigger with silent_emoji."""
         reason = (reply.silent_reason or "").strip()[:200]
         LOGGER.info("{} stays silent: {}", self.handler, reason or "(no reason)")
         trace.get_current_span().set_attribute("ygg.silent_reason", reason)
-        await self._clear_working()
-        if self.settings.interaction.silent_emoji:
-            await react(self.api, self.event.message_id, self.settings.interaction.silent_emoji)
+        await self._status(self.settings.interaction.silent_emoji)
         await self._finish("silent", None, reply=reply.model_dump())
         return "silent"
 
