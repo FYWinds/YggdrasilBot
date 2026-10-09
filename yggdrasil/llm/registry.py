@@ -61,6 +61,8 @@ _SETTING_KEYS = {
     "parallel_tool_calls",
     "extra_body",
     "extra_headers",
+    # pydantic-ai's provider-neutral level (minimal … xhigh); validated in admin/routes.py.
+    "thinking",
 }
 
 
