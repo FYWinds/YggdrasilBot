@@ -61,6 +61,15 @@ class LoguruHandler(logging.Handler):
         LOGGER.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
+_PROBE_PATHS = frozenset({"/healthz", "/readyz"})
+
+
+def _not_probe(record: logging.LogRecord) -> bool:
+    """uvicorn access records carry (client, method, path, version, status) as args."""
+    args = record.args
+    return not (isinstance(args, tuple) and len(args) >= 3 and args[2] in _PROBE_PATHS)
+
+
 def setup_logging() -> None:
     """Idempotent; call once per process before anything logs."""
     global _configured
@@ -85,6 +94,8 @@ def setup_logging() -> None:
     # Chatty libraries.
     for name in ("httpx", "httpcore", "openai._base_client", "sqlalchemy.engine"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # kubelet probes every 10s would drown the access log.
+    logging.getLogger("uvicorn.access").addFilter(_not_probe)
 
 
 __all__ = ["LOGGER", "LoguruHandler", "setup_logging"]
