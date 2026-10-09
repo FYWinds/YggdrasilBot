@@ -1,5 +1,6 @@
 """Assemble the user prompt for chat / tldr runs from the event and memory."""
 
+import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,23 @@ class BuiltContext:
     handles: Handles
     request_text: str
     mentioned: list[int] = field(default_factory=list)
+    # Random suffix of every data block's tag (<最近群聊-ab12cd>); the system prompt names it so
+    # a pasted "</最近群聊>" can't fake the end of a block.
+    nonce: str = ""
+
+
+class _Blocks:
+    def __init__(self) -> None:
+        self.nonce = secrets.token_hex(3)
+        self.parts: list[str] = []
+
+    def add(self, tag: str, body: str, attrs: str = "") -> None:
+        name = f"{tag}-{self.nonce}"
+        body = body.replace(self.nonce, "*" * len(self.nonce))
+        self.parts.append(f"<{name}{attrs}>\n{body}\n</{name}>")
+
+    def note(self, text: str) -> None:
+        self.parts.append(text)
 
 
 def _segments(message: Any) -> list[dict[str, Any]]:
@@ -163,10 +181,12 @@ async def build_context(
     target = await target_message(event, resolved, self_id)
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     cfg = settings.context
-    blocks: list[str] = []
+    blocks = _Blocks()
 
     def name_of(user_id: int, name: str, is_self: bool) -> str:
-        return f"{bot_name}(你)" if is_self else f"{name}({user_id})"
+        # Names go into tag attributes: drop characters that could close the attribute or tag.
+        clean = name.translate(str.maketrans("", "", '<>"'))
+        return f"{bot_name}(你)" if is_self else f"{clean}({user_id})"
 
     mentioned = normalize(trigger.segments).mentions
     if group_id is not None:
@@ -184,13 +204,14 @@ async def build_context(
             if len(text) > cfg.max_context_chars:
                 text = text[-cfg.max_context_chars :]
                 text = text[text.find("\n") + 1 :]
-            blocks.append(f"<最近群聊>\n{text}\n</最近群聊>")
+            blocks.add("最近群聊", text)
 
     if target.qq_message_id != trigger.qq_message_id:
         suffix = _attach(handles, target)
-        blocks.append(
-            f'<被引用的消息 发送者="{name_of(target.user_id, target.sender_name, target.is_self)}" '
-            f'时间="{_ts(target.sent_at)}">\n{target.text}{suffix}\n</被引用的消息>'
+        blocks.add(
+            "被引用的消息",
+            f"{target.text}{suffix}",
+            f' 发送者="{name_of(target.user_id, target.sender_name, target.is_self)}" 时间="{_ts(target.sent_at)}"',
         )
     trigger_suffix = _attach(handles, trigger)
 
@@ -205,7 +226,7 @@ async def build_context(
             if profiles:
                 lines = [f"- {p.display_name}({p.user_id})：{p.summary}" for p in profiles if p.summary]
                 if lines:
-                    blocks.append("<相关群友画像>\n" + "\n".join(lines) + "\n</相关群友画像>")
+                    blocks.add("相关群友画像", "\n".join(lines))
         if cfg.include_glossary:
             try:
                 hits = await _glossary_hits(group_id, [trigger.text, target.text, request_text])
@@ -213,7 +234,7 @@ async def build_context(
                 LOGGER.exception("glossary lookup failed")
                 hits = []
             if hits:
-                blocks.append("<群内黑话>\n" + "\n".join(f"- {t.term}：{t.definition}" for t in hits) + "\n</群内黑话>")
+                blocks.add("群内黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
         if cfg.include_open_topics:
             try:
                 topics = await search.open_topics(group_id, limit=5)
@@ -221,15 +242,17 @@ async def build_context(
                 LOGGER.exception("open_topics failed")
                 topics = []
             if topics:
-                blocks.append(
-                    "<进行中的话题>\n" + "\n".join(f"- {t.title}：{t.summary}" for t in topics) + "\n</进行中的话题>"
-                )
+                blocks.add("进行中的话题", "\n".join(f"- {t.title}：{t.summary}" for t in topics))
 
     available = ", ".join(f"{k}({v.kind})" for k, v in handles.items.items())
-    blocks.append(
-        f'<请求 发送者="{name_of(trigger.user_id, trigger.sender_name, False)}">\n'
-        f"{request_text or trigger.text}{trigger_suffix}\n</请求>"
-    )
+    sender = f' 发送者="{name_of(trigger.user_id, trigger.sender_name, False)}"'
+    if resolved.handler == "tldr" and target.qq_message_id != trigger.qq_message_id and request_text:
+        # "tldr <words>" on a quoted message: the words say what to focus on.
+        blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
+    else:
+        blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
     if available:
-        blocks.append(f"可用句柄：{available}")
-    return BuiltContext("\n\n".join(blocks), target, trigger, handles, request_text, mentioned)
+        blocks.note(f"可用句柄：{available}")
+    return BuiltContext(
+        "\n\n".join(blocks.parts), target, trigger, handles, request_text, mentioned, nonce=blocks.nonce
+    )

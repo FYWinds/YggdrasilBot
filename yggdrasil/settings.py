@@ -10,11 +10,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-class PersonaExample(BaseModel):
-    user: str
-    bot: str
-
-
 class PersonaSettings(BaseModel):
     name: str = Field(default="尤克特拉希尔", description="bot 的名字，出现在提示词里")
     aliases: list[str] = Field(
@@ -23,13 +18,6 @@ class PersonaSettings(BaseModel):
     description: str = Field(
         default="一个懂行、靠谱、有点毒舌但心软的老群友。说话轻松口语化，偶尔吐槽，但从不敷衍正经问题。",
         description="人设：性格、说话风格、口癖等，会写进所有对话类提示词",
-    )
-    examples: list[PersonaExample] = Field(
-        default_factory=lambda: [
-            PersonaExample(user="这个报错啥意思", bot="依赖版本对不上了，你把 lock 文件删了重装一下试试。"),
-            PersonaExample(user="中午吃什么", bot="这种世纪难题别问我，抛硬币吧。"),
-        ],
-        description="对话示例，用来固定语气（每条 bot 回复应符合风格规则）",
     )
 
 
@@ -41,10 +29,8 @@ class InteractionSettings(BaseModel):
     done_emoji: str = Field(default="127881", description="回复完成时贴的表情（🎉）")
     silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
     review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
-    messages_max_count: int = Field(default=3, ge=1, le=10, description="短消息模式最多连发几条，超出改用合并转发")
-    message_max_chars: int = Field(default=20, ge=1, description="短消息模式下每条的字数上限，任一条超出就改用合并转发")
-    message_interval_s: float = Field(default=0.3, ge=0, description="连发短消息之间的间隔")
     forward_max_nodes: int = Field(default=12, ge=1, le=60)
+    max_sections: int = Field(default=2, ge=1, le=10, description="一次回复最多几节，多出的节合并进最后一节")
     node_max_chars: int = Field(default=1500, ge=200)
     forward_render: Literal["plain", "nested_markdown"] = Field(
         default="plain", description="plain：去掉 markdown 语法；nested_markdown：双层合并转发里发 markdown 段"

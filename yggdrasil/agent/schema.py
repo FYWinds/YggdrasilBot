@@ -16,15 +16,8 @@ class SourceRef(BaseModel):
 class BotReply(BaseModel):
     """The structured answer of the chat / tldr agents."""
 
-    mode: Literal["messages", "forward", "silent"] = Field(
-        description=(
-            "messages：像群友一样发 1–3 条短消息；forward：内容确实很长或结构化时用合并转发；"
-            "silent：不回复（不是在跟你说话、无意义或不该接的请求），什么都不发"
-        )
-    )
-    messages: list[str] = Field(
-        default_factory=list,
-        description="mode=messages 时依次发送的短消息，每条一句话；mode=forward 时可选一条在转发前发送的引导语",
+    mode: Literal["forward", "silent"] = Field(
+        description="forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）"
     )
     title: str | None = Field(default=None, description="mode=forward 时合并转发卡片的标题（≤20 字）")
     sections: list[Section] = Field(default_factory=list, description="mode=forward 时的各节")
@@ -34,7 +27,7 @@ class BotReply(BaseModel):
     )
 
     def full_text(self) -> str:
-        parts = list(self.messages)
+        parts: list[str] = []
         for s in self.sections:
             parts.append(f"{s.title or ''}\n{s.content}")
         return "\n\n".join(p for p in parts if p.strip())

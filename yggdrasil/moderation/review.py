@@ -134,28 +134,16 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
                 )
             else:
                 reply = BotReply.model_validate(item.reply)
-                lead = reply.messages[0] if reply.messages else None
-                if lead:
-                    await send_text(
-                        api,
-                        group_id=item.group_id,
-                        user_id=item.user_id,
-                        reply_to=item.trigger_qq_message_id,
-                        text=lead if reply.mode == "forward" else "\n".join(reply.messages),
-                        self_id=ident.self_id,
-                        nickname=ident.nickname,
-                    )
-                if reply.mode == "forward" or reply.sections:
-                    await send_forward(
-                        api,
-                        group_id=item.group_id,
-                        user_id=item.user_id,
-                        reply=reply,
-                        meta_text=f"⚙ 已由管理员审核通过（R{review_id}）",
-                        cfg=settings.interaction,
-                        self_id=ident.self_id,
-                        nickname=ident.nickname,
-                    )
+                await send_forward(
+                    api,
+                    group_id=item.group_id,
+                    user_id=item.user_id,
+                    reply=reply,
+                    meta_text=f"⚙ 已由管理员审核通过（R{review_id}）",
+                    cfg=settings.interaction,
+                    self_id=ident.self_id,
+                    nickname=ident.nickname,
+                )
         item.status = {"approve": "approved", "reject": "rejected", "edit": "approved"}[action]
         item.decided_by = actor
         item.decided_at = datetime.now(UTC)

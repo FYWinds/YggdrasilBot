@@ -76,7 +76,14 @@ def test_forward_nodes_order_sections_images_sources_metadata():
 
 def test_forward_nodes_are_capped_by_merging_the_tail():
     reply = BotReply(mode="forward", sections=[Section(content=f"s{i}") for i in range(20)])
-    cfg = InteractionSettings(forward_max_nodes=5)
+    cfg = InteractionSettings(forward_max_nodes=5, max_sections=10)
     nodes = build_nodes(reply, "meta", cfg, self_id=1, nickname="b")
     assert len(nodes) == 5
     assert "s19" in nodes[3]["data"]["content"][0]["data"]["text"]
+
+
+def test_sections_over_the_cap_are_folded_into_the_last_one():
+    reply = BotReply(mode="forward", sections=[Section(title=t, content=t * 2) for t in "abcd"])
+    nodes = build_nodes(reply, None, InteractionSettings(max_sections=2), self_id=1, nickname="b")
+    texts = [n["data"]["content"][0]["data"]["text"] for n in nodes]
+    assert texts == ["【a】\naa", "【b】\nbb\n\nc：cc\n\nd：dd"]
