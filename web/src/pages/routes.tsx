@@ -106,6 +106,11 @@ export function RoutesPage() {
                         quiet
                         caps={capsOf(providers.data?.find((p) => p.id === row.route?.provider_id), row.route.model)}
                       />
+                      {thinkingOf(row.route.params) && (
+                        <Badge variant="outline" className="mt-1">
+                          思考 {thinkingOf(row.route.params)}
+                        </Badge>
+                      )}
                     </>
                   ) : (
                     <Badge variant="outline">未配置</Badge>
@@ -151,6 +156,14 @@ export function RoutesPage() {
       <EmbedSpaces providers={providers.data ?? []} />
     </div>
   );
+}
+
+// No "off": Claude 5 can't disable thinking (see _thinking_needs in admin/routes.py).
+const THINKING_OPTIONS = ["minimal", "low", "medium", "high", "xhigh"].map((v) => ({ value: v, label: v }));
+
+function thinkingOf(params: Record<string, unknown> | undefined): string | null {
+  const t = params?.thinking;
+  return typeof t === "string" ? t : null;
 }
 
 function RouteDialog({
@@ -214,6 +227,24 @@ function RouteDialog({
               />
             </Field>
           </div>
+          <Field
+            label="思考强度"
+            hint={
+              capsOf(providers.find((p) => p.id === form.provider_id), form.model)?.reasoning === false
+                ? "models.dev 标记这个模型不支持思考，只能用默认"
+                : "默认不传，由模型决定；开启后更慢、更贵。兜底模型用同一个设置。"
+            }
+          >
+            <OptionSelect
+              value={thinkingOf(form.params)}
+              onChange={(v) => {
+                const { thinking: _, ...rest } = form.params ?? {};
+                setForm({ ...form, params: v === null ? rest : { ...rest, thinking: v } });
+              }}
+              noneLabel="默认"
+              options={THINKING_OPTIONS}
+            />
+          </Field>
           <Field label="参数" hint="temperature、max_tokens、top_p、timeout、seed、extra_body…">
             <JsonEditor
               rows={5}
