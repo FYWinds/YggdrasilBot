@@ -88,6 +88,8 @@ Open https://ygg.example.com (login as `admin@example.com`, bootstrap admin). In
 dashboard:
 
 1. Providers: add the LLM endpoint(s) and the in-cluster inference services:
+   - kami (new-api) `https://kami.example.com/v1` with format **anthropic**: its
+     OpenAI endpoint rejects tool calls for Claude models.
    - embeddings `http://yggdrasil-tei.yggdrasil.svc:8080/v1` (`qwen3-embedding-0.6b`)
    - rerank `http://yggdrasil-rerank.yggdrasil.svc:8080/v1` (`qwen3-reranker-0.6b`)
    - guard `http://yggdrasil-guard.yggdrasil.svc:8080/v1` (`qwen3guard-gen-0.6b`)
