@@ -48,7 +48,9 @@ class InteractionSettings(BaseModel):
 
 
 class ModerationCategoryRule(BaseModel):
-    threshold: float = Field(default=0.5, ge=0, le=1)
+    # Score = P(Unsafe) + 0.5 * P(Controversial): a confident "Controversial" sits near 0.5, so 0.8
+    # only acts on fairly confident "Unsafe" verdicts and trusts the main model with gray areas.
+    threshold: float = Field(default=0.8, ge=0, le=1)
     action: Literal["pass", "review", "drop"] = "review"
 
 
@@ -59,8 +61,8 @@ class ModerationSettings(BaseModel):
     default_rule: ModerationCategoryRule = Field(default_factory=ModerationCategoryRule)
     category_rules: dict[str, ModerationCategoryRule] = Field(
         default_factory=lambda: {
-            "Politically Sensitive Topics": ModerationCategoryRule(threshold=0.4, action="review"),
-            "Sexual Content or Sexual Acts": ModerationCategoryRule(threshold=0.4, action="review"),
+            "Politically Sensitive Topics": ModerationCategoryRule(threshold=0.8, action="review"),
+            "Sexual Content or Sexual Acts": ModerationCategoryRule(threshold=0.8, action="review"),
             "Jailbreak": ModerationCategoryRule(threshold=0.6, action="drop"),
         },
         description="按 Qwen3Guard 类别覆盖阈值和动作",
