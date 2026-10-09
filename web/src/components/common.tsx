@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { XIcon } from "lucide-react";
+import { format } from "date-fns";
+import { CalendarIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import type { DateRange } from "react-day-picker";
+import { zhCN } from "react-day-picker/locale";
 import { listGroupsOptions } from "@/client/@tanstack/react-query.gen";
 import {
   AlertDialog,
@@ -15,10 +18,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { errorMessage } from "@/lib/api";
 import { fmtJson, parseJson } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -82,7 +90,7 @@ export function TagInput({
     setDraft("");
   };
   return (
-    <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border px-2 py-1">
+    <div className="flex min-h-8 w-full flex-wrap items-center gap-1.5 rounded-lg border border-input px-2 py-1 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30">
       {value.map((tag) => (
         <Badge key={tag} variant="secondary" className="gap-1">
           {tag}
@@ -92,7 +100,7 @@ export function TagInput({
         </Badge>
       ))}
       <input
-        className="min-w-24 flex-1 bg-transparent text-sm outline-none"
+        className="min-w-24 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         value={draft}
         placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
@@ -121,22 +129,13 @@ export function MultiToggle({
   onChange: (v: string[]) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {options.map((o) => {
-        const on = value.includes(o);
-        return (
-          <Button
-            key={o}
-            type="button"
-            size="sm"
-            variant={on ? "default" : "outline"}
-            onClick={() => onChange(on ? value.filter((v) => v !== o) : [...value, o])}
-          >
-            {o}
-          </Button>
-        );
-      })}
-    </div>
+    <ToggleGroup type="multiple" variant="outline" size="sm" spacing={1.5} className="flex-wrap" value={value} onValueChange={onChange}>
+      {options.map((o) => (
+        <ToggleGroupItem key={o} value={o}>
+          {o}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
   );
 }
 
@@ -339,5 +338,69 @@ export function Pre({ value, className }: { value: unknown; className?: string }
     <pre className={cn("max-h-80 overflow-auto rounded-lg bg-muted p-3 text-xs", className)}>
       {typeof value === "string" ? value : fmtJson(value)}
     </pre>
+  );
+}
+
+/** Hover hint for a single element (instead of the native title attribute). */
+export function Hint({ content, children }: { content: ReactNode; children: ReactNode }) {
+  if (!content) return children;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent className="max-w-md whitespace-pre-wrap">{content}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Collapsed-by-default section with a clickable label (instead of <details>). */
+export function Disclosure({ label, children }: { label: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
+          <ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+          {label}
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2">{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** Day range; `from`/`to` are whole days (callers widen `to` to its end of day). */
+export function DateRangePicker({
+  value,
+  onChange,
+  placeholder = "选择日期范围",
+  className,
+}: {
+  value: DateRange | undefined;
+  onChange: (v: DateRange | undefined) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  const label = value?.from
+    ? `${format(value.from, "yyyy-MM-dd")} — ${value.to ? format(value.to, "yyyy-MM-dd") : "…"}`
+    : placeholder;
+  return (
+    <div className={cn("flex items-center gap-1", className)}>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" className={cn("w-64 justify-start font-normal", !value?.from && "text-muted-foreground")}>
+            <CalendarIcon />
+            {label}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-auto p-0" align="start">
+          <Calendar mode="range" numberOfMonths={2} locale={zhCN} selected={value} onSelect={onChange} />
+        </PopoverContent>
+      </Popover>
+      {value?.from && (
+        <Button variant="ghost" size="icon" aria-label="清除日期" onClick={() => onChange(undefined)}>
+          <XIcon />
+        </Button>
+      )}
+    </div>
   );
 }

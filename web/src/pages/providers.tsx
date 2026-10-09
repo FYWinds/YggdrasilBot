@@ -13,7 +13,7 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { ProviderIn, ProviderOut, ProviderProbe } from "@/client/types.gen";
 import { CapBadges } from "@/components/model-caps";
-import { ConfirmButton, Empty, Field, JsonEditor, OptionSelect, PageHeader, QueryState } from "@/components/common";
+import { ConfirmButton, Empty, Field, Hint, JsonEditor, OptionSelect, PageHeader, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -86,7 +86,9 @@ export function ProvidersPage() {
                 <TableCell className="font-mono text-xs">{p.base_url}</TableCell>
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell>
-                  <span title={p.models.join("\n")}>{p.models.length} 个</span>
+                  <Hint content={p.models.join("\n")}>
+                    <span>{p.models.length} 个</span>
+                  </Hint>
                   <span className="ml-1 text-xs text-muted-foreground">
                     · 能力 {Object.keys(p.model_caps).length}
                   </span>

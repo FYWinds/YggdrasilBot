@@ -6,12 +6,12 @@ import {
   getSettingsSchemaOptions,
   putGlobalSettingsMutation,
 } from "@/client/@tanstack/react-query.gen";
-import { JsonEditor, PageHeader, QueryState } from "@/components/common";
+import { Disclosure, JsonEditor, PageHeader, Pre, QueryState } from "@/components/common";
 import { type JsonSchema, resolveSchema, SECTION_LABELS, SchemaObject, sparseDiff } from "@/components/schema-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { fmtJson, isPlainObject } from "@/lib/format";
+import { isPlainObject } from "@/lib/format";
 
 export function SettingsPage() {
   const schemaQ = useQuery(getSettingsSchemaOptions());
@@ -88,12 +88,9 @@ export function SettingsPage() {
                   还原
                 </Button>
               </div>
-              <details>
-                <summary className="cursor-pointer text-sm text-muted-foreground">生效值（合并默认值后）</summary>
-                <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-muted p-3 text-xs">
-                  {fmtJson(globalQ.data.effective)}
-                </pre>
-              </details>
+              <Disclosure label="生效值（合并默认值后）">
+                <Pre value={globalQ.data.effective} className="max-h-96" />
+              </Disclosure>
             </CardContent>
           </Card>
         </TabsContent>

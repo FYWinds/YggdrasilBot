@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
 import { getInvocationOptions, listInvocationsOptions } from "@/client/@tanstack/react-query.gen";
-import { Empty, Field, GroupSelect, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import { Empty, Field, GroupSelect, Hint, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -102,8 +102,10 @@ export function InvocationsPage() {
                 <TableCell>
                   <Badge variant={statusVariant(i.status)}>{i.status}</Badge>
                 </TableCell>
-                <TableCell className="max-w-sm truncate text-sm" title={i.request_text}>
-                  {i.request_text}
+                <TableCell className="max-w-sm text-sm">
+                  <Hint content={i.request_text}>
+                    <div className="truncate">{i.request_text}</div>
+                  </Hint>
                 </TableCell>
                 <TableCell className="text-xs whitespace-nowrap">
                   {i.tokens_in} / {i.tokens_out}

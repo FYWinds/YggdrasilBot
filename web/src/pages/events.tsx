@@ -4,7 +4,7 @@ import { Fragment, useState } from "react";
 import { toast } from "sonner";
 import { decideEventMutation, listEventsOptions } from "@/client/@tanstack/react-query.gen";
 import type { EventOut } from "@/client/types.gen";
-import { ConfirmButton, Empty, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import { ConfirmButton, Empty, Hint, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -148,7 +148,11 @@ export function EventsPage() {
                   </TableCell>
                   <TableCell className="font-mono text-xs">{e.group_id ?? "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{e.user_id ?? "—"}</TableCell>
-                  <TableCell className="max-w-72 truncate text-xs">{detail(e) || "—"}</TableCell>
+                  <TableCell className="max-w-72 text-xs">
+                    <Hint content={detail(e)}>
+                      <div className="truncate">{detail(e) || "—"}</div>
+                    </Hint>
+                  </TableCell>
                   <TableCell>
                     {e.status ? (
                       <Badge variant={STATUS[e.status as Status]?.variant ?? "outline"}>
