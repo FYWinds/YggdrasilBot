@@ -34,7 +34,6 @@ class PersonaSettings(BaseModel):
 
 
 class InteractionSettings(BaseModel):
-    ack_delay_s: float = Field(default=4.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
     # Status reactions on the trigger message; added only, never removed (frequent removals look like
     # automation to QQ's risk control). Empty disables one.
     received_emoji: str = Field(default="424", description="收到请求后立刻贴的表情")
@@ -42,7 +41,6 @@ class InteractionSettings(BaseModel):
     done_emoji: str = Field(default="127881", description="回复完成时贴的表情（🎉）")
     silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
     review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
-    sticker_ack: bool = Field(default=True, description="快速响应允许发表情包")
     messages_max_count: int = Field(default=3, ge=1, le=10, description="短消息模式最多连发几条，超出改用合并转发")
     message_max_chars: int = Field(default=20, ge=1, description="短消息模式下每条的字数上限，任一条超出就改用合并转发")
     message_interval_s: float = Field(default=0.3, ge=0, description="连发短消息之间的间隔")
@@ -71,7 +69,6 @@ class ModerationCategoryRule(BaseModel):
 class ModerationSettings(BaseModel):
     enabled: bool = True
     check_input: bool = True
-    check_ack: bool = True
     check_output: bool = True
     default_rule: ModerationCategoryRule = Field(default_factory=ModerationCategoryRule)
     category_rules: dict[str, ModerationCategoryRule] = Field(

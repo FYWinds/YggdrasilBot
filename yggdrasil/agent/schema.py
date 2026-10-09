@@ -38,9 +38,3 @@ class BotReply(BaseModel):
         for s in self.sections:
             parts.append(f"{s.title or ''}\n{s.content}")
         return "\n\n".join(p for p in parts if p.strip())
-
-
-class AckDecision(BaseModel):
-    kind: Literal["text", "sticker", "none"] = Field(description="快速响应的形式")
-    text: str | None = Field(default=None, description="kind=text 时的一句短话（≤20 字）")
-    sticker_id: int | None = Field(default=None, description="kind=sticker 时从候选表情包里选的 id")
