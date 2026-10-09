@@ -14,7 +14,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
@@ -85,6 +85,7 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
     outcome: Outcome = "failed"
     reply: OpsReply | None = None
     error: str | None = None
+    usage = RunUsage()  # filled in place, so a failed run still reports what it spent
     with TRACER.start_as_current_span("ygg.invocation ops", kind=trace.SpanKind.SERVER) as span:
         trace_id = current_trace_id()
         try:
@@ -110,12 +111,9 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
                 deps=deps,
                 model_settings=resolved.settings,
                 usage_limits=resolved.limits,
+                usage=usage,
             )
             reply = result.output
-            usage = result.usage
-            record_usage(
-                "ops", resolved.label, input_tokens=usage.input_tokens or 0, output_tokens=usage.output_tokens or 0
-            )
             outcome = await _deliver(api, bot, event, reply, deps, settings.interaction)
         except Exception as e:
             error = f"{type(e).__name__}: {e}"[:1000]
@@ -126,6 +124,13 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
             else:
                 await _send(api, bot, event, f"出错了：{error[:300]}")
         span.set_attribute("ygg.status", outcome)
+    record_usage(
+        "ops",
+        resolved.label,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cached=usage.cache_read_tokens,
+    )
     elapsed = time.perf_counter() - started
     INVOCATIONS.add(1, {"handler": "ops", "outcome": outcome})
     INVOCATION_DURATION.record(elapsed, {"handler": "ops"})
@@ -140,6 +145,9 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
                 status=outcome,
                 models=[resolved.label],
                 tool_calls=dict(deps.tool_counts),
+                tokens_in=usage.input_tokens,
+                tokens_out=usage.output_tokens,
+                tokens_cached=usage.cache_read_tokens,
                 duration_ms=int(elapsed * 1000),
                 reply=reply.model_dump() if reply else None,
                 trace_id=trace_id,
