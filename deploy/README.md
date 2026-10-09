@@ -5,15 +5,12 @@ YggdrasilBot runs on the Kubernetes cluster, declared in
 
 | Path (gitops) | What |
 |---|---|
-| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, NapCat, TEI, llama.cpp rerank + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater |
-| `infra/buildkit/` | Rootless BuildKit used by `scripts/build.ps1` |
-| `apps/gitea/service-registry-node.yaml` | NodePort 30500 to Gitea for node-local image pulls |
-| `infra/argocd-image-updater/application.yaml` | Gitea registry entry (`registry.example.com`) |
+| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, NapCat, TEI, llama.cpp rerank + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
 | `observability/yggdrasil-dashboard.yaml` | Grafana dashboard (folder YggdrasilBot) |
 
 Sync waves: data (Postgres, Redis) 0 → `alembic upgrade head` Sync hook 1 →
-workloads 2. The image is `registry.example.com/fywinds/yggdrasil-bot`; one image
-serves every role:
+workloads 2. GitHub Actions (`.github/workflows/ci.yaml`) builds the image
+`ghcr.io/fywinds/yggdrasil-bot`; one image serves every role:
 
 | Role | Command |
 |---|---|
@@ -27,102 +24,65 @@ serves every role:
 All `kubeseal` commands use
 `--controller-name sealed-secrets-controller --controller-namespace kube-system`.
 
-### 1. Gitea pull mirror
+### 1. GHCR pull secret
 
-In Gitea (git.example.com) create a **pull mirror** `FYWinds/YggdrasilBot` of
-`https://github.com/FYWinds/YggdrasilBot` (New Migration → GitHub, tick
-"This repository will be a mirror"; for a private GitHub repo give a
-read-only GitHub token). BuildKit clones the build context from
-`http://gitea-http.gitea.svc:3000/FYWinds/YggdrasilBot.git`, so the mirror
-must be readable anonymously in-cluster or be public.
+The package is private (the repo is private). Create a classic GitHub PAT
+with only `read:packages`, store it in the secret store as `GHCR-Pull` (field
+`credential`), then seal it as `ghcr-pull` for both the pods (`yggdrasil`) and
+argocd-image-updater (`argocd`) into `apps/yggdrasil/ghcr-pull-secret.yaml`:
+a `kubernetes.io/dockerconfigjson` Secret with
+`{"auths": {"ghcr.io": {"username": "FYWinds", "password": "<PAT>"}}}`,
+piped through `kubeseal -o yaml` once per namespace.
 
-Create a Gitea access token with `write:repository` (mirror-sync) and
-`write:package` + `read:package` (registry) scopes.
+### 2. App secrets
 
-### 2. BuildKit certificates
-
-Follow `infra/buildkit/README.md` in gitops: generate CA/daemon/client
-certs, seal the daemon certs to `infra/buildkit/certs-sealed.yaml`, uncomment
-it in `infra/buildkit/kustomization.yaml`, push. Keep the client certs in
-`~/.config/buildkit/client/` (`ca.pem`, `cert.pem`, `key.pem`).
-
-### 3. App secrets
-
-**TODO (integrator): generate `apps/yggdrasil/secret.yaml` and enable it in
-`apps/yggdrasil/kustomization.yaml`** (it is commented out until it exists so
-the kustomize build stays green). Keys are documented in
-`apps/yggdrasil/secret.example.yaml`:
+`apps/yggdrasil/secret.yaml` is the SealedSecret `yggdrasil-secrets`; keys are
+documented in `apps/yggdrasil/secret.example.yaml`. The plaintext values live
+in the secret store `the secret store`. To rotate, edit that item and reseal:
 
 ```sh
 kubectl create secret generic yggdrasil-secrets -n yggdrasil \
-  --from-literal=ONEBOT_ACCESS_TOKEN="$(openssl rand -hex 32)" \
-  --from-literal=YGG_SECRET_KEY="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
-  --from-literal=NAPCAT_WEBUI_TOKEN="$(openssl rand -hex 16)" \
-  --from-literal=SEARXNG_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=ONEBOT_ACCESS_TOKEN=... --from-literal=YGG_SECRET_KEY=... \
+  --from-literal=NAPCAT_WEBUI_TOKEN=... --from-literal=SEARXNG_SECRET=... \
   --dry-run=client -o yaml \
   | kubeseal --controller-name sealed-secrets-controller --controller-namespace kube-system -o yaml \
   > apps/yggdrasil/secret.yaml
 ```
 
-Keep a copy of `YGG_SECRET_KEY` in the password manager: provider API keys in
-the database are encrypted with it and are unrecoverable without it.
+Never rotate `YGG_SECRET_KEY` casually: provider API keys in the database are
+encrypted with it and are unrecoverable without it.
 
 Postgres credentials are not sealed: CNPG creates `yggdrasil-pg-app`
 (`host`, `port`, `user`, `password`, `dbname`), which the pods read directly.
 
-### 4. Registry pulls on the k3s node
-
-Images are pushed in-cluster to `gitea-http.gitea.svc:3000/fywinds/...` and
-referenced as `registry.example.com/fywinds/...` (same Gitea registry). Point the
-node's containerd at the NodePort so pulls never leave the node. On each k3s
-node, `/etc/rancher/k3s/registries.yaml`:
-
-```yaml
-mirrors:
-  registry.example.com:
-    endpoint:
-      - "http://127.0.0.1:30500"
-configs:
-  "127.0.0.1:30500":
-    # Only needed while the package is private.
-    auth:
-      username: FYWinds
-      password: <gitea token with read:package>
-```
-
-then `sudo systemctl restart k3s` (agents: `k3s-agent`). If the package stays
-private, argocd-image-updater also needs credentials: add
-`credentials: secret:argocd/gitea-registry#creds` (sealed `user:token`) to the
-Gitea registry entry. Making the `yggdrasil-bot` package public in Gitea avoids
-both.
-
-### 5. Build the first image
+### 3. Build the first image
 
 See [Build & release](#build--release). The kustomization floor tag is
 `v0.1.0`; that tag must exist before the first sync can roll out.
 
-### 6. Argo CD sync
+### 4. Argo CD sync
 
 Push gitops; the root ApplicationSet creates `apps-yggdrasil`. Order:
 `yggdrasil-pg` + `yggdrasil-redis` → migration Job → workloads. TEI and the
 llama.cpp pods download models on first start (startup probes allow 15 min).
 
-### 7. NapCat QR login
+### 5. NapCat QR login
 
 Open https://napcat.example.com (oauth2-proxy, then the WebUI token
-`NAPCAT_WEBUI_TOKEN`) and scan the QR code with the bot's QQ account.
+`NAPCAT_WEBUI_TOKEN`) and scan the QR code with the prod bot account
+**1609225832** (the local dev account 3147315517 is not used in the cluster).
+`ACCOUNT=1609225832` makes NapCat quick-login with the saved session on later
+restarts.
 
 The `onebot-config` initContainer writes `/app/napcat/config/onebot11.json`
-with a websocketClients entry (`ws://yggdrasil-bot.yggdrasil.svc:8080/onebot/v11/ws`,
-token `ONEBOT_ACCESS_TOKEN`, array post format, no self messages, 30s
-heartbeat) and overwrites every existing `onebot11_<uin>.json` on each start.
-NapCat seeds `onebot11_<uin>.json` from `onebot11.json` on an account's first
-login, so after the first QR login restart the pod once
-(`kubectl -n yggdrasil delete pod napcat-0`) if the bot does not connect, and
-do not edit the OneBot network config in the WebUI (it is reset on restart).
-QQ data and the login session persist on the `qq-data` PVC.
+and `onebot11_1609225832.json` with a websocketClients entry
+(`ws://yggdrasil-bot.yggdrasil.svc:8080/onebot/v11/ws`, token
+`ONEBOT_ACCESS_TOKEN`, array post format, no self messages, 30s heartbeat) and
+overwrites every existing `onebot11_<uin>.json` on each start. Do not edit the
+OneBot network config in the WebUI (it is reset on restart). QQ data and the
+login session persist on the `qq-data` PVC.
 
-### 8. Seed providers and routes
+### 6. Seed providers and routes
 
 Open https://ygg.example.com (login as `admin@example.com`, bootstrap admin). In the
 dashboard:
@@ -136,36 +96,27 @@ dashboard:
 
 ## Build & release
 
-Local tools: `kubectl` (cluster kubeconfig), `git`, `buildctl` from a
-[moby/buildkit release](https://github.com/moby/buildkit/releases)
-(`bin/buildctl.exe` on PATH). Environment:
-
-- `GITEA_TOKEN`: Gitea token (`write:repository`) for mirror-sync.
-- `DOCKER_CONFIG`: directory with `config.json` that buildctl forwards to
-  buildkitd for the push:
-
-  ```json
-  {"auths": {"gitea-http.gitea.svc:3000": {"auth": "<base64 of FYWinds:<token with write:package>>"}}}
-  ```
+`.github/workflows/ci.yaml` runs ruff, basedpyright and pytest (ParadeDB and
+Redis service containers) on every push and PR. Pushes to `main` also push
+`sha-<short>` and `main` images; tags `vX.Y.Z` push `vX.Y.Z`.
+`ghcr-cleanup.yaml` prunes old `sha-*` images weekly (keeps 5).
 
 Release:
 
-1. Bump `version` in `pyproject.toml`, merge to `main` on GitHub, tag `vX.Y.Z`.
-2. `./scripts/build.ps1 -Ref vX.Y.Z` — syncs the Gitea mirror, port-forwards
-   `buildkit/svc/buildkitd`, builds from the Gitea clone at that commit and
-   pushes `vX.Y.Z` and `sha-<short>`.
-3. argocd-image-updater picks the highest `^v\d+\.\d+\.\d+$` tag (within a few
+1. Bump `version` in `pyproject.toml`, merge to `main`, then
+   `git tag vX.Y.Z && git push origin vX.Y.Z`.
+2. argocd-image-updater picks the highest `^v\d+\.\d+\.\d+$` tag (within a few
    minutes) and writes it onto the `apps-yggdrasil` Application; the sync runs
    migrations first, then recreates the bot.
 
-Test builds: `./scripts/build.ps1 -Tag dev-foo` pushes without affecting prod
-(only release tags are considered by the updater).
+Test builds: every `main` push produces `sha-<short>`; pin it manually (see
+Rollback) to try it without a release.
 
 ## Rollback
 
-- **Image**: `argocd app set apps-yggdrasil --kustomize-image registry.example.com/fywinds/yggdrasil-bot:vX.Y.(Z-1)`
+- **Image**: `argocd app set apps-yggdrasil --kustomize-image ghcr.io/fywinds/yggdrasil-bot:vX.Y.(Z-1)`
   pins an older tag, but the updater moves forward again on its next run.
-  For a lasting rollback, delete or retag the bad release in Gitea
+  For a lasting rollback, delete the bad release tag in GHCR
   (Packages → yggdrasil-bot), or ship a fixed `vX.Y.(Z+1)`.
 - **Schema**: migrations run forward only in the hook. If the older image
   cannot run against the new schema, downgrade while the new image is still
