@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime } from "@/lib/format";
 
-const STATUSES = ["running", "ok", "blocked_input", "review", "rejected", "failed", "ratelimited", "cancelled"];
+const STATUSES = ["running", "ok", "silent", "blocked_input", "review", "rejected", "failed", "ratelimited", "cancelled"];
 const HANDLERS = ["chat", "tldr", "privacy.optout", "privacy.optin", "privacy.forget", "admin.review", "admin.status"];
 const LIMIT = 50;
 

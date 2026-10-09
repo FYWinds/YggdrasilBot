@@ -8,9 +8,11 @@ and create our own root spans per invocation / job.
 
 import os
 import uuid
+from collections.abc import Sequence
 
 from fastapi import FastAPI
 from opentelemetry import metrics, trace
+from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -24,6 +26,8 @@ from opentelemetry.sdk.metrics.view import DropAggregation, View
 from opentelemetry.sdk.resources import SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_VERSION, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON, Decision, ParentBased, Sampler, SamplingResult
+from opentelemetry.util.types import Attributes
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from yggdrasil import __version__
@@ -42,6 +46,32 @@ _tracer_provider: TracerProvider | None = None
 _meter_provider: MeterProvider | None = None
 
 
+class _DropOrphanClients(Sampler):
+    """Root sampler: drop CLIENT spans that start a trace.
+
+    Background loops (gauge refresh, message writer, Redis listeners, the taskiq BRPOP poll)
+    run DB/Redis/OneBot calls outside any request; each would otherwise become its own
+    one-span trace ("SELECT", "connect", "BRPOP") and bury the real invocation and job traces.
+    """
+
+    def should_sample(
+        self,
+        parent_context: Context | None,
+        trace_id: int,
+        name: str,
+        kind: trace.SpanKind | None = None,
+        attributes: Attributes = None,
+        links: Sequence[trace.Link] | None = None,
+        trace_state: trace.TraceState | None = None,
+    ) -> SamplingResult:
+        if kind == trace.SpanKind.CLIENT:
+            return SamplingResult(Decision.DROP)
+        return ALWAYS_ON.should_sample(parent_context, trace_id, name, kind, attributes, links, trace_state)
+
+    def get_description(self) -> str:
+        return "DropOrphanClients"
+
+
 def _resource(service_name: str) -> Resource:
     resource = Resource.create({SERVICE_NAME: service_name, SERVICE_VERSION: __version__})
     if SERVICE_INSTANCE_ID not in resource.attributes:
@@ -58,7 +88,8 @@ def setup_telemetry(service_name: str, app: FastAPI | None = None) -> bool:
     os.environ.setdefault("OTEL_SEMCONV_STABILITY_OPT_IN", "http")
     resource = _resource(service_name)
 
-    _tracer_provider = TracerProvider(resource=resource)
+    # Children follow their parent; only roots go through _DropOrphanClients.
+    _tracer_provider = TracerProvider(resource=resource, sampler=ParentBased(root=_DropOrphanClients()))
     _tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(_tracer_provider)
 
