@@ -35,11 +35,9 @@ class PersonaSettings(BaseModel):
 
 class InteractionSettings(BaseModel):
     ack_delay_s: float = Field(default=4.5, ge=0, description="agent 超过这个时间没完成才发快速响应")
-    react_emoji_whitelist: list[str] = Field(
-        default_factory=lambda: ["76", "124", "128064", "128077", "129300", "128514", "10068", "128170"],
-        description="tldr 快速响应可用的表情 id（QQ face id 或 Unicode 码点）",
-    )
-    react_default: str = Field(default="128064", description="quick 模型失败时用的表情（👀）")
+    working_emoji: str = Field(default="129300", description="tldr 开始处理时贴在目标消息上的表情（🤔），完成后撤回")
+    done_emoji: str = Field(default="127881", description="tldr 完成时贴的表情（🎉）；留空不贴")
+    silent_emoji: str = Field(default="479", description="bot 决定不回复时贴在触发消息上的表情；留空不贴")
     input_blocked_emoji: str = Field(default="10060", description="输入被审核拦截时 react 的表情（❌）")
     sticker_ack: bool = Field(default=True, description="快速响应允许发表情包")
     messages_max_count: int = Field(default=3, ge=1, le=10, description="短消息模式最多连发几条，超出改用合并转发")

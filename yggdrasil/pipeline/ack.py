@@ -1,14 +1,13 @@
-"""Fast first responses: a model-picked reaction (tldr) or a short line / sticker (chat)."""
+"""Fast first responses for chat: a short line or a sticker (tldr just reacts with a fixed emoji)."""
 
 import time
 
 from pydantic_ai import Agent
 from sqlalchemy import select
 
-from yggdrasil.agent.schema import AckDecision, ReactDecision
+from yggdrasil.agent.schema import AckDecision
 from yggdrasil.db.models import Sticker
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.emoji import emoji_label
 from yggdrasil.llm.registry import chat_model, record_usage
 from yggdrasil.prompts import render
 from yggdrasil.settings import Settings
@@ -32,18 +31,6 @@ async def sticker_candidates(limit: int = 30) -> list[dict]:
     cands = [{"id": s.id, "summary": s.summary} for s in rows]
     _sticker_cache = (time.monotonic(), cands)
     return cands
-
-
-async def pick_reaction(content: str, settings: Settings) -> str:
-    cfg = settings.interaction
-    allowed = list(dict.fromkeys(cfg.react_emoji_whitelist)) or [cfg.react_default]
-    resolved = chat_model("quick_ack")
-    agent = Agent(resolved.model, output_type=ReactDecision, name="tldr_react")
-    prompt = render("tldr_react", content=content[:1500], emojis=[{"id": e, "label": emoji_label(e)} for e in allowed])
-    result = await agent.run(prompt, model_settings=resolved.settings)
-    usage = result.usage
-    record_usage("quick_ack", resolved.label, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
-    return result.output.emoji_id if result.output.emoji_id in allowed else cfg.react_default
 
 
 async def draft_ack(request: str, recent: str, settings: Settings) -> AckDecision:
