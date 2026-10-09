@@ -16,7 +16,7 @@ workloads 2. GitHub Actions (`.github/workflows/ci.yaml`) builds the image
 |---|---|
 | bot (default) | `python -m yggdrasil` (port 8080: `/onebot/v11/ws`, dashboard, `/healthz`, `/readyz`) |
 | worker | `taskiq worker yggdrasil.worker.broker:broker yggdrasil.worker.tasks` |
-| scheduler | `taskiq scheduler yggdrasil.worker.broker:scheduler` |
+| scheduler | `taskiq scheduler yggdrasil.worker.broker:scheduler yggdrasil.worker.tasks` |
 | migration | `alembic upgrade head` |
 
 ## First-time setup
