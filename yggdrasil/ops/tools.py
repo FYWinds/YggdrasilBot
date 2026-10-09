@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext, Tool
 from sqlalchemy import func, select
 
+from yggdrasil import events
 from yggdrasil.admin import groups as groups_api
 from yggdrasil.admin import reviews as reviews_api
 from yggdrasil.admin import routes as routes_api
@@ -27,7 +28,16 @@ from yggdrasil.admin import settings_api
 from yggdrasil.admin import triggers as triggers_api
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
-from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Invocation, Provider, ReviewItem, TaskRoute
+from yggdrasil.db.models import (
+    BotEvent,
+    CommandTrigger,
+    ConfigAudit,
+    Group,
+    Invocation,
+    Provider,
+    ReviewItem,
+    TaskRoute,
+)
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
 from yggdrasil.napcat.api import NapCatAPI
@@ -483,7 +493,67 @@ async def recall_message(ctx: RunContext[OpsDeps]) -> str:
     return "已撤回"
 
 
-# Never callable, whatever ops.napcat_write_actions says: leaving groups, account, friends, join requests.
+@_op("list_events")
+async def list_events(
+    ctx: RunContext[OpsDeps],
+    kind: str | None = None,
+    status: Literal["pending", "approved", "rejected", "expired", "failed"] | None = None,
+    group_id: int | None = None,
+    limit: int = 20,
+) -> str:
+    """bot 记录的事件（E 号）：加群邀请 request.group.invite、入群申请 request.group.add、好友申请 request.friend、
+    bot 被踢/被禁言/管理员变动、成员进退群和禁言、掉线。kind 按前缀筛选（如 "request."），status 只对申请有意义。"""
+    async with get_session() as s:
+        q = select(BotEvent).order_by(BotEvent.at.desc()).limit(min(max(limit, 1), 50))
+        if kind:
+            q = q.where(BotEvent.kind.startswith(kind))
+        if status:
+            q = q.where(BotEvent.status == status)
+        if group_id is not None:
+            q = q.where(BotEvent.group_id == group_id)
+        rows = (await s.scalars(q)).all()
+    return _json(
+        [
+            {
+                "id": f"E{e.id}",
+                "at": e.at.astimezone().strftime("%m-%d %H:%M"),
+                "kind": e.kind,
+                "group": e.group_id,
+                "user": e.user_id,
+                "operator": e.operator_id,
+                "status": e.status,
+                "comment": e.data.get("comment") or None,
+            }
+            for e in rows
+        ]
+    )
+
+
+@_op("decide_request", write=True)
+async def decide_request(
+    ctx: RunContext[OpsDeps], approve: bool, event_id: int | None = None, reason: str | None = None
+) -> str:
+    """同意或拒绝一条待处理的申请（加群邀请、入群申请、好友申请）。event_id 不写时，用被回复的通知里的 E 号；
+    还没有就取唯一一条待处理申请。同意加群邀请后要启用该群，再调 set_group。不能撤销。"""
+    if event_id is None and ctx.deps.quoted and (m := re.search(r"E(\d+)", ctx.deps.quoted.text)):
+        event_id = int(m.group(1))
+    if event_id is None:
+        async with get_session() as s:
+            pending = (
+                await s.scalars(select(BotEvent.id).where(BotEvent.status == "pending").order_by(BotEvent.at.desc()))
+            ).all()
+        if len(pending) != 1:
+            raise ToolError(f"待处理的申请有 {len(pending)} 条，请说明是哪一条（E 号）")
+        event_id = pending[0]
+    try:
+        row = await events.decide_request(event_id, approve, ctx.deps.actor, reason)
+    except events.EventError as e:
+        raise ToolError(str(e)) from e
+    return f"E{row.id}（{row.kind}）→ {row.status}"
+
+
+# Never callable through napcat_api, whatever ops.napcat_write_actions says: leaving groups, account,
+# friends, join requests (requests go through decide_request, which records the decision).
 _NAPCAT_NEVER = frozenset(
     {
         "set_group_leave",
@@ -549,6 +619,7 @@ _READ: tuple[Callable[..., Awaitable[str]], ...] = (
     list_reviews,
     recent_invocations,
     napcat_api,
+    list_events,
 )
 _WRITE: tuple[Callable[..., Awaitable[str]], ...] = (
     update_settings,
@@ -559,6 +630,7 @@ _WRITE: tuple[Callable[..., Awaitable[str]], ...] = (
     delete_trigger,
     set_route,
     undo_last_change,
+    decide_request,
 )
 
 

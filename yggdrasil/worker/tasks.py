@@ -71,6 +71,15 @@ async def maintain_partitions() -> list[str]:
     return names
 
 
+@broker.task(task_name="sweep_bot_events", schedule=_cron("20 3 * * *"))
+async def sweep_bot_events() -> dict[str, int]:
+    from yggdrasil.events import sweep
+
+    stats = await sweep()
+    LOGGER.info("bot events swept: {}", stats)
+    return stats
+
+
 async def _chunk_and_embed(group_id: int) -> dict[str, int]:
     stats = await chunk_group(group_id)
     space = await vectors.resolve_space()

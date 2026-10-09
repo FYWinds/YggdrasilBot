@@ -3,6 +3,7 @@ import { Link, Outlet } from "@tanstack/react-router";
 import {
   BotIcon,
   BrainIcon,
+  CalendarClockIcon,
   GaugeIcon,
   HistoryIcon,
   MessageSquareTextIcon,
@@ -27,6 +28,7 @@ export const NAV = [
   { to: "/settings", label: "设置", icon: Settings2Icon },
   { to: "/prompts", label: "提示词", icon: MessageSquareTextIcon },
   { to: "/reviews", label: "审核队列", icon: ShieldCheckIcon },
+  { to: "/events", label: "事件", icon: CalendarClockIcon },
   { to: "/memory", label: "记忆", icon: BrainIcon },
   { to: "/invocations", label: "调用记录", icon: HistoryIcon },
   { to: "/stickers", label: "表情包", icon: SmileIcon },

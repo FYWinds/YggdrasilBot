@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from arclet.alconna import AllParam
-from nonebot import get_driver, on_notice, on_type
+from nonebot import get_driver, on_notice, on_request, on_type
 from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import (
     Bot,
@@ -18,7 +18,9 @@ from nonebot.adapters.onebot.v11 import (
     GroupRecallNoticeEvent,
     HeartbeatMetaEvent,
     MessageEvent,
+    NoticeEvent,
     PrivateMessageEvent,
+    RequestEvent,
 )
 from nonebot.message import event_preprocessor
 from nonebot.plugin import PluginMetadata
@@ -172,9 +174,10 @@ forget_cmd = _matcher(Alconna("ygg:privacy.forget"), "privacy.forget")
 review_cmd = _matcher(
     Alconna(
         "ygg:admin.review",
-        Subcommand("approve", Args["id", str]),
-        Subcommand("reject", Args["id", str]),
-        Subcommand("edit", Args["id", str], Args["text", AllParam]),
+        # ids optional: 「拒绝」 alone (e.g. replying to a friend-request note) goes to the ops agent
+        Subcommand("approve", Args["id?", str]),
+        Subcommand("reject", Args["id?", str]),
+        Subcommand("edit", Args["id?", str], Args["text?", AllParam]),
     ),
     "admin.review",
 )
@@ -242,18 +245,25 @@ async def _forget(bot: Bot, event: GroupMessageEvent) -> None:
 
 
 @review_cmd.handle()
-async def _review(event: PrivateMessageEvent, result: Arparma) -> None:
+async def _review(bot: Bot, event: PrivateMessageEvent, result: Arparma) -> None:
     from yggdrasil.moderation.review import ReviewError, decide, parse_review_id
 
     action = next((s for s in ("approve", "reject", "edit") if result.find(s)), None)
-    if action is None:
-        await review_cmd.finish("用法：通过 R12 / 拒绝 R12 / 改 R12 新内容")
-    raw_id = result.query[str](f"{action}.id") or ""
+    raw_id = result.query[str](f"{action}.id") or "" if action else ""
+    try:
+        review_id = parse_review_id(raw_id)
+    except ReviewError:
+        review_id = None
+    if action is None or review_id is None:
+        # No R<id>: not a plain review command (e.g. 「同意」/「拒绝」 to a request note); let ops read it.
+        from yggdrasil.ops.agent import run_ops
+
+        _spawn(run_ops(bot, event))
+        return
     text = result.query[list](f"{action}.text")
     if isinstance(text, list | tuple):
         text = " ".join(str(x) for x in text)
     try:
-        review_id = parse_review_id(raw_id)
         item = await decide(review_id, action, f"qq:{event.user_id}", str(text) if text else None)
     except ReviewError as e:
         await review_cmd.finish(str(e))
@@ -289,6 +299,19 @@ recall = on_notice(priority=1, block=False)
 async def _recall(event: GroupRecallNoticeEvent) -> None:
     if snapshot().group_enabled(event.group_id):
         _spawn(WRITER.mark_recalled(event.group_id, event.message_id))
+
+
+events = on_notice(priority=1, block=False)
+requests = on_request(priority=1, block=False)
+
+
+@events.handle()
+@requests.handle()
+async def _bot_event(bot: Bot, event: NoticeEvent | RequestEvent) -> None:
+    """Requests and notices: recorded in bot_events, policy in yggdrasil.events (never posts to groups)."""
+    from yggdrasil.events import handle
+
+    _spawn(handle(bot, event))
 
 
 heartbeat = on_type(HeartbeatMetaEvent, priority=1, block=False)

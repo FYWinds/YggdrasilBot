@@ -182,6 +182,68 @@ export type EmbedSpaceOut = {
 };
 
 /**
+ * EventDecideIn
+ */
+export type EventDecideIn = {
+    /**
+     * Approve
+     */
+    approve: boolean;
+    /**
+     * Reason
+     */
+    reason?: string | null;
+};
+
+/**
+ * EventOut
+ */
+export type EventOut = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * At
+     */
+    at: string;
+    /**
+     * Kind
+     */
+    kind: string;
+    /**
+     * Group Id
+     */
+    group_id: number | null;
+    /**
+     * User Id
+     */
+    user_id: number | null;
+    /**
+     * Operator Id
+     */
+    operator_id: number | null;
+    /**
+     * Data
+     */
+    data: {
+        [key: string]: unknown;
+    };
+    /**
+     * Status
+     */
+    status: string | null;
+    /**
+     * Handled By
+     */
+    handled_by: string | null;
+    /**
+     * Handled At
+     */
+    handled_at: string | null;
+};
+
+/**
  * FactOut
  */
 export type FactOut = {
@@ -677,6 +739,20 @@ export type PageDigestOut = {
      * Items
      */
     items: Array<DigestOut>;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+/**
+ * Page[EventOut]
+ */
+export type PageEventOut = {
+    /**
+     * Items
+     */
+    items: Array<EventOut>;
     /**
      * Total
      */
@@ -2780,6 +2856,84 @@ export type DecideReviewResponses = {
 };
 
 export type DecideReviewResponse = DecideReviewResponses[keyof DecideReviewResponses];
+
+export type ListEventsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Kind
+         *
+         * 类型前缀，例如 request. 或 notice.group_ban
+         */
+        kind?: string | null;
+        /**
+         * Status
+         */
+        status?: 'pending' | 'approved' | 'rejected' | 'expired' | 'failed' | null;
+        /**
+         * Group Id
+         */
+        group_id?: number | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+        /**
+         * Offset
+         */
+        offset?: number;
+    };
+    url: '/events';
+};
+
+export type ListEventsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListEventsError = ListEventsErrors[keyof ListEventsErrors];
+
+export type ListEventsResponses = {
+    /**
+     * Successful Response
+     */
+    200: PageEventOut;
+};
+
+export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
+
+export type DecideEventData = {
+    body: EventDecideIn;
+    path: {
+        /**
+         * Event Id
+         */
+        event_id: number;
+    };
+    query?: never;
+    url: '/events/{event_id}/decide';
+};
+
+export type DecideEventErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DecideEventError = DecideEventErrors[keyof DecideEventErrors];
+
+export type DecideEventResponses = {
+    /**
+     * Successful Response
+     */
+    200: EventOut;
+};
+
+export type DecideEventResponse = DecideEventResponses[keyof DecideEventResponses];
 
 export type ListTopicsData = {
     body?: never;

@@ -10,6 +10,7 @@ from yggdrasil import __version__
 from yggdrasil.admin import (
     admins,
     dashboard,
+    events_api,
     groups,
     invocations,
     memory,
@@ -35,6 +36,7 @@ _ROUTERS = (
     prompts_api.router,
     admins.router,
     reviews.router,
+    events_api.router,
     memory.router,
     invocations.router,
     stickers.router,
