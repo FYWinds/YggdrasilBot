@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.schema import AckDecision, BotReply, Section
+from yggdrasil.agent.schema import BotReply, Section
 from yggdrasil.agent.tools import tools_for
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
@@ -24,7 +24,7 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import Meta, react, send_forward, send_sticker, send_text, strip_markdown
+from yggdrasil.delivery.send import Meta, react, send_forward, send_text, strip_markdown
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
@@ -227,20 +227,12 @@ class Invocator:
             )
         )
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
-        recent_tail = ctx.prompt[-1500:]
-        ack_task: asyncio.Task[AckDecision] | None = None
-        if self.handler != "tldr":
-            ack_task = asyncio.create_task(
-                ack_mod.draft_ack(ctx.request_text or ctx.trigger.text, recent_tail, self.settings)
-            )
         try:
             v_in = await input_task
             await self._save_verdict(v_in)
             policy = self.settings.moderation
             if v_in.action != "pass" and policy.input_action_on_hit == "drop":
                 agent_task.cancel()
-                if ack_task is not None:
-                    ack_task.cancel()
                 await self._status(self.settings.interaction.review_emoji)
                 if policy.notify_admins_on_input_block:
                     from yggdrasil.moderation.review import notify_admins
@@ -252,12 +244,10 @@ class Invocator:
                 await self._finish("blocked_input", None, input_verdict=v_in.as_dict())
                 return "blocked_input"
 
-            if ack_task is not None:
-                await self._quick_ack(ctx, agent_task, ack_task)
             result = await agent_task
         finally:
-            for t in (agent_task, ack_task, input_task):
-                if t is not None and not t.done():
+            for t in (agent_task, input_task):
+                if not t.done():
                     t.cancel()
 
         reply = result.output
@@ -342,39 +332,8 @@ class Invocator:
                 await asyncio.sleep(interval)
             await self._send_text(text, allow_quote=i == 0)
 
-    async def _quick_ack(self, ctx: BuiltContext, agent_task: asyncio.Task, ack_task: asyncio.Task) -> None:
-        cfg = self.settings.interaction
-        remaining = cfg.ack_delay_s - self.elapsed()
-        if remaining > 0:
-            await asyncio.wait({agent_task}, timeout=remaining)
-        if agent_task.done():
-            ack_task.cancel()
-            return
-        try:
-            decision: AckDecision = await asyncio.wait_for(ack_task, timeout=5)
-        except Exception as e:
-            LOGGER.debug("quick ack draft failed: {}", e)
-            return
-        ident = await identity(self.bot)
-        if decision.kind == "sticker" and decision.sticker_id is not None and self.group_id is not None:
-            if await send_sticker(
-                self.api,
-                group_id=self.group_id,
-                sticker_id=decision.sticker_id,
-                self_id=ident.self_id,
-                nickname=ident.nickname,
-            ):
-                self._mark_ack("sticker")
-            return
-        if decision.kind == "text" and decision.text:
-            v = await moderate("ack", ctx.request_text or ctx.trigger.text, decision.text, group_id=self.group_id)
-            await self._save_verdict(v)
-            if v.action == "pass":
-                await self._send_text(decision.text.strip()[:40])
-                self._mark_ack("text")
-
     def _mark_ack(self, kind: str) -> None:
-        """Record the first visible response's latency; ack_kind keeps the latest form."""
+        """Record the first visible response's latency."""
         self.ack_kind = kind
         if self.meta.ack_s is None:
             self.meta.ack_s = self.elapsed()

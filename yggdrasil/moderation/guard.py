@@ -19,7 +19,7 @@ from yggdrasil.llm.registry import TaskNotConfigured, openai_client, record_usag
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import ModerationSettings
 
-Stage = Literal["input", "ack", "output"]
+Stage = Literal["input", "output"]
 Action = Literal["pass", "review", "drop"]
 _SEVERITY: dict[str, int] = {"pass": 0, "review": 1, "drop": 2}
 # Leading characters of the verdict token; " Un" / " Cont" partial tokens count too.
@@ -87,9 +87,7 @@ def decide_action(verdict: str, score: float, categories: list[str], policy: Mod
 async def moderate(stage: Stage, prompt: str, response: str | None = None, *, group_id: int | None = None) -> Verdict:
     snap = snapshot()
     policy = snap.settings(group_id).moderation
-    enabled = (
-        policy.enabled and {"input": policy.check_input, "ack": policy.check_ack, "output": policy.check_output}[stage]
-    )
+    enabled = policy.enabled and {"input": policy.check_input, "output": policy.check_output}[stage]
     if not enabled:
         return Verdict(stage, "Skipped", 0.0)
     try:
