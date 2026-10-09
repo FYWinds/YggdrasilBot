@@ -27,7 +27,7 @@ from yggdrasil.admin import settings_api
 from yggdrasil.admin import triggers as triggers_api
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
-from yggdrasil.db.models import CommandTrigger, Group, Invocation, Provider, ReviewItem, TaskRoute
+from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Invocation, Provider, ReviewItem, TaskRoute
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
 from yggdrasil.napcat.api import NapCatAPI
@@ -317,7 +317,8 @@ async def update_settings(ctx: RunContext[OpsDeps], patch: dict[str, Any], group
 async def set_group(
     ctx: RunContext[OpsDeps], group_id: int, enabled: bool | None = None, name: str | None = None
 ) -> str:
-    """启用或停用一个群（不在列表里的会新建），或者改群名。只改传入的项。"""
+    """启用或停用一个群（不在列表里的会新建），或者改群名。只改传入的项。只知道群名时，
+    先用 napcat_api 调 get_group_list 找到群号；新建时把群名一起传进来。"""
     async with get_session() as s:
         g = await s.get(Group, group_id)
         prev = {"name": g.name, "enabled": g.enabled} if g else None
@@ -482,6 +483,62 @@ async def recall_message(ctx: RunContext[OpsDeps]) -> str:
     return "已撤回"
 
 
+# Never callable, whatever ops.napcat_write_actions says: leaving groups, account, friends, join requests.
+_NAPCAT_NEVER = frozenset(
+    {
+        "set_group_leave",
+        "delete_friend",
+        "set_friend_add_request",
+        "set_group_add_request",
+        "set_qq_profile",
+        "set_qq_avatar",
+        "set_self_longnick",
+        "set_online_status",
+        "set_diy_online_status",
+        "set_restart",
+        "clean_cache",
+        "bot_exit",
+    }
+)
+# Getters that hand out login secrets.
+_NAPCAT_SECRET = re.compile(r"cookie|csrf|credential|clientkey|rkey|token|password", re.IGNORECASE)
+_NAPCAT_MAX_CHARS = 8000
+
+
+def napcat_gate(action: str, write_allowed: list[str]) -> bool:
+    """Whether ``action`` is a write (True) or a read (False); ToolError when it may not be called."""
+    if action in _NAPCAT_NEVER:
+        raise ToolError(f"{action} 不允许通过对话调用")
+    bare = action.lstrip("_.")
+    if bare.startswith("get_"):
+        if _NAPCAT_SECRET.search(bare):
+            raise ToolError(f"{action} 会返回登录凭据，不允许调用")
+        return False
+    if action not in write_allowed:
+        raise ToolError(f"{action} 不在允许的写接口里（设置 ops.napcat_write_actions）")
+    return True
+
+
+@_op("napcat_api")
+async def napcat_api(ctx: RunContext[OpsDeps], action: str, params: dict[str, Any] | None = None) -> str:
+    """直接调用 NapCat（OneBot 11 及 NapCat 扩展）接口，例如 get_group_list、get_group_info、
+    get_group_member_list、get_group_member_info、get_msg、get_group_msg_history、get_essence_msg_list。
+    get_ 开头的只读接口都能调；会改东西的接口只能调设置 ops.napcat_write_actions 里列出的
+    （默认：撤回、禁言、全员禁言、踢人、改群名片、设/删精华、发群公告、发消息），这类调用会记入审计且不能撤销。"""
+    action = action.strip()
+    write = napcat_gate(action, snapshot().settings(None).ops.napcat_write_actions)
+    params = params or {}
+    result = await ctx.deps.bot.call_api(action, **params)
+    if write:
+        async with get_session() as s:
+            s.add(ConfigAudit(actor=ctx.deps.actor, entity="napcat", entity_id=action, action="call", detail=params))
+        ctx.deps.actions.append(f"已调用 {action}")
+    text = _json(result)
+    if len(text) > _NAPCAT_MAX_CHARS:
+        text = text[:_NAPCAT_MAX_CHARS] + f"…（已截断，共 {len(text)} 字符；需要的话换更精确的接口或参数）"
+    return text
+
+
 _READ: tuple[Callable[..., Awaitable[str]], ...] = (
     status,
     get_settings,
@@ -491,6 +548,7 @@ _READ: tuple[Callable[..., Awaitable[str]], ...] = (
     list_triggers,
     list_reviews,
     recent_invocations,
+    napcat_api,
 )
 _WRITE: tuple[Callable[..., Awaitable[str]], ...] = (
     update_settings,
