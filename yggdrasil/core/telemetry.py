@@ -85,7 +85,8 @@ def setup_telemetry(service_name: str, app: FastAPI | None = None) -> bool:
 def instrument_engine(engine: AsyncEngine) -> None:
     if _tracer_provider is None:
         return
-    SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine, enable_commenter=False)
+    # The instrumentor's dependency range stops at sqlalchemy < 2.1; the engine events it uses still work.
+    SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine, enable_commenter=False, skip_dep_check=True)
 
 
 def shutdown_telemetry() -> None:
