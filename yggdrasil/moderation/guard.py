@@ -50,6 +50,17 @@ def _parse_categories(text: str) -> list[str]:
     return [c for c in cats if c and c.lower() != "none"]
 
 
+def parse_verdict(text: str) -> str | None:
+    """``Safety: <verdict>`` from the guard's answer; None when it answered something else."""
+    m = _SAFETY.search(text)
+    return m.group(1).capitalize() if m else None
+
+
+def _unchecked(stage: Stage, model: str) -> Verdict:
+    # Fail open on input/ack, closed (review) on output so nothing unchecked is posted.
+    return Verdict(stage, "Error", 0.0, action="review" if stage == "output" else "pass", model=model)
+
+
 def _score_from_logprobs(logprobs: list | None, verdict: str) -> float:
     """Distribution over the token right after ``Safety:``."""
     fallback = {"Safe": 0.0, "Controversial": 0.5, "Unsafe": 1.0}.get(verdict, 0.0)
@@ -115,16 +126,15 @@ async def moderate(stage: Stage, prompt: str, response: str | None = None, *, gr
         except Exception as e:
             LOGGER.warning("moderation call failed ({}): {}", stage, e)
             span.record_exception(e)
-            # Fail open on input/ack, closed (review) on output so nothing unchecked is posted.
-            action: Action = "review" if stage == "output" else "pass"
-            return Verdict(stage, "Error", 0.0, action=action, model=r.model)
+            return _unchecked(stage, r.model)
         elapsed = time.perf_counter() - started
         choice = resp.choices[0]
         text = choice.message.content or ""
-        m = _SAFETY.search(text)
-        verdict = m.group(1).capitalize() if m else "Safe"
-        if verdict.lower() == "controversial":
-            verdict = "Controversial"
+        verdict = parse_verdict(text)
+        if verdict is None:
+            LOGGER.warning("moderation ({}) gave no verdict: {!r}", stage, text[:200])
+            span.set_attribute("moderation.verdict", "Error")
+            return _unchecked(stage, r.model)
         categories = _parse_categories(text) if verdict != "Safe" else []
         score = _score_from_logprobs(choice.logprobs.content if choice.logprobs else None, verdict)
         action = decide_action(verdict, score, categories, policy)

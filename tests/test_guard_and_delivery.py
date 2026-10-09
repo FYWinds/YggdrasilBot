@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
 from yggdrasil.delivery.send import build_nodes, split_text, strip_markdown
-from yggdrasil.moderation.guard import _score_from_logprobs, decide_action
+from yggdrasil.moderation.guard import _score_from_logprobs, decide_action, parse_verdict
 from yggdrasil.settings import InteractionSettings, ModerationCategoryRule, ModerationSettings
 
 
@@ -25,6 +25,12 @@ def test_score_uses_token_after_safety_label_not_the_label_itself():
 def test_score_falls_back_without_logprobs():
     assert _score_from_logprobs(None, "Controversial") == 0.5
     assert _score_from_logprobs([], "Unsafe") == 1.0
+
+
+def test_verdict_missing_when_guard_echoes_the_reply():
+    # llama.cpp assistant prefill made the guard continue the reply instead of judging it.
+    assert parse_verdict("Deno 团队整体加入 Cloudflare。结论：Deno 整个团队加入 Cloudflare，Deno 运行时") is None
+    assert parse_verdict("Safety: Controversial\nCategories: Politically Sensitive Topics") == "Controversial"
 
 
 def test_decide_action_takes_most_severe_rule_over_threshold():
