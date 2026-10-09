@@ -54,3 +54,7 @@ def conflict(message: str) -> HTTPException:
 
 def unavailable(message: str) -> HTTPException:
     return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, message)
+
+
+def unprocessable(message: str) -> HTTPException:
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, message)

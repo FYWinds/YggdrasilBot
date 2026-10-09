@@ -53,6 +53,7 @@ class Deps:
     user_id: int
     settings: Settings
     handles: Handles
+    task: str  # route serving this run (chat / tldr); decides whether view_image hands over the raw image
     tool_counts: Counter[str] = field(default_factory=Counter)
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams

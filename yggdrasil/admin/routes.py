@@ -8,11 +8,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from yggdrasil.admin.auth import Actor
-from yggdrasil.admin.common import Ok, change, not_found, unavailable
+from yggdrasil.admin.common import Ok, change, not_found, unavailable, unprocessable
 from yggdrasil.db.base import EMBED_DIM
 from yggdrasil.db.models import EmbedSpace, Provider, TaskRoute
 from yggdrasil.db.session import get_session
-from yggdrasil.llm.registry import TASKS
+from yggdrasil.llm.catalog import ModelCaps
+from yggdrasil.llm.registry import TASK_NEEDS, TASKS
+
+_NEED_LABELS = {"vision": "看图", "tools": "工具调用"}
 
 router = APIRouter(tags=["routes"])
 
@@ -65,15 +68,32 @@ async def list_routes() -> list[TaskRouteRow]:
     return [TaskRouteRow(task=t, route=_route_out(rows[t]) if t in rows else None) for t in TASKS]
 
 
+def _missing_caps(task: str, p: Provider, model: str) -> str | None:
+    """Why ``model`` can't serve ``task`` per its known capabilities; None if fine or unknown."""
+    raw = (p.model_caps or {}).get(model)
+    if raw is None:
+        return None
+    caps = ModelCaps.model_validate(raw)
+    missing = [_NEED_LABELS[n] for n in TASK_NEEDS.get(task, ()) if not getattr(caps, n)]
+    if not missing:
+        return None
+    return f"{p.name}/{model}（models.dev: {caps.catalog_id}）不支持{'、'.join(missing)}，不能用于 {task}"
+
+
 @router.put("/routes/{task}")
 async def upsert_route(task: str, body: RouteIn, actor: Actor) -> TaskRouteRow:
     _check_task(task)
     fallback_model = (body.fallback_model or "").strip() or None
     fallback_provider_id = body.fallback_provider_id if fallback_model else None
     async with change(actor, "route", "upsert", task) as c:
-        for pid in {body.provider_id, fallback_provider_id} - {None}:
-            if await c.session.get(Provider, pid) is None:
+        for pid, model in {(body.provider_id, body.model.strip()), (fallback_provider_id, fallback_model)}:
+            if pid is None or model is None:
+                continue
+            p = await c.session.get(Provider, pid)
+            if p is None:
                 raise not_found(f"provider {pid} ")
+            if why := _missing_caps(task, p, model):
+                raise unprocessable(why)
         r = await c.session.get(TaskRoute, task)
         if r is None:
             r = TaskRoute(task=task)

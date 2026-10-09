@@ -13,6 +13,7 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { ProviderOut, RouteIn, TaskRouteRow } from "@/client/types.gen";
 import { ConfirmButton, Field, JsonEditor, NumberInput, OptionSelect, PageHeader, QueryState } from "@/components/common";
+import { CapBadges, capsOf } from "@/components/model-caps";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,7 +36,7 @@ const TASK_LABELS: Record<string, string> = {
   memory_digest: "每日摘要",
 };
 
-/** Text input with the provider's cached model list as suggestions; any value is allowed. */
+/** Text input with the provider's cached model list as suggestions; any value is allowed. Shows the chosen model's capabilities. */
 function ModelInput({
   provider,
   value,
@@ -59,6 +60,7 @@ function ModelInput({
           <option key={m} value={m} />
         ))}
       </datalist>
+      {value.trim() && <CapBadges caps={capsOf(provider, value)} />}
     </>
   );
 }
@@ -99,6 +101,10 @@ export function RoutesPage() {
                     <>
                       <div className="font-mono text-xs">{row.route.model}</div>
                       <div className="text-xs text-muted-foreground">{providerName(row.route.provider_id)}</div>
+                      <CapBadges
+                        quiet
+                        caps={capsOf(providers.data?.find((p) => p.id === row.route?.provider_id), row.route.model)}
+                      />
                     </>
                   ) : (
                     <Badge variant="outline">未配置</Badge>

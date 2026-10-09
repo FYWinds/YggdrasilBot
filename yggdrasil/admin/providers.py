@@ -1,4 +1,4 @@
-"""OpenAI-compatible providers: CRUD, connectivity test, model list refresh."""
+"""OpenAI-compatible providers: CRUD, connectivity test, model list + capability refresh, aliases."""
 
 import time
 from datetime import UTC, datetime
@@ -16,6 +16,7 @@ from yggdrasil.config import APP_CONFIG
 from yggdrasil.crypto import decrypt, encrypt, mask
 from yggdrasil.db.models import Provider
 from yggdrasil.db.session import get_session
+from yggdrasil.llm.catalog import Catalog, ModelCaps, load_catalog
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -30,6 +31,8 @@ class ProviderOut(BaseModel):
     api_format: str
     models: list[str]
     models_fetched_at: datetime | None
+    model_aliases: dict[str, str]
+    model_caps: dict[str, ModelCaps]
     created_at: datetime
     updated_at: datetime
 
@@ -71,6 +74,8 @@ def _out(p: Provider) -> ProviderOut:
         api_format=p.api_format,
         models=[str(m) for m in p.models or ()],
         models_fetched_at=p.models_fetched_at,
+        model_aliases={str(k): str(v) for k, v in (p.model_aliases or {}).items()},
+        model_caps={k: ModelCaps.model_validate(v) for k, v in (p.model_caps or {}).items()},
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -185,6 +190,20 @@ async def test_provider(provider_id: int) -> ProviderProbe:
 class RefreshResult(BaseModel):
     probe: ProviderProbe
     provider: ProviderOut
+    catalog_error: str | None = None  # models.dev unreachable: capabilities kept from the last refresh
+
+
+async def _catalog() -> tuple[Catalog | None, str | None]:
+    """models.dev catalog, or an error text (callers then keep the stored capabilities)."""
+    try:
+        return await load_catalog(), None
+    except (httpx.HTTPError, ValueError) as e:
+        return None, f"无法获取 models.dev 能力目录: {type(e).__name__}: {e}"
+
+
+def _apply_caps(p: Provider, catalog: Catalog | None) -> None:
+    if catalog is not None:
+        p.model_caps = catalog.resolve([str(m) for m in p.models or ()], p.model_aliases or {})
 
 
 @router.post("/{provider_id}/refresh-models")
@@ -194,6 +213,7 @@ async def refresh_provider_models(provider_id: int, actor: Actor) -> RefreshResu
         if p is None:
             raise not_found("provider ")
     probe, ids = await _fetch_models(p)
+    catalog, catalog_error = await _catalog()
     if not probe.ok:
         return RefreshResult(probe=probe, provider=_out(p))
     async with change(actor, "provider", "refresh_models", provider_id) as c:
@@ -202,7 +222,36 @@ async def refresh_provider_models(provider_id: int, actor: Actor) -> RefreshResu
             raise not_found("provider ")
         p.models = ids
         p.models_fetched_at = datetime.now(UTC)
-        c.detail = {"count": len(ids)}
+        _apply_caps(p, catalog)
+        c.detail = {"count": len(ids), "with_caps": len(p.model_caps)}
         await c.session.flush()
         await c.session.refresh(p)
-    return RefreshResult(probe=probe, provider=_out(p))
+    return RefreshResult(probe=probe, provider=_out(p), catalog_error=catalog_error)
+
+
+class AliasesIn(BaseModel):
+    # provider model id -> models.dev id ("anthropic/claude-sonnet-5-5" or a bare "claude-sonnet-5-5")
+    aliases: dict[str, str]
+
+
+class AliasesResult(BaseModel):
+    provider: ProviderOut
+    catalog_error: str | None = None
+    unmatched: list[str] = Field(default_factory=list)  # aliased ids the catalog still can't resolve
+
+
+@router.put("/{provider_id}/aliases")
+async def set_provider_aliases(provider_id: int, body: AliasesIn, actor: Actor) -> AliasesResult:
+    aliases = {k.strip(): v.strip() for k, v in body.aliases.items() if k.strip() and v.strip()}
+    catalog, catalog_error = await _catalog()
+    async with change(actor, "provider", "set_aliases", provider_id) as c:
+        p = await c.session.get(Provider, provider_id)
+        if p is None:
+            raise not_found("provider ")
+        p.model_aliases = aliases
+        _apply_caps(p, catalog)
+        c.detail = {"aliases": aliases}
+        await c.session.flush()
+        await c.session.refresh(p)
+    unmatched = [] if catalog_error else sorted(k for k in aliases if k not in (p.model_caps or {}))
+    return AliasesResult(provider=_out(p), catalog_error=catalog_error, unmatched=unmatched)

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Yggdrasil Admin",
-    "version": "0.1.0"
+    "version": "dev"
   },
   "servers": [
     {
@@ -275,6 +275,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RefreshResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/providers/{provider_id}/aliases": {
+      "put": {
+        "tags": [
+          "providers"
+        ],
+        "summary": "Set Provider Aliases",
+        "operationId": "set_provider_aliases",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AliasesIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AliasesResult"
                 }
               }
             }
@@ -2686,6 +2738,52 @@
         ],
         "title": "AdminOut"
       },
+      "AliasesIn": {
+        "properties": {
+          "aliases": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Aliases"
+          }
+        },
+        "type": "object",
+        "required": [
+          "aliases"
+        ],
+        "title": "AliasesIn"
+      },
+      "AliasesResult": {
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ProviderOut"
+          },
+          "catalog_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Error"
+          },
+          "unmatched": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unmatched"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "AliasesResult"
+      },
       "DecideIn": {
         "properties": {
           "action": {
@@ -3502,6 +3600,61 @@
         ],
         "title": "Me"
       },
+      "ModelCaps": {
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "title": "Catalog Id"
+          },
+          "vision": {
+            "type": "boolean",
+            "title": "Vision"
+          },
+          "pdf": {
+            "type": "boolean",
+            "title": "Pdf"
+          },
+          "tools": {
+            "type": "boolean",
+            "title": "Tools"
+          },
+          "reasoning": {
+            "type": "boolean",
+            "title": "Reasoning"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          }
+        },
+        "type": "object",
+        "required": [
+          "catalog_id",
+          "vision",
+          "pdf",
+          "tools",
+          "reasoning"
+        ],
+        "title": "ModelCaps"
+      },
       "ModerationOut": {
         "properties": {
           "id": {
@@ -4177,6 +4330,20 @@
             ],
             "title": "Models Fetched At"
           },
+          "model_aliases": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Model Aliases"
+          },
+          "model_caps": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ModelCaps"
+            },
+            "type": "object",
+            "title": "Model Caps"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4199,6 +4366,8 @@
           "api_format",
           "models",
           "models_fetched_at",
+          "model_aliases",
+          "model_caps",
           "created_at",
           "updated_at"
         ],
@@ -4262,6 +4431,17 @@
           },
           "provider": {
             "$ref": "#/components/schemas/ProviderOut"
+          },
+          "catalog_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Error"
           }
         },
         "type": "object",

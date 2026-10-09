@@ -29,6 +29,7 @@ from yggdrasil.db.models import (
 )
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
+from yggdrasil.llm.catalog import ModelCaps
 from yggdrasil.settings import Settings, effective_settings
 
 CHANNEL = "ygg:config"
@@ -44,6 +45,7 @@ class ProviderInfo:
     enabled: bool
     models: tuple[str, ...]
     api_format: str = "openai"
+    caps: dict[str, ModelCaps] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +151,7 @@ async def load() -> Snapshot:
                 p.enabled,
                 tuple(p.models or ()),
                 p.api_format,
+                {m: ModelCaps.model_validate(c) for m, c in (p.model_caps or {}).items()},
             )
         routes = {
             r.task: Route(

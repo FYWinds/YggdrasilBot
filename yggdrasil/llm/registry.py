@@ -23,6 +23,7 @@ from pydantic_ai.usage import UsageLimits
 
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.metrics import LLM_REQUESTS, LLM_TOKENS
+from yggdrasil.llm.catalog import ModelCaps
 from yggdrasil.runtime import ProviderInfo, Route, Snapshot, snapshot
 
 TASKS = (
@@ -39,6 +40,12 @@ TASKS = (
     "memory_digest",
 )
 CHAT_TASKS = tuple(t for t in TASKS if t not in ("moderation", "embedding", "rerank"))
+# Capabilities a route's models must have; checked on save when the catalog knows the model.
+# Agents with tools or structured output (pydantic-ai output tools) need tool calling.
+TASK_NEEDS: dict[str, tuple[str, ...]] = {
+    "vision": ("vision",),
+    **dict.fromkeys(("chat", "tldr", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"), ("tools",)),
+}
 
 _SETTING_KEYS = {
     "temperature",
@@ -157,6 +164,26 @@ def chat_model(task: str, snap: Snapshot | None = None, *, default_limits: Usage
             total_tokens_limit=r.limits.get("total_tokens_limit", limits.total_tokens_limit),
         )
     return ResolvedModel(task, model, ModelSettings(**settings), limits, f"{primary_p.name}/{r.model}")
+
+
+def route_caps(task: str, snap: Snapshot | None = None) -> list[ModelCaps | None]:
+    """Capabilities of the route's primary and (enabled) fallback model; None where unknown."""
+    snap = snap or snapshot()
+    r = snap.routes.get(task)
+    if r is None:
+        return []
+    pairs = [(r.provider_id, r.model)]
+    if r.fallback_provider_id and r.fallback_model:
+        fb = snap.providers.get(r.fallback_provider_id)
+        if fb and fb.enabled:
+            pairs.append((r.fallback_provider_id, r.fallback_model))
+    return [p.caps.get(m) if (p := snap.providers.get(pid)) else None for pid, m in pairs]
+
+
+def sees_images(task: str, snap: Snapshot | None = None) -> bool:
+    """Whether every model that may serve ``task`` is known to accept image input."""
+    caps = route_caps(task, snap)
+    return bool(caps) and all(c is not None and c.vision for c in caps)
 
 
 def record_usage(task: str, model: str, *, input_tokens: int, output_tokens: int, cached: int = 0) -> None:

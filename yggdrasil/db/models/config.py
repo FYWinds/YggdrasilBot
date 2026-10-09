@@ -25,6 +25,10 @@ class Provider(Base, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(default=True)
     models: Mapped[list[Any]] = mapped_column(default=list)  # cached /v1/models ids
     models_fetched_at: Mapped[datetime | None]
+    # model id -> models.dev id, for ids the automatic prefix-stripping match can't resolve
+    model_aliases: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
+    # model id -> yggdrasil.llm.catalog.ModelCaps, refreshed with the model list / on alias edits
+    model_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
 
 
 class TaskRoute(Base, TimestampMixin):

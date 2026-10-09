@@ -59,6 +59,33 @@ export type AdminOut = {
 };
 
 /**
+ * AliasesIn
+ */
+export type AliasesIn = {
+    /**
+     * Aliases
+     */
+    aliases: {
+        [key: string]: string;
+    };
+};
+
+/**
+ * AliasesResult
+ */
+export type AliasesResult = {
+    provider: ProviderOut;
+    /**
+     * Catalog Error
+     */
+    catalog_error?: string | null;
+    /**
+     * Unmatched
+     */
+    unmatched?: Array<string>;
+};
+
+/**
  * DecideIn
  */
 export type DecideIn = {
@@ -557,6 +584,40 @@ export type Me = {
 };
 
 /**
+ * ModelCaps
+ */
+export type ModelCaps = {
+    /**
+     * Catalog Id
+     */
+    catalog_id: string;
+    /**
+     * Vision
+     */
+    vision: boolean;
+    /**
+     * Pdf
+     */
+    pdf: boolean;
+    /**
+     * Tools
+     */
+    tools: boolean;
+    /**
+     * Reasoning
+     */
+    reasoning: boolean;
+    /**
+     * Context
+     */
+    context?: number | null;
+    /**
+     * Output
+     */
+    output?: number | null;
+};
+
+/**
  * ModerationOut
  */
 export type ModerationOut = {
@@ -1021,6 +1082,18 @@ export type ProviderOut = {
      */
     models_fetched_at: string | null;
     /**
+     * Model Aliases
+     */
+    model_aliases: {
+        [key: string]: string;
+    };
+    /**
+     * Model Caps
+     */
+    model_caps: {
+        [key: string]: ModelCaps;
+    };
+    /**
      * Created At
      */
     created_at: string;
@@ -1062,6 +1135,10 @@ export type ProviderProbe = {
 export type RefreshResult = {
     probe: ProviderProbe;
     provider: ProviderOut;
+    /**
+     * Catalog Error
+     */
+    catalog_error?: string | null;
 };
 
 /**
@@ -1826,6 +1903,36 @@ export type RefreshProviderModelsResponses = {
 };
 
 export type RefreshProviderModelsResponse = RefreshProviderModelsResponses[keyof RefreshProviderModelsResponses];
+
+export type SetProviderAliasesData = {
+    body: AliasesIn;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/providers/{provider_id}/aliases';
+};
+
+export type SetProviderAliasesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SetProviderAliasesError = SetProviderAliasesErrors[keyof SetProviderAliasesErrors];
+
+export type SetProviderAliasesResponses = {
+    /**
+     * Successful Response
+     */
+    200: AliasesResult;
+};
+
+export type SetProviderAliasesResponse = SetProviderAliasesResponses[keyof SetProviderAliasesResponses];
 
 export type ListRoutesData = {
     body?: never;

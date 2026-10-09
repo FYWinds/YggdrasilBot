@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { PencilIcon, PlusIcon, RefreshCwIcon, ZapIcon } from "lucide-react";
+import { ListIcon, PencilIcon, PlusIcon, RefreshCwIcon, ZapIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -7,10 +7,12 @@ import {
   deleteProviderMutation,
   listProvidersOptions,
   refreshProviderModelsMutation,
+  setProviderAliasesMutation,
   testProviderMutation,
   updateProviderMutation,
 } from "@/client/@tanstack/react-query.gen";
 import type { ProviderIn, ProviderOut, ProviderProbe } from "@/client/types.gen";
+import { CapBadges } from "@/components/model-caps";
 import { ConfirmButton, Empty, Field, JsonEditor, OptionSelect, PageHeader, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,11 +32,18 @@ function probeText(p: ProviderProbe): string {
 export function ProvidersPage() {
   const providers = useQuery(listProvidersOptions());
   const [editing, setEditing] = useState<ProviderOut | "new" | null>(null);
+  const [modelsOf, setModelsOf] = useState<number | null>(null);
+  const modelsProvider = providers.data?.find((p) => p.id === modelsOf);
   const test = useMutation({ ...testProviderMutation(),
       onSuccess: (p) => (p.ok ? toast.success(probeText(p)) : toast.error(probeText(p))),
     });
   const refresh = useMutation({ ...refreshProviderModelsMutation(),
-      onSuccess: (r) => (r.probe.ok ? toast.success(`已拉取 ${r.probe.model_count} 个模型`) : toast.error(probeText(r.probe))),
+      onSuccess: (r) => {
+        if (!r.probe.ok) return toast.error(probeText(r.probe));
+        const withCaps = Object.keys(r.provider.model_caps).length;
+        toast.success(`已拉取 ${r.probe.model_count} 个模型，${withCaps} 个匹配到能力信息`);
+        if (r.catalog_error) toast.warning(r.catalog_error);
+      },
     });
   const remove = useMutation({ ...deleteProviderMutation(), onSuccess: () => toast.success("已删除") });
 
@@ -78,6 +87,9 @@ export function ProvidersPage() {
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell>
                   <span title={p.models.join("\n")}>{p.models.length} 个</span>
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    · 能力 {Object.keys(p.model_caps).length}
+                  </span>
                   <div className="text-xs text-muted-foreground">{fmtTime(p.models_fetched_at)}</div>
                 </TableCell>
                 <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
@@ -99,6 +111,9 @@ export function ProvidersPage() {
                     >
                       <RefreshCwIcon /> 拉取模型
                     </Button>
+                    <Button size="sm" variant="outline" onClick={() => setModelsOf(p.id)}>
+                      <ListIcon /> 模型与别名
+                    </Button>
                     <Button size="sm" variant="outline" onClick={() => setEditing(p)}>
                       <PencilIcon /> 编辑
                     </Button>
@@ -117,6 +132,7 @@ export function ProvidersPage() {
         </Table>
       )}
       {editing && <ProviderDialog provider={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
+      {modelsProvider && <ModelsDialog provider={modelsProvider} onClose={() => setModelsOf(null)} />}
     </div>
   );
 }
@@ -201,6 +217,99 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
           </Button>
           <Button disabled={pending || !form.name || !form.base_url} onClick={submit}>
             保存
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Per-model capabilities (models.dev) and aliases for ids the automatic match can't resolve. */
+function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: () => void }) {
+  const [aliases, setAliases] = useState<Record<string, string>>(provider.model_aliases);
+  const [extra, setExtra] = useState("");
+  const ids = [...new Set([...provider.models, ...Object.keys(aliases)])].sort();
+  const save = useMutation({
+    ...setProviderAliasesMutation(),
+    onSuccess: (r) => {
+      if (r.catalog_error) toast.warning(r.catalog_error);
+      else if (r.unmatched?.length) toast.warning(`这些别名在 models.dev 里找不到：${r.unmatched.join("、")}`);
+      else toast.success("已保存别名并更新能力信息");
+    },
+  });
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>{provider.name} 的模型能力</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）。匹配不上或匹配错了，就填别名，例如
+          anthropic/claude-sonnet-5-5。
+        </p>
+        <div className="max-h-[60vh] overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>模型</TableHead>
+                <TableHead>能力</TableHead>
+                <TableHead className="w-64">别名（models.dev id）</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {ids.map((m) => (
+                <TableRow key={m}>
+                  <TableCell className="font-mono text-xs">{m}</TableCell>
+                  <TableCell>
+                    <CapBadges caps={provider.model_caps[m]} showId />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      className="h-8 font-mono text-xs"
+                      value={aliases[m] ?? ""}
+                      placeholder="自动匹配"
+                      onChange={(e) => setAliases({ ...aliases, [m]: e.target.value })}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!ids.length && (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground">
+                    还没有模型，先拉取模型列表，或在下面添加
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="flex gap-2">
+          <Input
+            className="font-mono text-xs"
+            value={extra}
+            placeholder="不在列表里的模型名（路由里手填的）"
+            onChange={(e) => setExtra(e.target.value)}
+          />
+          <Button
+            variant="outline"
+            disabled={!extra.trim() || ids.includes(extra.trim())}
+            onClick={() => {
+              setAliases({ ...aliases, [extra.trim()]: "" });
+              setExtra("");
+            }}
+          >
+            <PlusIcon /> 添加
+          </Button>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            关闭
+          </Button>
+          <Button
+            disabled={save.isPending}
+            onClick={() => save.mutate({ path: { provider_id: provider.id }, body: { aliases } })}
+          >
+            保存别名
           </Button>
         </DialogFooter>
       </DialogContent>
