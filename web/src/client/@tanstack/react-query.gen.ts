@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { activatePromptVersion, addAdmin, backfillGroup, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createTrigger, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteTrigger, getGlobalSettings, getGroupSettings, getInvocation, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listGlossary, listGroups, listInvocations, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listStickers, listTopics, listTriggers, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, testProvider, testTrigger, updateGlossaryTerm, updateProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, TestProviderData, TestProviderError, TestProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
+import { activatePromptVersion, addAdmin, backfillGroup, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteTrigger, getGlobalSettings, getGroupSettings, getInvocation, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listStickers, listTopics, listTriggers, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, testProvider, testTrigger, updateGlossaryTerm, updateProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, TestProviderData, TestProviderError, TestProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -808,6 +808,71 @@ export const decideReviewMutation = (options?: Partial<Options<DecideReviewData>
     const mutationOptions: UseMutationOptions<DecideReviewResponse, DecideReviewError, Options<DecideReviewData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await decideReview({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const listEventsQueryKey = (options?: Options<ListEventsData>) => createQueryKey('listEvents', options);
+
+/**
+ * List Events
+ */
+export const listEventsOptions = (options?: Options<ListEventsData>) => queryOptions<ListEventsResponse, ListEventsError, ListEventsResponse, ReturnType<typeof listEventsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listEvents({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listEventsQueryKey(options)
+});
+
+export const listEventsInfiniteQueryKey = (options?: Options<ListEventsData>): QueryKey<Options<ListEventsData>> => createQueryKey('listEvents', options, true);
+
+/**
+ * List Events
+ */
+export const listEventsInfiniteOptions = (options?: Options<ListEventsData>) => {
+    const opts = infiniteQueryOptions<ListEventsResponse, ListEventsError, InfiniteData<ListEventsResponse>, QueryKey<Options<ListEventsData>>, number | Pick<QueryKey<Options<ListEventsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+    // @ts-ignore
+    {
+        queryFn: async ({ pageParam, queryKey, signal }) => {
+            // @ts-ignore
+            const page: Pick<QueryKey<Options<ListEventsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
+                query: {
+                    offset: pageParam
+                }
+            };
+            const params = createInfiniteParams(queryKey, page);
+            const { data } = await listEvents({
+                ...options,
+                ...params,
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: listEventsInfiniteQueryKey(options)
+    });
+    return opts as Omit<typeof opts, 'initialData'>;
+};
+
+/**
+ * Decide Event
+ */
+export const decideEventMutation = (options?: Partial<Options<DecideEventData>>): UseMutationOptions<DecideEventResponse, DecideEventError, Options<DecideEventData>> => {
+    const mutationOptions: UseMutationOptions<DecideEventResponse, DecideEventError, Options<DecideEventData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await decideEvent({
                 ...options,
                 ...fnOptions,
                 throwOnError: true

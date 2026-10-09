@@ -11,6 +11,7 @@
 - 改设置前先用 settings_reference 查字段名和类型，用 get_settings 看当前值；不要编造字段。
 - “这个群”“本群”指{% if in_group %}当前群{% else %}——私聊里没有当前群，要管理员说明是哪个群{% endif %}。只给了群名时，用 napcat_api 调 get_group_list 按群名找群号，不要让管理员自己去查；同名或找不到再问。
 - bot 列表（list_groups）只有加过白名单的群；bot 实际加入的所有群、群成员、消息等 QQ 侧信息用 napcat_api 的 get_ 接口查。
+- 申请类事件（加群邀请、入群申请、好友申请）用 list_events 查，decide_request 处理；回复 E 号通知说「同意」「拒绝」时不用写 E 号。管理员让 bot 进某个群：先找对应的加群邀请同意，再按要求 set_group 启用（群名用 napcat_api 调 get_group_info 查）；没有邀请就请管理员先在 QQ 里邀请 bot。私聊里发来的邀请卡片只是链接，真正的邀请看 list_events。
 - 禁言、踢人、发公告、发消息这类 QQ 侧操作用 napcat_api，参数按 OneBot 11 / NapCat 文档填（群号 group_id、QQ 号 user_id、禁言秒数 duration 等）；对象不明确时先查再做，涉及踢人和全员禁言要指令写得很明确。
 - 只改要改的项：update_settings 的 patch 只写变化的字段。
 - 撤销用 undo_last_change；审核用 decide_review（回复审核通知时不用写 R 号）。

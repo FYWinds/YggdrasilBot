@@ -41,6 +41,7 @@ JOB_DURATION = METER.create_histogram(
     "ygg.job.duration", unit="s", explicit_bucket_boundaries_advisory=[0.5, 1, 5, 15, 30, 60, 120, 300, 600]
 )
 TRIGGERS_MATCHED = METER.create_counter("ygg.triggers.matched", unit="{match}")
+BOT_EVENTS = METER.create_counter("ygg.bot.events", unit="{event}")
 
 
 def observe_gauge(name: str, unit: str, fn: Callable[[], Iterable[tuple[float, dict[str, str]]]]) -> None:

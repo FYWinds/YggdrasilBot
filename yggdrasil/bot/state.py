@@ -18,6 +18,8 @@ class Identity:
 _identities: dict[str, Identity] = {}
 connected: dict[str, float] = {}
 last_heartbeat: dict[str, float] = {}
+# Bots NapCat reported as logged out (KickedOffLine) while the WebSocket stays up; cleared on reconnect.
+offline: set[str] = set()
 # Latest message id from someone other than the bot, per group (for quote-when-busy).
 last_group_message: dict[int, int] = {}
 
@@ -45,6 +47,7 @@ async def identity(bot: Bot) -> Identity:
 def mark_connected(bot: Bot) -> None:
     connected[bot.self_id] = time.time()
     last_heartbeat[bot.self_id] = time.time()
+    offline.discard(bot.self_id)
 
 
 def mark_disconnected(bot: Bot) -> None:

@@ -173,6 +173,24 @@ class PrivacySettings(BaseModel):
     capture_llm_content: bool = Field(default=False, description="trace 里记录提示词和回复原文（排障用）")
 
 
+class EventSettings(BaseModel):
+    """Requests and notices (only the global document applies)."""
+
+    auto_accept_superuser_invites: bool = Field(default=True, description="超级管理员邀请 bot 进群时自动同意")
+    auto_enable_invited_groups: bool = Field(default=True, description="自动同意的邀请，同时把群加入白名单并回填历史")
+    notify_invites: bool = Field(default=True, description="其他人的加群邀请私聊通知超级管理员")
+    auto_accept_superuser_friends: bool = Field(default=True, description="超级管理员加 bot 好友时自动同意")
+    notify_friend_requests: bool = Field(default=True, description="其他人的好友申请私聊通知超级管理员")
+    notify_join_requests: bool = Field(
+        default=False, description="有人申请加入 bot 当管理的群时私聊通知（只记录，不代为处理）"
+    )
+    disable_group_when_kicked: bool = Field(default=True, description="bot 被踢出群时自动停用该群")
+    notify_kicked: bool = Field(default=True, description="bot 被踢出群时私聊通知超级管理员")
+    notify_banned: bool = Field(default=True, description="bot 在群里被禁言时私聊通知超级管理员")
+    request_expire_days: int = Field(default=7, ge=1, description="待处理的申请超过这个天数标为过期")
+    retention_days: int = Field(default=90, ge=7, description="事件记录保留天数")
+
+
 class Settings(BaseModel):
     persona: PersonaSettings = Field(default_factory=PersonaSettings)
     interaction: InteractionSettings = Field(default_factory=InteractionSettings)
@@ -183,6 +201,7 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     privacy: PrivacySettings = Field(default_factory=PrivacySettings)
     ops: OpsSettings = Field(default_factory=OpsSettings)
+    events: EventSettings = Field(default_factory=EventSettings)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

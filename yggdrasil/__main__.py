@@ -58,6 +58,8 @@ def _register_gauges() -> None:
     from yggdrasil.core.metrics import observe_gauge
 
     observe_gauge("ygg.onebot.connected", "{bot}", lambda: [(float(len(state.connected)), {})])
+    # Connected and not reported logged out: what actually decides whether QQ messages flow.
+    observe_gauge("ygg.onebot.logged_in", "{bot}", lambda: [(float(len(set(state.connected) - state.offline)), {})])
     observe_gauge(
         "ygg.onebot.heartbeat_age",
         "s",

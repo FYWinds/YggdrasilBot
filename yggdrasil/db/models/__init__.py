@@ -23,10 +23,11 @@ from yggdrasil.db.models.memory import (
     UserProfile,
     UserProfileFact,
 )
-from yggdrasil.db.models.ops import Invocation, ModerationResult, ReviewItem
+from yggdrasil.db.models.ops import BotEvent, Invocation, ModerationResult, ReviewItem
 
 __all__ = [
     "Admin",
+    "BotEvent",
     "CommandTrigger",
     "ConfigAudit",
     "DailyDigest",

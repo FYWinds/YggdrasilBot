@@ -78,3 +78,27 @@ class ReviewItem(Base):
     decided_by: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime | None]
     expires_at: Mapped[datetime]
+
+
+class BotEvent(Base):
+    """A non-message OneBot event worth keeping: requests (with their decision) and notices about
+    the bot itself or members of enabled groups. Shown as E<id>."""
+
+    __tablename__ = "bot_events"
+    __table_args__ = (
+        Index("ix_bot_events_at", "at"),
+        Index("ix_bot_events_status", "status", "at"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # request.group.invite | request.group.add | request.friend | notice.group_decrease.kick_me | ...
+    kind: Mapped[str] = mapped_column(Text)
+    group_id: Mapped[int | None]
+    user_id: Mapped[int | None]  # who it is about (requester, member, the bot)
+    operator_id: Mapped[int | None]  # who did it (inviter, admin who kicked or banned)
+    data: Mapped[dict[str, Any]] = mapped_column(default=dict)  # raw event (requests keep their flag here)
+    # requests only: pending | approved | rejected | expired | failed
+    status: Mapped[str | None] = mapped_column(Text)
+    handled_by: Mapped[str | None] = mapped_column(Text)  # qq:<id> | email | auto
+    handled_at: Mapped[datetime | None]

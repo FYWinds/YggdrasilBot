@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { Layout } from "@/components/layout";
 import { AdminsPage } from "@/pages/admins";
+import { EventsPage } from "@/pages/events";
 import { GroupsPage } from "@/pages/groups";
 import { InvocationsPage } from "@/pages/invocations";
 import { MemoryPage } from "@/pages/memory";
@@ -30,6 +31,7 @@ const routeTree = rootRoute.addChildren([
   page("/settings", SettingsPage),
   page("/prompts", PromptsPage),
   page("/reviews", ReviewsPage),
+  page("/events", EventsPage),
   page("/memory", MemoryPage),
   page("/invocations", InvocationsPage),
   page("/stickers", StickersPage),
