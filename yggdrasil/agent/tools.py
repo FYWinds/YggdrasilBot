@@ -294,6 +294,28 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
     return "\n".join(f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {m.sender_name}: {m.text}" for m in msgs) or "无"
 
 
+@_tool("recent_chat")
+async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
+    """取本群最近的聊天记录（最近 minutes 分钟，至少包含最近若干条）。只在目标需要群里的上下文才能讲清时用，
+    比如短词、黑话、截图、引用的一句聊天；链接、文件、合并转发直接读原文，不需要它。"""
+    from yggdrasil.memory.search import recent_messages
+
+    if ctx.deps.group_id is None:
+        raise ToolError("私聊里没有群聊记录")
+    cfg = ctx.deps.settings.context
+    msgs = await recent_messages(ctx.deps.group_id, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
+    if not msgs:
+        return "这段时间没有聊天记录"
+    me = f"{ctx.deps.settings.persona.name}(你)"
+    text = "\n".join(
+        f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {me if m.is_self else m.sender_name}: {m.text}" for m in msgs
+    )
+    if len(text) > cfg.max_context_chars:
+        text = text[-cfg.max_context_chars :]
+        text = text[text.find("\n") + 1 :]
+    return text
+
+
 @_tool("lookup_glossary")
 async def lookup_glossary(ctx: RunContext[Deps], term: str) -> str:
     """查本群黑话/梗词典。"""
@@ -365,6 +387,7 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
     "expand_forward": expand_forward,
     "search_history": search_history,
     "get_messages_around": get_messages_around,
+    "recent_chat": recent_chat,
     "lookup_glossary": lookup_glossary,
     "get_profile": get_profile,
     "render_mermaid": render_mermaid,
@@ -373,8 +396,21 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
 }
 
 
-def tools_for(enabled: list[str]) -> list[Tool[Deps]]:
-    return [Tool(ALL_TOOLS[name], takes_ctx=True) for name in enabled if name in ALL_TOOLS]
+# chat gets recent chat injected into the prompt; tldr summarizes the target itself, so it fetches chat
+# context only on demand and gets no profiles (they slant the summary toward the asker).
+_HANDLER_EXCLUDED: dict[str, frozenset[str]] = {
+    "chat": frozenset({"recent_chat"}),
+    "tldr": frozenset({"get_profile"}),
+}
+
+
+def tool_names(enabled: list[str], handler: str) -> list[str]:
+    excluded = _HANDLER_EXCLUDED.get(handler, frozenset())
+    return [name for name in enabled if name in ALL_TOOLS and name not in excluded]
+
+
+def tools_for(names: list[str]) -> list[Tool[Deps]]:
+    return [Tool(ALL_TOOLS[name], takes_ctx=True) for name in names]
 
 
 @_tool("recall_message")

@@ -104,6 +104,7 @@ class ToolSettings(BaseModel):
             "expand_forward",
             "search_history",
             "get_messages_around",
+            "recent_chat",
             "lookup_glossary",
             "get_profile",
             "render_mermaid",
