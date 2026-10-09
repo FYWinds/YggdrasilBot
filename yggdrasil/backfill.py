@@ -34,14 +34,15 @@ async def backfill(group_id: int) -> int:
         return 0
     api = NapCatAPI(bot)
     target = snapshot().settings(group_id).memory.backfill_messages
+    # Our own sends are recorded without a message_seq, so match on message id too.
     async with get_session() as session:
-        known = set(
-            (
-                await session.scalars(
-                    select(Message.message_seq).where(Message.group_id == group_id, Message.message_seq.is_not(None))
-                )
-            ).all()
-        )
+        rows = (
+            await session.execute(
+                select(Message.message_seq, Message.qq_message_id).where(Message.group_id == group_id)
+            )
+        ).all()
+    known = {r.message_seq for r in rows if r.message_seq is not None}
+    known_ids = {r.qq_message_id for r in rows}
     seen: set[int] = set()
     imported = 0
     cursor: int | None = None
@@ -58,7 +59,7 @@ async def backfill(group_id: int) -> int:
             seq = m.message_seq
             assert seq is not None
             seen.add(seq)
-            if seq in known or m.message_id is None or m.user_id is None:
+            if seq in known or m.message_id is None or m.message_id in known_ids or m.user_id is None:
                 continue
             WRITER.submit(
                 IncomingMessage(
