@@ -305,8 +305,15 @@ function Profiles({ groupId }: { groupId: number | null }) {
                   </div>
                   {p.opted_out && <Badge variant="outline">已退出记忆</Badge>}
                 </TableCell>
-                <TableCell className="max-w-lg text-sm">{p.summary}</TableCell>
-                <TableCell className="text-xs">{p.interests.join("、")}</TableCell>
+                {/* TableCell defaults to nowrap; long profile text must wrap and stay short (full text in 查看). */}
+                <TableCell className="min-w-80 max-w-xl text-sm whitespace-normal">
+                  <div className="line-clamp-3" title={p.summary}>
+                    {p.summary}
+                  </div>
+                </TableCell>
+                <TableCell className="min-w-40 max-w-xs text-xs whitespace-normal">
+                  <div className="line-clamp-3">{p.interests.join("、")}</div>
+                </TableCell>
                 <TableCell className="text-xs">{fmtTime(p.updated_at)}</TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
