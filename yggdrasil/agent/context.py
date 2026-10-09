@@ -182,6 +182,9 @@ async def build_context(
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     cfg = settings.context
     blocks = _Blocks()
+    # tldr summarizes the target itself: no group chat, profiles or topics up front (they slant it toward
+    # the asker or the group's theme); it can pull recent chat with the recent_chat tool when needed.
+    background = resolved.handler != "tldr"
 
     def name_of(user_id: int, name: str, is_self: bool) -> str:
         # Names go into tag attributes: drop characters that could close the attribute or tag.
@@ -190,7 +193,8 @@ async def build_context(
 
     mentioned = normalize(trigger.segments).mentions
     if group_id is not None:
-        await WRITER.flush()
+        await WRITER.flush()  # also lets recent_chat / search tools see the latest messages
+    if group_id is not None and background:
         try:
             recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
@@ -217,7 +221,7 @@ async def build_context(
 
     if group_id is not None:
         people = {trigger.user_id, target.user_id, *mentioned} - {self_id}
-        if cfg.include_profiles and people:
+        if cfg.include_profiles and background and people:
             try:
                 profiles = list((await search.profiles(group_id, sorted(people))).values())
             except Exception:
@@ -235,7 +239,7 @@ async def build_context(
                 hits = []
             if hits:
                 blocks.add("群内黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
-        if cfg.include_open_topics:
+        if cfg.include_open_topics and background:
             try:
                 topics = await search.open_topics(group_id, limit=5)
             except Exception:

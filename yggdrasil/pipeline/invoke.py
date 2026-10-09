@@ -18,7 +18,7 @@ from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.agent.tools import action_tools, tools_for
+from yggdrasil.agent.tools import action_tools, tool_names, tools_for
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
@@ -222,6 +222,7 @@ class Invocator:
         )
         actions = action_tools(deps)
         tools_cfg = self.settings.tools
+        tool_list = tool_names(tools_cfg.enabled, self.handler)
         group_name = ""
         if self.group_id is not None:
             info = snapshot().groups.get(self.group_id)
@@ -235,13 +236,13 @@ class Invocator:
                 persona=self.settings.persona,
                 group_name=group_name or "本群",
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
-                tools=tools_cfg.enabled,
+                tools=tool_list,
                 actions=[t.name for t in actions],
                 recall_denied=replied_bot_msg is not None and recall_target is None,
                 style=render("style_rules"),
                 data_rules=render("data_rules", nonce=ctx.nonce),
             ),
-            tools=tools_for(tools_cfg.enabled) + actions,
+            tools=tools_for(tool_list) + actions,
             name=self.handler,
             retries=2,
         )
