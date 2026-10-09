@@ -179,6 +179,7 @@ review_cmd = _matcher(
     "admin.review",
 )
 status_cmd = _matcher(Alconna("ygg:admin.status", Option("-v")), "admin.status")
+ops_cmd = _matcher(Alconna("ygg:admin.ops", Args["rest?", AllParam]), "admin.ops")
 
 
 @tldr_cmd.handle()
@@ -269,6 +270,14 @@ async def _status(bot: Bot) -> None:
         f"config v{snap.version}\n群：{', '.join(f'{g.name}({g.group_id})' for g in enabled) or '无'}\n"
         f"路由：{', '.join(sorted(snap.routes)) or '无'}\n待审核：{pending_count}"
     )
+
+
+@ops_cmd.handle()
+async def _ops(bot: Bot, event: MessageEvent) -> None:
+    from yggdrasil.ops.agent import run_ops
+
+    if event.user_id in snapshot().superusers:  # the trigger's allowed_roles is editable; this is not
+        _spawn(run_ops(bot, event))
 
 
 # --- notices & lifecycle -----------------------------------------------------

@@ -29,6 +29,7 @@ class InteractionSettings(BaseModel):
     done_emoji: str = Field(default="127881", description="回复完成时贴的表情（🎉）")
     silent_emoji: str = Field(default="479", description="bot 决定不回复时贴的表情")
     review_emoji: str = Field(default="10068", description="输入被拦截、输出进入审核或被拦截时贴的表情（❔）")
+    action_emoji: str = Field(default="478", description="按指令完成了操作（撤回、改配置等）且不需要回复时贴的表情")
     forward_max_nodes: int = Field(default=12, ge=1, le=60)
     max_sections: int = Field(default=2, ge=1, le=10, description="一次回复最多几节，多出的节合并进最后一节")
     node_max_chars: int = Field(default=1500, ge=200)

@@ -77,6 +77,16 @@ DEFAULT_TRIGGERS: list[dict] = [
         "allowed_roles": ["superuser"],
         "priority": 5,
     },
+    # Any other private message from a superuser: natural-language admin operations.
+    {
+        "handler": "admin.ops",
+        "scope": "private",
+        "match_type": "regex",
+        "patterns": [r"\S"],
+        "allowed_roles": ["superuser"],
+        "priority": 50,
+        "note": "超级管理员私聊：自然语言查询和修改配置",
+    },
 ]
 
 

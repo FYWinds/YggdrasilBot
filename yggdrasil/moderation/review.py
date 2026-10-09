@@ -116,6 +116,7 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
             item.status = "expired"
             raise ReviewError(f"R{review_id} 已过期")
         bot = any_bot()
+        sent_id: int | None = None
         if action != "reject":
             if bot is None:
                 raise ReviewError("bot 未连接，无法发送")
@@ -123,7 +124,7 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
             ident = await identity(bot)
             settings = snapshot().settings(item.group_id)
             if action == "edit":
-                await send_text(
+                sent_id = await send_text(
                     api,
                     group_id=item.group_id,
                     user_id=item.user_id,
@@ -134,7 +135,7 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
                 )
             else:
                 reply = BotReply.model_validate(item.reply)
-                await send_forward(
+                sent_id = await send_forward(
                     api,
                     group_id=item.group_id,
                     user_id=item.user_id,
@@ -151,7 +152,7 @@ async def decide(review_id: int, action: str, actor: str, edited_text: str | Non
             await session.execute(
                 update(Invocation)
                 .where(Invocation.id == item.invocation_id)
-                .values(status="ok" if action != "reject" else "rejected")
+                .values(status="ok" if action != "reject" else "rejected", reply_qq_message_id=sent_id)
             )
     await refresh_pending()
     return item

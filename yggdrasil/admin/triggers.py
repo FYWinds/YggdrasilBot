@@ -26,6 +26,7 @@ HANDLERS: dict[str, str] = {
     "privacy.forget": "忘记我",
     "admin.review": "私聊审核：通过 / 拒绝 / 修改",
     "admin.status": "私聊状态查询",
+    "admin.ops": "超级管理员用自然语言查询和修改配置（私聊）",
 }
 SCOPES = ("global", "group", "private")
 _PATTERN_TYPES = ("keyword_prefix", "keyword_exact", "regex")
