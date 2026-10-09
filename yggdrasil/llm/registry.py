@@ -30,6 +30,7 @@ TASKS = (
     "chat",
     "tldr",
     "quick_ack",
+    "ops",
     "vision",
     "moderation",
     "embedding",
@@ -44,7 +45,9 @@ CHAT_TASKS = tuple(t for t in TASKS if t not in ("moderation", "embedding", "rer
 # Agents with tools or structured output (pydantic-ai output tools) need tool calling.
 TASK_NEEDS: dict[str, tuple[str, ...]] = {
     "vision": ("vision",),
-    **dict.fromkeys(("chat", "tldr", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"), ("tools",)),
+    **dict.fromkeys(
+        ("chat", "tldr", "ops", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"), ("tools",)
+    ),
 }
 
 _SETTING_KEYS = {

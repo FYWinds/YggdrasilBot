@@ -54,6 +54,9 @@ class Deps:
     settings: Settings
     handles: Handles
     task: str  # route serving this run (chat / tldr); decides whether view_image hands over the raw image
+    # QQ id of the replied-to bot message the speaker may recall (None: no recall tool this run)
+    recall_target: int | None = None
+    actions: list[str] = field(default_factory=list)  # side effects done by action tools, for mode=done
     tool_counts: Counter[str] = field(default_factory=Counter)
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams

@@ -23,8 +23,12 @@ class Invocation(Base):
     user_id: Mapped[int]
     handler: Mapped[str] = mapped_column(Text)
     trigger_qq_message_id: Mapped[int | None]
+    # The bot message that answered (forward, or the reviewed text): who asked for a bot message,
+    # e.g. to let the asker recall it. QQ ids repeat, so only look up recent rows.
+    reply_qq_message_id: Mapped[int | None]
     request_text: Mapped[str] = mapped_column(Text, default="")
-    # ok | silent | blocked_input | review | rejected | failed | ratelimited | cancelled
+    # ok | done | silent | blocked_input | review | rejected | failed | ratelimited | cancelled
+    # (ops runs: done | reply | handoff)
     status: Mapped[str] = mapped_column(Text, default="running")
     models: Mapped[list[Any]] = mapped_column(default=list)
     tokens_in: Mapped[int] = mapped_column(default=0)

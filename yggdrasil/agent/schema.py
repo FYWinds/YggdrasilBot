@@ -16,8 +16,9 @@ class SourceRef(BaseModel):
 class BotReply(BaseModel):
     """The structured answer of the chat / tldr agents."""
 
-    mode: Literal["forward", "silent"] = Field(
-        description="forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）"
+    mode: Literal["forward", "silent", "done"] = Field(
+        description="forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；"
+        "done：已经用操作类工具完成了请求（比如撤回），不再发消息"
     )
     title: str | None = Field(default=None, description="mode=forward 时合并转发卡片的标题（≤20 字）")
     sections: list[Section] = Field(default_factory=list, description="mode=forward 时的各节")

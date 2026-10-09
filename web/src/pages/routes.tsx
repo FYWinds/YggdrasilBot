@@ -26,6 +26,7 @@ const TASK_LABELS: Record<string, string> = {
   chat: "对话",
   tldr: "TL;DR",
   quick_ack: "快速响应",
+  ops: "管理操作",
   vision: "看图",
   moderation: "审核",
   embedding: "向量",

@@ -16,8 +16,9 @@ from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.agent.tools import tools_for
+from yggdrasil.agent.tools import action_tools, tools_for
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
@@ -42,7 +43,8 @@ async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handle
     snap = snapshot()
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
     settings = snap.settings(group_id)
-    superuser = event.user_id in snap.superusers
+    role = speaker_role(event, snap.superusers)
+    superuser = role == "superuser"
     api = NapCatAPI(bot)
     if reason := await ratelimit.check(group_id, event.user_id, settings.ratelimit, superuser=superuser):
         LOGGER.info("rate limited ({}) user={} group={}", reason, event.user_id, group_id)
@@ -57,7 +59,14 @@ async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handle
             if settings.interaction.ratelimited_emoji:
                 await react(api, event.message_id, settings.interaction.ratelimited_emoji)
             return
-        await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id).run()
+        if handler == "chat" and superuser and group_id is not None:
+            # A superuser talking to the bot may be giving an admin instruction: the ops agent
+            # (fast model) acts on it, or hands it back here when it's an ordinary question.
+            from yggdrasil.ops.agent import run_ops
+
+            if await run_ops(bot, event) != "handoff":
+                return
+        await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role).run()
 
 
 class Invocator:
@@ -71,9 +80,12 @@ class Invocator:
         request_text: str,
         settings: Settings,
         group_id: int | None,
+        role: Role = "member",
     ) -> None:
         self.bot, self.api, self.event, self.resolved = bot, api, event, resolved
         self.handler, self.request_text, self.settings, self.group_id = handler, request_text, settings, group_id
+        self.role: Role = role
+        self.reply_qq_message_id: int | None = None
         self.started = time.perf_counter()
         self.meta = Meta()
         self.invocation_id: UUID | None = None
@@ -190,6 +202,14 @@ class Invocator:
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
+        replied_bot_msg = self._replied_bot_message(ident.self_id)
+        recall_target = (
+            replied_bot_msg
+            if replied_bot_msg is not None
+            and self.group_id is not None
+            and await may_recall(self.role, self.event.user_id, self.group_id, replied_bot_msg)
+            else None
+        )
         deps = Deps(
             self.api,
             self.group_id,
@@ -197,8 +217,10 @@ class Invocator:
             self.settings,
             ctx.handles,
             self.handler,
+            recall_target=recall_target,
             on_slow_tool=self._mark_slow,
         )
+        actions = action_tools(deps)
         tools_cfg = self.settings.tools
         group_name = ""
         if self.group_id is not None:
@@ -214,10 +236,12 @@ class Invocator:
                 group_name=group_name or "本群",
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
                 tools=tools_cfg.enabled,
+                actions=[t.name for t in actions],
+                recall_denied=replied_bot_msg is not None and recall_target is None,
                 style=render("style_rules"),
                 data_rules=render("data_rules", nonce=ctx.nonce),
             ),
-            tools=tools_for(tools_cfg.enabled),
+            tools=tools_for(tools_cfg.enabled) + actions,
             name=self.handler,
             retries=2,
         )
@@ -275,7 +299,11 @@ class Invocator:
             cached=usage.cache_read_tokens or 0,
         )
 
-        if reply.mode == "silent":
+        if reply.mode == "done" and deps.actions:
+            await self._status(self.settings.interaction.action_emoji)
+            await self._finish("done", None, reply=reply.model_dump())
+            return "done"
+        if reply.mode != "forward":  # silent, or "done" without having done anything
             return await self._stay_silent(reply)
 
         v_out = await moderate("output", mod_text, reply.full_text(), group_id=self.group_id)
@@ -286,7 +314,7 @@ class Invocator:
         if v_out.action == "pass":
             await self.deliver(reply)
             await self._status(self.settings.interaction.done_emoji)
-            await self._finish("ok", None, **verdicts)
+            await self._finish("ok", None, reply_qq_message_id=self.reply_qq_message_id, **verdicts)
             return "ok"
         if v_out.action == "review" and self.group_id is not None:
             from yggdrasil.moderation.review import create_review
@@ -358,12 +386,19 @@ class Invocator:
         await self._finish("silent", None, reply=reply.model_dump())
         return "silent"
 
+    def _replied_bot_message(self, self_id: int) -> int | None:
+        """QQ id of the bot's own group message this chat request replies to (recall candidate)."""
+        r = self.event.reply
+        if self.handler != "chat" or self.group_id is None or r is None or r.sender.user_id != self_id:
+            return None
+        return r.message_id
+
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction
         ident = await identity(self.bot)
         self.meta.total_s = self.elapsed()
         meta_text = self.meta.render(list(cfg.metadata_fields)) if cfg.metadata_node else None
-        await send_forward(
+        self.reply_qq_message_id = await send_forward(
             self.api,
             group_id=self.group_id,
             user_id=self.event.user_id,
