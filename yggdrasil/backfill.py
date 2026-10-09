@@ -18,16 +18,21 @@ _PAUSE_S = 1.5
 _running: dict[int, asyncio.Task] = {}
 
 
-def request_backfill(group_id: int) -> bool:
+def request_backfill(group_id: int, *, before: datetime | None = None) -> bool:
     """Start a background backfill; False if one is already running for the group."""
     task = _running.get(group_id)
     if task and not task.done():
         return False
-    _running[group_id] = asyncio.create_task(backfill(group_id), name=f"backfill-{group_id}")
+    _running[group_id] = asyncio.create_task(backfill(group_id, before=before), name=f"backfill-{group_id}")
     return True
 
 
-async def backfill(group_id: int) -> int:
+async def backfill(group_id: int, *, before: datetime | None = None) -> int:
+    """Import up to ``memory.backfill_messages`` of history, skipping what is stored.
+
+    With ``before`` it is a catch-up after a reconnect: only messages sent before then (newer ones
+    arrive live), stopping at the first page that reaches stored history.
+    """
     bot = any_bot()
     if bot is None:
         LOGGER.warning("backfill {}: no bot connected", group_id)
@@ -55,11 +60,17 @@ async def backfill(group_id: int) -> int:
         batch = [m for m in history.messages if m.message_seq is not None and m.message_seq not in seen]
         if not batch:
             break
+        reached_known = False
         for m in batch:
             seq = m.message_seq
             assert seq is not None
             seen.add(seq)
-            if seq in known or m.message_id is None or m.message_id in known_ids or m.user_id is None:
+            if seq in known or (m.message_id is not None and m.message_id in known_ids):
+                reached_known = True
+                continue
+            if m.message_id is None or m.user_id is None:
+                continue
+            if before is not None and m.time >= before.timestamp():
                 continue
             WRITER.submit(
                 IncomingMessage(
@@ -75,13 +86,16 @@ async def backfill(group_id: int) -> int:
             )
             imported += 1
         oldest = min(m.message_seq for m in batch if m.message_seq is not None)
-        if cursor is not None and oldest >= cursor:
+        if (cursor is not None and oldest >= cursor) or (before is not None and reached_known):
             break
         cursor = oldest
         await WRITER.flush()
         await asyncio.sleep(_PAUSE_S)
     await WRITER.flush()
-    async with get_session() as session:
-        await session.execute(update(Group).where(Group.group_id == group_id).values(backfilled_at=datetime.now(UTC)))
+    if before is None:
+        async with get_session() as session:
+            await session.execute(
+                update(Group).where(Group.group_id == group_id).values(backfilled_at=datetime.now(UTC))
+            )
     LOGGER.info("backfill {}: imported {} messages ({} scanned)", group_id, imported, len(seen))
     return imported

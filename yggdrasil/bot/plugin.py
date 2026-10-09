@@ -29,7 +29,9 @@ from nonebot.typing import T_State
 from nonebot_plugin_alconna import Alconna, Args, Arparma, Option, Subcommand, UniMessage, on_alconna
 from nonebot_plugin_alconna.extension import Extension
 
+from yggdrasil.backfill import request_backfill
 from yggdrasil.bot import state as bot_state
+from yggdrasil.bot.inflight import spawn as _spawn
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TRIGGERS_MATCHED
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
@@ -46,17 +48,10 @@ __plugin_meta__ = PluginMetadata(
 )
 
 STATE_KEY = "ygg.cmd"
-_background: set[asyncio.Task] = set()
 
 
 def _segments(message: Any) -> list[dict[str, Any]]:
     return [{"type": seg.type, "data": dict(seg.data)} for seg in message]
-
-
-def _spawn(coro: Any) -> None:
-    task = asyncio.create_task(coro)
-    _background.add(task)
-    task.add_done_callback(_background.discard)
 
 
 # --- routing -----------------------------------------------------------------
@@ -324,6 +319,18 @@ async def _connected(bot: Bot) -> None:
     bot_state.mark_connected(bot)
     ident = await bot_state.identity(bot)
     LOGGER.info("bot connected: {} ({})", ident.nickname, ident.self_id)
+    _spawn(_catch_up(datetime.now(UTC)))
+
+
+async def _catch_up(connected_at: datetime) -> None:
+    """Store what was said while no pod held the connection (rolling update, NapCat restart).
+
+    Triggers sent in that gap are not answered; only the history is filled in.
+    """
+    await asyncio.sleep(10)  # let the old pod's last ingest flush land, so nothing is stored twice
+    for gid, group in snapshot().groups.items():
+        if group.enabled:
+            request_backfill(gid, before=connected_at)
 
 
 @driver.on_bot_disconnect
