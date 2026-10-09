@@ -105,10 +105,12 @@ Redis service containers) on every push and PR. Pushes to `main` also push
 
 Release:
 
-1. Bump `version` in `pyproject.toml`, merge to `main`, then
-   `git tag vX.Y.Z && git push origin vX.Y.Z`.
-2. argocd-image-updater picks the highest `^v\d+\.\d+\.\d+$` tag (within a few
-   minutes) and writes it onto the `apps-yggdrasil` Application; the sync runs
+1. Merge to `main`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Do not bump
+   `version` in `pyproject.toml`: it stays `0.0.0` so `uv.lock` (and the cached
+   dependency layer) only change with dependencies; the tag reaches the image as
+   `YGG_VERSION` (telemetry `service.version`).
+2. argocd-image-updater (polls every 30s) picks the highest `^v\d+\.\d+\.\d+$` tag
+   and writes it onto the `apps-yggdrasil` Application; the sync runs
    migrations first, then recreates the bot.
 
 Test builds: every `main` push produces `sha-<short>`; pin it manually (see

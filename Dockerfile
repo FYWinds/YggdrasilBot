@@ -38,6 +38,10 @@ ENV PATH=/app/.venv/bin:$PATH \
     HOME=/tmp \
     YGG_WEB_DIST=/app/web/dist
 
+# Last so a new tag only changes this metadata, not any cached layer above.
+ARG YGG_VERSION=dev
+ENV YGG_VERSION=$YGG_VERSION
+
 USER 65532:65532
 EXPOSE 8080
 

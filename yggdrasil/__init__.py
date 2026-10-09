@@ -1,6 +1,5 @@
-from importlib.metadata import PackageNotFoundError, version
+import os
 
-try:
-    __version__ = version("yggdrasil-bot")
-except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "0.0.0"
+# Release images get the git tag (vX.Y.Z / sha-xxxx) as YGG_VERSION at build time; pyproject's
+# version stays fixed so releases don't touch uv.lock and bust the dependency layer cache.
+__version__ = os.environ.get("YGG_VERSION") or "dev"
