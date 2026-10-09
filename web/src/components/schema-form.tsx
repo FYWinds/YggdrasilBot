@@ -35,6 +35,7 @@ export const SECTION_LABELS: Record<string, string> = {
   tools: "工具",
   memory: "记忆整理",
   privacy: "隐私",
+  ops: "管理助手",
 };
 
 /** Inline $ref / single allOf, and unwrap Optional (anyOf with null). */

@@ -134,6 +134,25 @@ class ToolSettings(BaseModel):
     tool_calls_limit: int = 16
 
 
+class OpsSettings(BaseModel):
+    napcat_write_actions: list[str] = Field(
+        default_factory=lambda: [
+            "delete_msg",
+            "set_group_ban",
+            "set_group_whole_ban",
+            "set_group_kick",
+            "set_group_card",
+            "set_essence_msg",
+            "delete_essence_msg",
+            "_send_group_notice",
+            "send_group_msg",
+            "send_private_msg",
+        ],
+        description="管理助手（超级管理员）可以调用的会改东西的 NapCat 接口；get_ 开头的只读接口不用列。"
+        "退群、删好友、改账号资料、处理加群加好友申请、重启这类接口始终禁止",
+    )
+
+
 class MemorySettings(BaseModel):
     enabled: bool = True
     chunk_gap_minutes: int = Field(default=20, description="消息间隔超过这个时间就切块")
@@ -163,6 +182,7 @@ class Settings(BaseModel):
     tools: ToolSettings = Field(default_factory=ToolSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     privacy: PrivacySettings = Field(default_factory=PrivacySettings)
+    ops: OpsSettings = Field(default_factory=OpsSettings)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
