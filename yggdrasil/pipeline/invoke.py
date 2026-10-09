@@ -78,6 +78,7 @@ class Invocator:
         self.meta = Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
+        self._ack_reaction: tuple[int, str] | None = None
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
 
@@ -274,6 +275,9 @@ class Invocator:
             cached=usage.cache_read_tokens or 0,
         )
 
+        if reply.mode == "silent":
+            return await self._stay_silent(reply)
+
         v_out = await moderate("output", mod_text, reply.full_text(), group_id=self.group_id)
         await self._save_verdict(v_out)
         self.meta.moderation = f"输入 {v_in.verdict} · 输出 {v_out.verdict}({v_out.score:.2f})"
@@ -339,6 +343,7 @@ class Invocator:
             except Exception:
                 emoji = cfg.react_default
             await react(self.api, ctx.target.qq_message_id, emoji)
+            self._ack_reaction = (ctx.target.qq_message_id, emoji)
             self._mark_ack("react")
             return
         remaining = cfg.ack_delay_s - self.elapsed()
@@ -374,6 +379,18 @@ class Invocator:
         self.ack_kind = kind
         self.meta.ack_s = self.elapsed()
         INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.handler, "kind": kind})
+
+    async def _stay_silent(self, reply: BotReply) -> str:
+        """The model chose not to answer: take back the ack reaction so nothing is left in the chat."""
+        reason = (reply.silent_reason or "").strip()[:200]
+        LOGGER.info("{} stays silent: {}", self.handler, reason or "(no reason)")
+        trace.get_current_span().set_attribute("ygg.silent_reason", reason)
+        if self._ack_reaction is not None:
+            message_id, emoji = self._ack_reaction
+            with contextlib.suppress(Exception):
+                await self.api.set_msg_emoji_like(message_id=message_id, emoji_id=emoji, set=False)
+        await self._finish("silent", None, reply=reply.model_dump())
+        return "silent"
 
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction

@@ -24,7 +24,7 @@ class Invocation(Base):
     handler: Mapped[str] = mapped_column(Text)
     trigger_qq_message_id: Mapped[int | None]
     request_text: Mapped[str] = mapped_column(Text, default="")
-    # ok | blocked_input | review | rejected | failed | ratelimited | cancelled
+    # ok | silent | blocked_input | review | rejected | failed | ratelimited | cancelled
     status: Mapped[str] = mapped_column(Text, default="running")
     models: Mapped[list[Any]] = mapped_column(default=list)
     tokens_in: Mapped[int] = mapped_column(default=0)
