@@ -43,6 +43,6 @@ EXPOSE 8080
 
 # Bot (NoneBot + dashboard API) on YGG_PORT. Other roles reuse the image:
 #   worker:    taskiq worker yggdrasil.worker.broker:broker yggdrasil.worker.tasks
-#   scheduler: taskiq scheduler yggdrasil.worker.broker:scheduler
+#   scheduler: taskiq scheduler yggdrasil.worker.broker:scheduler yggdrasil.worker.tasks
 #   migration: alembic upgrade head
 CMD ["python", "-m", "yggdrasil"]
