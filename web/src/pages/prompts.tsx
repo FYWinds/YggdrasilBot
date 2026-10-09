@@ -35,18 +35,15 @@ export function PromptsPage() {
         <div className="flex gap-6">
           <nav className="flex w-56 shrink-0 flex-col gap-0.5">
             {list.data.map((p) => (
-              <button
-                type="button"
+              <Button
                 key={p.key}
+                variant="ghost"
                 onClick={() => setKey(p.key)}
-                className={cn(
-                  "flex items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-muted",
-                  current === p.key && "bg-muted font-medium",
-                )}
+                className={cn("justify-between", current === p.key && "bg-muted font-medium")}
               >
                 <span className="font-mono">{p.key}</span>
                 {p.active_version_id ? <Badge>v{p.active_version_id}</Badge> : <Badge variant="outline">默认</Badge>}
-              </button>
+              </Button>
             ))}
           </nav>
           <div className="min-w-0 flex-1">{current && <PromptEditor key={current} promptKey={current} />}</div>

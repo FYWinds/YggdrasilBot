@@ -1,4 +1,5 @@
 import type { ModelCaps, ProviderOut } from "@/client/types.gen";
+import { Hint } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 
 function fmtTokens(n: number): string {
@@ -18,8 +19,8 @@ export function CapBadges({ caps, showId = false, quiet = false }: { caps: Model
     [caps.tools, "工具"],
     [caps.reasoning, "推理"],
   ];
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1" title={`models.dev: ${caps.catalog_id}`}>
+  const badges = (
+    <span className="inline-flex flex-wrap items-center gap-1">
       {flags.map(([on, label]) => (
         <Badge key={label} variant={on ? "secondary" : "outline"} className={on ? "" : "text-muted-foreground line-through"}>
           {label}
@@ -29,4 +30,5 @@ export function CapBadges({ caps, showId = false, quiet = false }: { caps: Model
       {showId && <span className="basis-full font-mono text-xs text-muted-foreground">{caps.catalog_id}</span>}
     </span>
   );
+  return showId ? badges : <Hint content={`models.dev: ${caps.catalog_id}`}>{badges}</Hint>;
 }

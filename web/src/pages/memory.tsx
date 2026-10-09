@@ -1,6 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { endOfDay, startOfDay } from "date-fns";
 import { LockIcon, LockOpenIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
+import type { DateRange } from "react-day-picker";
 import { toast } from "sonner";
 import {
   createGlossaryTermMutation,
@@ -17,7 +19,19 @@ import {
   updateGlossaryTermMutation,
 } from "@/client/@tanstack/react-query.gen";
 import type { GlossaryIn, GlossaryOut } from "@/client/types.gen";
-import { ConfirmButton, Empty, Field, GroupSelect, PageHeader, Pager, Pre, QueryState, TagInput } from "@/components/common";
+import {
+  ConfirmButton,
+  DateRangePicker,
+  Empty,
+  Field,
+  GroupSelect,
+  Hint,
+  PageHeader,
+  Pager,
+  Pre,
+  QueryState,
+  TagInput,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,16 +80,15 @@ export function MemoryPage() {
 }
 
 function Topics({ groupId }: { groupId: number | null }) {
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
+  const [range, setRange] = useState<DateRange | undefined>();
   const [offset, setOffset] = useState(0);
   const limit = 30;
   const topics = useQuery(
     listTopicsOptions({
       query: {
         group_id: groupId,
-        since: since ? new Date(since).toISOString() : null,
-        until: until ? new Date(until).toISOString() : null,
+        since: range?.from ? startOfDay(range.from).toISOString() : null,
+        until: range?.from ? endOfDay(range.to ?? range.from).toISOString() : null,
         limit,
         offset,
       },
@@ -84,11 +97,14 @@ function Topics({ groupId }: { groupId: number | null }) {
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="从">
-          <Input type="datetime-local" value={since} onChange={(e) => setSince(e.target.value)} />
-        </Field>
-        <Field label="到">
-          <Input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+        <Field label="时间范围">
+          <DateRangePicker
+            value={range}
+            onChange={(v) => {
+              setRange(v);
+              setOffset(0);
+            }}
+          />
         </Field>
       </div>
       <QueryState isLoading={topics.isLoading} error={topics.error} />
@@ -156,9 +172,14 @@ function Glossary({ groupId }: { groupId: number | null }) {
     <div className="grid gap-4">
       <div className="flex items-center gap-3">
         <Input className="w-72" placeholder="搜索词条或释义" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Button onClick={() => setEditing("new")} disabled={groupId === null} title={groupId === null ? "先选择群" : undefined}>
-          <PlusIcon /> 新增词条
-        </Button>
+        {/* span: a disabled button gets no pointer events, so the hint needs a wrapper */}
+        <Hint content={groupId === null ? "先在右上角选择群" : null}>
+          <span>
+            <Button onClick={() => setEditing("new")} disabled={groupId === null}>
+              <PlusIcon /> 新增词条
+            </Button>
+          </span>
+        </Hint>
       </div>
       <QueryState isLoading={terms.isLoading} error={terms.error} />
       {terms.data?.items.length === 0 && <Empty />}
@@ -307,7 +328,7 @@ function Profiles({ groupId }: { groupId: number | null }) {
                 </TableCell>
                 {/* TableCell defaults to nowrap; long profile text must wrap and stay short (full text in 查看). */}
                 <TableCell className="min-w-80 max-w-xl text-sm whitespace-normal">
-                  <div className="line-clamp-3" title={p.summary}>
+                  <div className="line-clamp-3">
                     {p.summary}
                   </div>
                 </TableCell>

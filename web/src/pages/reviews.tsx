@@ -3,7 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { decideReviewMutation, listReviewsOptions } from "@/client/@tanstack/react-query.gen";
 import type { ReviewOut } from "@/client/types.gen";
-import { Empty, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import { Disclosure, Empty, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,10 +84,9 @@ export function ReviewsPage() {
                 </div>
               )}
               <Pre value={replyText(r.reply) || r.reply} className="whitespace-pre-wrap" />
-              <details>
-                <summary className="cursor-pointer text-sm text-muted-foreground">审核结果</summary>
-                <Pre value={r.verdict} className="mt-2" />
-              </details>
+              <Disclosure label="审核结果">
+                <Pre value={r.verdict} />
+              </Disclosure>
               {r.status === "pending" && (
                 <div className="flex gap-2">
                   <Button

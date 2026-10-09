@@ -323,11 +323,11 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
               options={meta.roles.map((r) => ({ value: r, label: r }))}
             />
           </Field>
-          <label className="flex h-9 items-center gap-2 text-sm">
+          <label className="flex h-8 items-center gap-2 text-sm">
             <Switch checked={!!input.to_me} onCheckedChange={(c) => setInput({ ...input, to_me: c })} />
             @bot
           </label>
-          <label className="flex h-9 items-center gap-2 text-sm">
+          <label className="flex h-8 items-center gap-2 text-sm">
             <Switch checked={!!input.replied_to_bot} onCheckedChange={(c) => setInput({ ...input, replied_to_bot: c })} />
             回复 bot
           </label>
