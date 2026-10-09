@@ -72,8 +72,9 @@ class AppConfig(BaseSettings):
     # Bootstrap admins; the dashboard manages the rest.
     bootstrap_superusers: list[int] = Field(default_factory=list, alias="YGG_SUPERUSERS")
     bootstrap_admin_emails: list[str] = Field(default_factory=list, alias="YGG_ADMIN_EMAILS")
-    # Header set by oauth2-proxy forwardAuth; dev mode trusts YGG_DEV_ADMIN_EMAIL instead.
-    auth_email_header: str = Field(default="X-Forwarded-Email", alias="YGG_AUTH_EMAIL_HEADER")
+    # Response header oauth2-proxy (set-xauthrequest) returns to Traefik forwardAuth; dev mode trusts
+    # YGG_DEV_ADMIN_EMAIL instead.
+    auth_email_header: str = Field(default="X-Auth-Request-Email", alias="YGG_AUTH_EMAIL_HEADER")
     dev_admin_email: str | None = Field(default=None, alias="YGG_DEV_ADMIN_EMAIL")
     browser_ws_url: str | None = Field(default=None, alias="YGG_BROWSER_WS_URL")
     searxng_url: str | None = Field(default=None, alias="YGG_SEARXNG_URL")
