@@ -4,8 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class Section(BaseModel):
-    title: str | None = Field(default=None, description="节标题（可选，短）")
-    content: str = Field(description="正文，纯文本，不要 markdown")
+    # No title: the forward card preview shows the first lines of each node, so a heading wastes it.
+    content: str = Field(description="正文，纯文本，不要 markdown，不要加小标题")
 
 
 class SourceRef(BaseModel):
@@ -28,7 +28,4 @@ class BotReply(BaseModel):
     )
 
     def full_text(self) -> str:
-        parts: list[str] = []
-        for s in self.sections:
-            parts.append(f"{s.title or ''}\n{s.content}")
-        return "\n\n".join(p for p in parts if p.strip())
+        return "\n\n".join(s.content for s in self.sections if s.content.strip())

@@ -150,13 +150,11 @@ def build_nodes(
     if len(sections) > cfg.max_sections:
         # Hard cap behind the prompt's "at most two sections": fold the rest into the last kept one.
         keep, extra = sections[: cfg.max_sections - 1], sections[cfg.max_sections - 1 :]
-        merged = "\n\n".join(f"{s.title}：{s.content}" if s.title and i else s.content for i, s in enumerate(extra))
+        merged = "\n\n".join(s.content for s in extra)
         sections = [*keep, extra[0].model_copy(update={"content": merged})]
     for section in sections:
         content = section.content if cfg.forward_render == "nested_markdown" else strip_markdown(section.content)
-        title = f"【{section.title}】\n" if section.title else ""
-        for i, part in enumerate(split_text(content, cfg.node_max_chars)):
-            bodies.append((title if i == 0 else "") + part)
+        bodies.extend(split_text(content, cfg.node_max_chars))
     if reply.sources:
         bodies.append(
             "来源\n" + "\n".join(f"- {s.label}" + (f"\n  {s.url}" if s.url else "") for s in reply.sources[:10])

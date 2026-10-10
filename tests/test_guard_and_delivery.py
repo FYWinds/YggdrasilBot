@@ -69,13 +69,13 @@ def test_forward_nodes_order_sections_images_sources_metadata():
     reply = BotReply(
         mode="forward",
         title="t",
-        sections=[Section(title="简介", content="一段话")],
+        sections=[Section(content="一段话")],
         sources=[SourceRef(label="src", url="https://e.x")],
     )
     nodes = build_nodes(reply, "meta", InteractionSettings(), self_id=1, nickname="b", images=[(b"\x89PNG", "图")])
     kinds = [n["data"]["content"][-1]["type"] for n in nodes]
     assert kinds == ["text", "image", "text", "text"]
-    assert nodes[0]["data"]["content"][0]["data"]["text"].startswith("【简介】")
+    assert nodes[0]["data"]["content"][0]["data"]["text"] == "一段话"
     assert nodes[2]["data"]["content"][0]["data"]["text"].startswith("来源")
     assert nodes[-1]["data"]["content"][0]["data"]["text"] == "meta"
 
@@ -89,7 +89,7 @@ def test_forward_nodes_are_capped_by_merging_the_tail():
 
 
 def test_sections_over_the_cap_are_folded_into_the_last_one():
-    reply = BotReply(mode="forward", sections=[Section(title=t, content=t * 2) for t in "abcd"])
+    reply = BotReply(mode="forward", sections=[Section(content=t * 2) for t in "abcd"])
     nodes = build_nodes(reply, None, InteractionSettings(max_sections=2), self_id=1, nickname="b")
     texts = [n["data"]["content"][0]["data"]["text"] for n in nodes]
-    assert texts == ["【a】\naa", "【b】\nbb\n\nc：cc\n\nd：dd"]
+    assert texts == ["aa", "bb\n\ncc\n\ndd"]
