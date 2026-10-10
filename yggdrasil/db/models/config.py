@@ -124,7 +124,7 @@ class EmbedSpace(Base, TimestampMixin):
     model: Mapped[str] = mapped_column(Text)
     dim: Mapped[int]
     active: Mapped[bool] = mapped_column(default=False)
-    status: Mapped[str] = mapped_column(Text, default="backfilling")  # backfilling | ready | retired
+    status: Mapped[str] = mapped_column(Text, default="backfilling")  # backfilling | ready
 
 
 class PipelineState(Base, TimestampMixin):
