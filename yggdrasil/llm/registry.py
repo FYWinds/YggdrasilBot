@@ -64,6 +64,7 @@ _SETTING_KEYS = {
     # pydantic-ai's provider-neutral level (minimal … xhigh); validated in admin/routes.py.
     "thinking",
 }
+_EMBED_BATCH = 8
 
 
 class TaskNotConfigured(RuntimeError):
@@ -213,8 +214,10 @@ async def embed(
             provider_id, model = r.provider_id, r.model
     p = _provider(snap, provider_id, "embedding")
     out: list[list[float]] = []
-    for i in range(0, len(texts), 32):
-        resp = await openai_client(p).embeddings.create(model=model, input=texts[i : i + 32])
+    # CPU embedding runs ~220 tok/s and texts reach ~1900 tokens (EMBED_MAX_CHARS): 8 per request stays
+    # well inside the client's 180 s timeout; 32 took ~270 s, timed out and was retried forever.
+    for i in range(0, len(texts), _EMBED_BATCH):
+        resp = await openai_client(p).embeddings.create(model=model, input=texts[i : i + _EMBED_BATCH])
         out.extend(d.embedding for d in sorted(resp.data, key=lambda d: d.index))
         if resp.usage:
             record_usage("embedding", model, input_tokens=resp.usage.prompt_tokens, output_tokens=0)
