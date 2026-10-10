@@ -285,7 +285,7 @@ async def search_history(
     user_id: int | None = None,
     top_k: int = 12,
 ) -> list[HistoryHit]:
-    """BM25 over messages + vectors over chunks/topics/digests, RRF-fused, then reranked."""
+    """BM25 over messages + vectors over chunks/topics/digests, RRF-fused, then reranked if a rerank route exists."""
     query = query.strip()
     if not query or top_k <= 0:
         return []

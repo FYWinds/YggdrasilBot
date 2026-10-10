@@ -340,7 +340,7 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
                   </TableCell>
                   <TableCell className="text-xs">{fmtTime(s.created_at)}</TableCell>
                   <TableCell className="text-right">
-                    {s.status !== "retired" && !s.active && (
+                    {!s.active && (
                       <Button size="sm" variant="outline" onClick={() => reembed.mutate({ path: { space_id: s.id } })}>
                         重新入队
                       </Button>

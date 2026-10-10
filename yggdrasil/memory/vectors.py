@@ -178,7 +178,7 @@ async def embed_missing(space: EmbedSpaceInfo, group_id: int | None = None) -> d
 
 
 async def reembed_space(space_id: int) -> dict[str, int]:
-    """Backfill every memory row into ``space_id``, then make it the only active space."""
+    """Backfill every memory row into ``space_id``, then make it the only space (older ones are deleted)."""
     async with get_session() as session:
         row = await session.get(EmbedSpace, space_id)
         if row is None:
@@ -202,13 +202,11 @@ async def reembed_space(space_id: int) -> dict[str, int]:
             await session.execute(
                 update(EmbedSpace).where(EmbedSpace.id == space.id).values(active=True, status="ready")
             )
-            await session.execute(
-                update(EmbedSpace).where(EmbedSpace.id != space.id).values(active=False, status="retired")
-            )
             removed = await session.scalar(
                 select(func.count()).select_from(MemoryVector).where(MemoryVector.space_id != space.id)
             )
-            await session.execute(delete(MemoryVector).where(MemoryVector.space_id != space.id))
+            # Old spaces go entirely (their vectors cascade), so their providers can be deleted afterwards.
+            await session.execute(delete(EmbedSpace).where(EmbedSpace.id != space.id))
         break
     LOGGER.info("embed space {} active; embedded {}; dropped {} old vectors", space.id, totals, removed)
     await publish_change(f"embed_space {space.id} activated")
