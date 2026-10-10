@@ -5,19 +5,16 @@ handed to a run when the code has already decided the speaker may do that action
 """
 
 import asyncio
-import base64
-import io
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any
 
-import httpx
-from PIL import Image
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.deps import Deps, Handle
+from yggdrasil.agent.media import load_image, media_bytes, media_type
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
@@ -25,9 +22,6 @@ from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
 from yggdrasil.prompts import render
 from yggdrasil.tools.errors import ToolError
-
-_MAX_DOWNLOAD = 64 * 1024 * 1024
-
 
 type ToolResult = str | ToolReturn
 
@@ -72,82 +66,11 @@ def _handle(ctx: RunContext[Deps], key: str, *kinds: str) -> Handle:
     return h
 
 
-async def _download(url: str, max_bytes: int) -> bytes:
-    async with (
-        httpx.AsyncClient(timeout=60, follow_redirects=True) as client,
-        client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as resp,
-    ):
-        resp.raise_for_status()
-        chunks, size = [], 0
-        async for chunk in resp.aiter_bytes():
-            size += len(chunk)
-            if size > max_bytes:
-                raise ToolError(f"文件太大（超过 {max_bytes // 1024 // 1024}MB）")
-            chunks.append(chunk)
-    return b"".join(chunks)
-
-
-async def _media_bytes(ctx: RunContext[Deps], h: Handle, max_bytes: int) -> tuple[bytes, str]:
-    """Bytes + filename of an image/file handle, via URL in the segment or NapCat's get_file."""
-    data = h.data
-    name = str(data.get("file") or data.get("name") or "file")
-    url = data.get("url")
-    if h.kind == "file" and ctx.deps.group_id and data.get("file_id"):
-        try:
-            got = await ctx.deps.api.get_group_file_url(
-                group_id=ctx.deps.group_id, file_id=str(data["file_id"]), busid=data.get("busid")
-            )
-            url = got.url
-        except Exception:
-            url = None
-    if not url and data.get("file_id"):
-        info = await ctx.deps.api.get_file(file_id=str(data["file_id"]))
-        if info.base64:
-            return base64.b64decode(info.base64), info.file_name or name
-        url = info.url
-        name = info.file_name or name
-    if not url:
-        raise ToolError("拿不到文件下载地址")
-    return await _download(url, max_bytes), name
-
-
-def _media_type(blob: bytes) -> str:
-    if blob.startswith(b"\x89PNG"):
-        return "image/png"
-    if blob[:3] == b"GIF":
-        return "image/gif"
-    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
-        return "image/webp"
-    return "image/jpeg"
-
-
-_IMAGE_MAX_SIDE = 1568  # Claude downsizes anything larger; also keeps payloads well under the 5 MB cap
-_IMAGE_MAX_BYTES = 3 * 1024 * 1024
-
-
-def _fit_image(blob: bytes) -> bytes:
-    """Downscale/re-encode images that are too large or in a format models don't take (BMP, ...)."""
-    try:
-        img = Image.open(io.BytesIO(blob))
-        too_big = max(img.size) > _IMAGE_MAX_SIDE or len(blob) > _IMAGE_MAX_BYTES
-        if not too_big and img.format in ("PNG", "JPEG", "GIF", "WEBP"):
-            return blob
-        img.thumbnail((_IMAGE_MAX_SIDE, _IMAGE_MAX_SIDE))
-        out = io.BytesIO()
-        if img.mode in ("RGBA", "LA", "P"):
-            img.convert("RGBA").save(out, "PNG", optimize=True)
-        else:
-            img.convert("RGB").save(out, "JPEG", quality=85)
-        return out.getvalue()
-    except (OSError, ValueError, Image.DecompressionBombError):
-        return blob  # not decodable here; let the model API judge
-
-
 async def _vision(ctx: RunContext[Deps], images: list[bytes], question: str) -> str:
     resolved = chat_model("vision")
     agent = Agent(resolved.model, instructions=render("vision_system"), name="vision")
     content: list[Any] = [question or "描述这张图片，并完整转写其中的文字。"]
-    content += [BinaryContent(data=img, media_type=_media_type(img)) for img in images]
+    content += [BinaryContent(data=img, media_type=media_type(img)) for img in images]
     result = await agent.run(content, model_settings=resolved.settings)
     usage = result.usage
     ctx.deps.vision_tokens.append((resolved.label, usage.input_tokens or 0, usage.output_tokens or 0))
@@ -195,7 +118,7 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> str:
 
     h = _handle(ctx, handle, "file")
     cfg = ctx.deps.settings.tools
-    blob, name = await _media_bytes(ctx, h, cfg.file_max_mb * 1024 * 1024)
+    blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
     doc = await asyncio.to_thread(parse_document, blob, name, max_pages=cfg.file_max_pages)
     text = doc.text
     if doc.scanned_pages:
@@ -208,12 +131,11 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> str:
 async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> ToolResult:
     """查看图片，参数是 img#N 句柄，可附带具体问题。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
     h = _handle(ctx, handle, "image")
-    blob, _ = await _media_bytes(ctx, h, 20 * 1024 * 1024)
-    blob = await asyncio.to_thread(_fit_image, blob)
+    blob = await load_image(ctx.deps.api, ctx.deps.group_id, h)
     if sees_images(ctx.deps.task):
         return ToolReturn(
             return_value=f"{handle} 的原图附在下一条消息里，直接看图。",
-            content=[f"{handle}：", BinaryContent(data=blob, media_type=_media_type(blob))],
+            content=[f"{handle}：", BinaryContent(data=blob, media_type=media_type(blob))],
         )
     try:
         return "（以下是另一个模型写的图片描述）\n" + await _vision(ctx, [blob], question)
