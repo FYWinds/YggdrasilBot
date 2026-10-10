@@ -33,6 +33,14 @@ class InteractionSettings(BaseModel):
     forward_max_nodes: int = Field(default=12, ge=1, le=60)
     max_sections: int = Field(default=2, ge=1, le=10, description="一次回复最多几节，多出的节合并进最后一节")
     node_max_chars: int = Field(default=1500, ge=200)
+    # Asked for at the end of the prompt, where models heed it more than in the system prompt; they
+    # still overshoot Chinese character counts by about 1.5-2x.
+    tldr_max_chars: int = Field(
+        default=200, ge=50, le=2000, description="tldr 正文的目标字数（模型通常会写超 1.5–2 倍）"
+    )
+    tldr_focus_max_chars: int = Field(
+        default=150, ge=50, le=2000, description="tldr 后面带了关注点时，正文的目标字数（只回答关注点）"
+    )
     forward_render: Literal["plain", "nested_markdown"] = Field(
         default="plain", description="plain：去掉 markdown 语法；nested_markdown：双层合并转发里发 markdown 段"
     )

@@ -250,13 +250,21 @@ async def build_context(
 
     available = ", ".join(f"{k}({v.kind})" for k, v in handles.items.items())
     sender = f' 发送者="{name_of(trigger.user_id, trigger.sender_name, False)}"'
-    if resolved.handler == "tldr" and target.qq_message_id != trigger.qq_message_id and request_text:
+    focused = resolved.handler == "tldr" and target.qq_message_id != trigger.qq_message_id and bool(request_text)
+    if focused:
         # "tldr <words>" on a quoted message: the words say what to focus on.
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:
         blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
     if available:
         blocks.note(f"可用句柄：{available}")
+    if resolved.handler == "tldr":
+        ia = settings.interaction
+        blocks.note(
+            f"篇幅：只回答关注点，正文不超过 {ia.tldr_focus_max_chars} 字。"
+            if focused
+            else f"篇幅：正文不超过 {ia.tldr_max_chars} 字，挑最重要的说，不要罗列所有细节。"
+        )
     return BuiltContext(
         "\n\n".join(blocks.parts), target, trigger, handles, request_text, mentioned, nonce=blocks.nonce
     )
