@@ -77,7 +77,6 @@ class AppConfig(BaseSettings):
     auth_email_header: str = Field(default="X-Auth-Request-Email", alias="YGG_AUTH_EMAIL_HEADER")
     dev_admin_email: str | None = Field(default=None, alias="YGG_DEV_ADMIN_EMAIL")
     browser_ws_url: str | None = Field(default=None, alias="YGG_BROWSER_WS_URL")
-    searxng_url: str | None = Field(default=None, alias="YGG_SEARXNG_URL")
     web_dist: str = Field(default="web/dist", alias="YGG_WEB_DIST")
     # Extra headers for outbound LLM calls; Cloudflare in front of new-api rejects default SDK user agents.
     llm_user_agent: str = Field(default="yggdrasil-bot/0.1", alias="YGG_LLM_USER_AGENT")

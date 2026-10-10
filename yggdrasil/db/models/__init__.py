@@ -9,6 +9,7 @@ from yggdrasil.db.models.config import (
     Prompt,
     PromptVersion,
     Provider,
+    SearchProvider,
     SettingsDoc,
     TaskRoute,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "PromptVersion",
     "Provider",
     "ReviewItem",
+    "SearchProvider",
     "SettingsDoc",
     "Sticker",
     "TaskRoute",

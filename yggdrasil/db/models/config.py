@@ -31,6 +31,22 @@ class Provider(Base, TimestampMixin):
     model_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
 
 
+class SearchProvider(Base, TimestampMixin):
+    """A web search backend. ``web_search`` tries enabled ones in priority order (a pool)."""
+
+    __tablename__ = "search_providers"
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, unique=True)
+    kind: Mapped[str] = mapped_column(Text)  # yggdrasil.tools.search.KINDS
+    base_url: Mapped[str] = mapped_column(Text)
+    api_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    priority: Mapped[int] = mapped_column(default=100)  # lower is tried first
+    monthly_limit: Mapped[int | None]  # requests per calendar month (UTC); None = unlimited
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)  # kind-specific, e.g. exa {"type": "auto"}
+
+
 class TaskRoute(Base, TimestampMixin):
     """Which model serves a task (chat, tldr, quick_ack, embedding, moderation, ...)."""
 

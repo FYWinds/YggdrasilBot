@@ -27,6 +27,7 @@ TOOL_CALLS = METER.create_counter("ygg.tool.calls", unit="{call}")
 TOOL_DURATION = METER.create_histogram(
     "ygg.tool.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
 )
+SEARCH_REQUESTS = METER.create_counter("ygg.search.requests", unit="{request}")
 MODERATION_VERDICTS = METER.create_counter("ygg.moderation.verdicts", unit="{verdict}")
 MODERATION_DURATION = METER.create_histogram(
     "ygg.moderation.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
