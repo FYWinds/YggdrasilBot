@@ -2,8 +2,8 @@
 
 New messages after the watermark are given to the model together with the open
 topics; it answers with ops (continue an open topic / start a new one). Idle topics
-are closed, and topics marked dirty by a recall are recomputed without the recalled
-messages.
+are closed (small ones archived: hidden from the agent, kept for the dashboard), and
+topics marked dirty by a recall are recomputed without the recalled messages.
 """
 
 from collections.abc import Collection, Mapping, Sequence
@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import ColumnElement, and_, delete, exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors, topic_text, try_embed
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
+from yggdrasil.settings import MemorySettings
 
 PIPELINE = "topic"
 TASK = "memory_topic"
@@ -311,7 +312,7 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
             select(exists().where(Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before))
         )
         dirty = await session.scalar(select(exists().where(Topic.group_id == group_id, Topic.dirty.is_(True))))
-    stats = {"messages": 0, "new": 0, "continued": 0, "recomputed": 0, "deleted": 0, "closed": 0}
+    stats = {"messages": 0, "new": 0, "continued": 0, "recomputed": 0, "deleted": 0, "closed": 0, "archived": 0}
     if not (pending or 0) >= mem.topic_min_new_messages and not idle and not dirty:
         return stats
     if not llm.available(TASK):
@@ -328,11 +329,30 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
             stats["continued"] += done[2]
         if dirty:
             stats["recomputed"], stats["deleted"] = await _recompute_dirty(group_id)
+    idle_open = (Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before)
     async with get_session() as session:
-        result = await session.execute(
-            update(Topic)
-            .where(Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before)
-            .values(status="closed")
-        )
-        stats["closed"] = result.rowcount or 0  # type: ignore[attr-defined]
+        archived = await session.execute(update(Topic).where(*idle_open, archivable(mem)).values(status="archived"))
+        closed = await session.execute(update(Topic).where(*idle_open).values(status="closed"))
+        stats["archived"] = archived.rowcount or 0  # type: ignore[attr-defined]
+        stats["closed"] = closed.rowcount or 0  # type: ignore[attr-defined]
     return stats
+
+
+def archivable(mem: MemorySettings) -> ColumnElement[bool]:
+    """Too small to be worth searching: below both the message and the participant threshold."""
+    return and_(
+        Topic.msg_count < mem.topic_archive_below_messages,
+        func.cardinality(Topic.participants) < mem.topic_archive_below_participants,
+    )
+
+
+async def archive_closed(session: AsyncSession, group_id: int) -> int:
+    """Apply the group's current thresholds to its closed topics (after the thresholds change).
+    Also re-archives topics an admin restored. Returns how many were archived."""
+    mem = snapshot().settings(group_id).memory
+    result = await session.execute(
+        update(Topic)
+        .where(Topic.group_id == group_id, Topic.status == "closed", archivable(mem))
+        .values(status="archived")
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]

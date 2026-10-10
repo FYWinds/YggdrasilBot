@@ -37,7 +37,12 @@ async def build_digest(group_id: int, day: date) -> int | None:
         topics = (
             await session.scalars(
                 select(Topic)
-                .where(Topic.group_id == group_id, Topic.start_at < end, Topic.end_at >= start)
+                .where(
+                    Topic.group_id == group_id,
+                    Topic.status != "archived",
+                    Topic.start_at < end,
+                    Topic.end_at >= start,
+                )
                 .order_by(Topic.start_at)
             )
         ).all()

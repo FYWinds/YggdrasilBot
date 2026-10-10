@@ -176,6 +176,15 @@ class MemorySettings(BaseModel):
     topic_min_new_messages: int = Field(default=120, description="新增消息达到这个数量触发话题分段")
     topic_window_messages: int = 400
     topic_close_after_minutes: int = 120
+    topic_archive_below_messages: int = Field(
+        default=20,
+        ge=0,
+        description="话题结束时，消息数少于这个值、且参与人数少于下一项的自动归档。"
+        "归档的话题只在控制台可见，agent 搜不到（0：不归档）",
+    )
+    topic_archive_below_participants: int = Field(
+        default=3, ge=0, description="归档条件：参与人数少于这个值（和消息数条件同时满足才归档）"
+    )
     digest_hour: int = Field(default=4, ge=0, le=23, description="每日摘要生成时间（Asia/Shanghai）")
     profile_min_messages: int = 15
     glossary_min_count: int = 6
