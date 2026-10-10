@@ -49,7 +49,7 @@ class Topic(Base, TimestampMixin):
     first_msg_id: Mapped[int]
     last_msg_id: Mapped[int]
     msg_count: Mapped[int] = mapped_column(default=0)
-    status: Mapped[str] = mapped_column(Text, default="open")  # open | closed
+    status: Mapped[str] = mapped_column(Text, default="open")  # open | closed | archived (hidden from the agent)
     dirty: Mapped[bool] = mapped_column(default=False)  # a member message was recalled; recompute
 
 

@@ -226,7 +226,7 @@ SELECT v.kind, v.ref_id, v.embedding <=> CAST(:qv AS halfvec) AS dist,
        COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') AS at
 FROM memory_vectors v
 LEFT JOIN message_chunks c ON v.kind = 'chunk' AND c.id = v.ref_id
-LEFT JOIN topics t ON v.kind = 'topic' AND t.id = v.ref_id
+LEFT JOIN topics t ON v.kind = 'topic' AND t.id = v.ref_id AND t.status <> 'archived'
 LEFT JOIN daily_digests d ON v.kind = 'digest' AND d.id = v.ref_id
 WHERE v.group_id = :g AND v.space_id = :s AND v.kind IN ('chunk', 'topic', 'digest')
   AND COALESCE(c.id, t.id, d.id) IS NOT NULL

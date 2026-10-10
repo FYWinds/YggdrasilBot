@@ -13,7 +13,7 @@ from sqlalchemy import delete, select, update
 from yggdrasil.db.models import Message, PipelineState, Topic, TopicMessage
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm, search
-from yggdrasil.memory.topics import consolidate_group
+from yggdrasil.memory.topics import archive_closed, consolidate_group
 
 SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP = 990003, 990004, 990002
 
@@ -102,8 +102,12 @@ def _segmenting_model(bogus_topic: int) -> FunctionModel:
     return FunctionModel(respond)
 
 
-async def test_consolidation_validates_ops_and_closes_idle(insert: Insert, group_settings) -> None:
-    group_settings({TOPIC_GROUP: {"memory": {"topic_min_new_messages": 3, "topic_close_after_minutes": 60}}})
+async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, group_settings) -> None:
+    memory = {"topic_min_new_messages": 3, "topic_close_after_minutes": 60}
+    # The topic below ends up with 3 messages from 2 people: exactly at the message threshold, so it stays visible.
+    group_settings(
+        {TOPIC_GROUP: {"memory": memory | {"topic_archive_below_messages": 3, "topic_archive_below_participants": 3}}}
+    )
     h = timedelta(hours=1)
     ids = [
         await insert(TOPIC_GROUP, 1, "周末去爬山吗", ago=3 * h),
@@ -116,6 +120,7 @@ async def test_consolidation_validates_ops_and_closes_idle(insert: Insert, group
     assert stats["new"] == 1
     assert stats["continued"] == 0
     assert stats["closed"] == 1
+    assert stats["archived"] == 0
 
     async with get_session() as session:
         topic = await session.scalar(select(Topic).where(Topic.group_id == TOPIC_GROUP))
@@ -152,3 +157,9 @@ async def test_consolidation_validates_ops_and_closes_idle(insert: Insert, group
     assert linked == set(ids[:2])
     assert topic.msg_count == 2
     assert topic.title == "爬山"
+
+    # The recall shrank it below the threshold; tidying archives it (and leaves open topics alone).
+    async with get_session() as session:
+        assert await archive_closed(session, TOPIC_GROUP) == 1
+    async with get_session() as session:
+        assert await session.scalar(select(Topic.status).where(Topic.id == topic_id)) == "archived"

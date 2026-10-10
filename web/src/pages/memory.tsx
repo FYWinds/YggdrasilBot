@@ -1,10 +1,19 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { endOfDay, startOfDay } from "date-fns";
-import { LockIcon, LockOpenIcon, PencilIcon, PlusIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  LockIcon,
+  LockOpenIcon,
+  PencilIcon,
+  PlusIcon,
+} from "lucide-react";
 import { useState } from "react";
 import type { DateRange } from "react-day-picker";
 import { toast } from "sonner";
 import {
+  archiveSmallTopicsMutation,
+  archiveTopicMutation,
   createGlossaryTermMutation,
   deleteGlossaryTermMutation,
   deleteProfileFactMutation,
@@ -26,6 +35,8 @@ import {
   Field,
   GroupSelect,
   Hint,
+  NumberInput,
+  OptionSelect,
   PageHeader,
   Pager,
   Pre,
@@ -35,9 +46,22 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtTime } from "@/lib/format";
@@ -49,7 +73,9 @@ export function MemoryPage() {
       <PageHeader
         title="记忆"
         description="话题时间线、每日摘要、黑话词典、用户画像和整理流水线的水位。"
-        actions={<GroupSelect className="w-64" value={groupId} onChange={setGroupId} />}
+        actions={
+          <GroupSelect className="w-64" value={groupId} onChange={setGroupId} />
+        }
       />
       <Tabs defaultValue="topics">
         <TabsList>
@@ -79,21 +105,62 @@ export function MemoryPage() {
   );
 }
 
+const TOPIC_STATUS = [
+  { value: "open", label: "进行中" },
+  { value: "closed", label: "已结束" },
+  { value: "archived", label: "已归档" },
+];
+
+type TopicFilters = {
+  status: string | null;
+  q: string;
+  user_id: number | null;
+  min_messages: number | null;
+  max_messages: number | null;
+  min_participants: number | null;
+  max_participants: number | null;
+};
+
+const NO_FILTERS: TopicFilters = {
+  status: null,
+  q: "",
+  user_id: null,
+  min_messages: null,
+  max_messages: null,
+  min_participants: null,
+  max_participants: null,
+};
+
 function Topics({ groupId }: { groupId: number | null }) {
   const [range, setRange] = useState<DateRange | undefined>();
+  const [filters, setFilters] = useState<TopicFilters>(NO_FILTERS);
   const [offset, setOffset] = useState(0);
   const limit = 30;
   const topics = useQuery(
     listTopicsOptions({
       query: {
+        ...filters,
+        status: filters.status as "open" | "closed" | "archived" | null,
+        q: filters.q.trim() || null,
         group_id: groupId,
         since: range?.from ? startOfDay(range.from).toISOString() : null,
-        until: range?.from ? endOfDay(range.to ?? range.from).toISOString() : null,
+        until: range?.from
+          ? endOfDay(range.to ?? range.from).toISOString()
+          : null,
         limit,
         offset,
       },
     }),
   );
+  const archive = useMutation(archiveTopicMutation());
+  const archiveSmall = useMutation({
+    ...archiveSmallTopicsMutation(),
+    onSuccess: (r) => toast.success(`归档了 ${r.archived} 个话题`),
+  });
+  const set = (patch: Partial<TopicFilters>) => {
+    setFilters({ ...filters, ...patch });
+    setOffset(0);
+  };
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-end gap-3">
@@ -106,20 +173,133 @@ function Topics({ groupId }: { groupId: number | null }) {
             }}
           />
         </Field>
+        <Field label="状态">
+          <OptionSelect
+            className="w-28"
+            value={filters.status}
+            onChange={(status) => set({ status })}
+            options={TOPIC_STATUS}
+            noneLabel="全部"
+          />
+        </Field>
+        <Field label="关键词">
+          <Input
+            className="w-48"
+            placeholder="标题、摘要、关键词"
+            value={filters.q}
+            onChange={(e) => set({ q: e.target.value })}
+          />
+        </Field>
+        <Field label="参与人 QQ">
+          <NumberInput
+            className="w-32"
+            value={filters.user_id}
+            onChange={(user_id) => set({ user_id })}
+          />
+        </Field>
+        <Field label="消息数">
+          <div className="flex items-center gap-1">
+            <NumberInput
+              className="w-20"
+              placeholder="最少"
+              value={filters.min_messages}
+              onChange={(v) => set({ min_messages: v })}
+            />
+            –
+            <NumberInput
+              className="w-20"
+              placeholder="最多"
+              value={filters.max_messages}
+              onChange={(v) => set({ max_messages: v })}
+            />
+          </div>
+        </Field>
+        <Field label="人数">
+          <div className="flex items-center gap-1">
+            <NumberInput
+              className="w-20"
+              placeholder="最少"
+              value={filters.min_participants}
+              onChange={(v) => set({ min_participants: v })}
+            />
+            –
+            <NumberInput
+              className="w-20"
+              placeholder="最多"
+              value={filters.max_participants}
+              onChange={(v) => set({ max_participants: v })}
+            />
+          </div>
+        </Field>
+        <Button variant="ghost" onClick={() => set(NO_FILTERS)}>
+          清空筛选
+        </Button>
+        <div className="ml-auto">
+          <Hint content={groupId === null ? "先在右上角选择群" : null}>
+            <span>
+              {groupId === null ? (
+                <Button variant="outline" disabled>
+                  <ArchiveIcon /> 按阈值归档
+                </Button>
+              ) : (
+                <ConfirmButton
+                  variant="outline"
+                  size="default"
+                  title={`按当前阈值整理群 ${groupId} 的已结束话题？`}
+                  description="消息数和参与人数都低于阈值（设置 → memory.topic_archive_below_*）的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
+                  onConfirm={() =>
+                    archiveSmall.mutate({ body: { group_id: groupId } })
+                  }
+                >
+                  <ArchiveIcon /> 按阈值归档
+                </ConfirmButton>
+              )}
+            </span>
+          </Hint>
+        </div>
       </div>
       <QueryState isLoading={topics.isLoading} error={topics.error} />
       {topics.data?.items.length === 0 && <Empty />}
       <ol className="relative grid gap-4 border-l pl-6">
         {topics.data?.items.map((t) => (
-          <li key={t.id} className="relative">
+          <li
+            key={t.id}
+            className={
+              t.status === "archived" ? "relative opacity-60" : "relative"
+            }
+          >
             <span className="absolute top-1.5 -left-[1.85rem] size-3 rounded-full border-2 border-background bg-primary" />
             <div className="text-xs text-muted-foreground">
-              {fmtTime(t.start_at)} — {fmtTime(t.end_at)} · 群 {t.group_id} · {t.msg_count} 条 · {t.participants.length} 人
+              {fmtTime(t.start_at)} — {fmtTime(t.end_at)} · 群 {t.group_id} ·{" "}
+              {t.msg_count} 条 · {t.participants.length} 人
             </div>
             <div className="flex items-center gap-2 font-medium">
               {t.title}
               {t.status === "open" && <Badge variant="outline">进行中</Badge>}
+              {t.status === "archived" && (
+                <Badge variant="secondary">已归档</Badge>
+              )}
               {t.dirty && <Badge variant="destructive">待重算</Badge>}
+              {t.status !== "open" && (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={archive.isPending}
+                  onClick={() =>
+                    archive.mutate({
+                      path: { topic_id: t.id },
+                      body: { archived: t.status !== "archived" },
+                    })
+                  }
+                >
+                  {t.status === "archived" ? (
+                    <ArchiveRestoreIcon />
+                  ) : (
+                    <ArchiveIcon />
+                  )}
+                  {t.status === "archived" ? "恢复" : "归档"}
+                </Button>
+              )}
             </div>
             <p className="text-sm whitespace-pre-wrap">{t.summary}</p>
             <div className="mt-1 flex flex-wrap gap-1">
@@ -132,7 +312,14 @@ function Topics({ groupId }: { groupId: number | null }) {
           </li>
         ))}
       </ol>
-      {topics.data && <Pager total={topics.data.total} limit={limit} offset={offset} onChange={setOffset} />}
+      {topics.data && (
+        <Pager
+          total={topics.data.total}
+          limit={limit}
+          offset={offset}
+          onChange={setOffset}
+        />
+      )}
     </div>
   );
 }
@@ -140,7 +327,9 @@ function Topics({ groupId }: { groupId: number | null }) {
 function Digests({ groupId }: { groupId: number | null }) {
   const [offset, setOffset] = useState(0);
   const limit = 14;
-  const digests = useQuery(listDigestsOptions({ query: { group_id: groupId, limit, offset } }));
+  const digests = useQuery(
+    listDigestsOptions({ query: { group_id: groupId, limit, offset } }),
+  );
   return (
     <div className="grid gap-4">
       <QueryState isLoading={digests.isLoading} error={digests.error} />
@@ -149,13 +338,25 @@ function Digests({ groupId }: { groupId: number | null }) {
         <Card key={d.id}>
           <CardHeader>
             <CardTitle className="text-base">
-              {d.day} <span className="text-sm font-normal text-muted-foreground">群 {d.group_id}</span>
+              {d.day}{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                群 {d.group_id}
+              </span>
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-sm whitespace-pre-wrap">{d.summary}</CardContent>
+          <CardContent className="text-sm whitespace-pre-wrap">
+            {d.summary}
+          </CardContent>
         </Card>
       ))}
-      {digests.data && <Pager total={digests.data.total} limit={limit} offset={offset} onChange={setOffset} />}
+      {digests.data && (
+        <Pager
+          total={digests.data.total}
+          limit={limit}
+          offset={offset}
+          onChange={setOffset}
+        />
+      )}
     </div>
   );
 }
@@ -164,18 +365,33 @@ function Glossary({ groupId }: { groupId: number | null }) {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;
-  const terms = useQuery(listGlossaryOptions({ query: { group_id: groupId, q: q || null, limit, offset } }));
+  const terms = useQuery(
+    listGlossaryOptions({
+      query: { group_id: groupId, q: q || null, limit, offset },
+    }),
+  );
   const lock = useMutation(lockGlossaryTermMutation());
-  const remove = useMutation({ ...deleteGlossaryTermMutation(), onSuccess: () => toast.success("已删除") });
+  const remove = useMutation({
+    ...deleteGlossaryTermMutation(),
+    onSuccess: () => toast.success("已删除"),
+  });
   const [editing, setEditing] = useState<GlossaryOut | "new" | null>(null);
   return (
     <div className="grid gap-4">
       <div className="flex items-center gap-3">
-        <Input className="w-72" placeholder="搜索词条或释义" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input
+          className="w-72"
+          placeholder="搜索词条或释义"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
         {/* span: a disabled button gets no pointer events, so the hint needs a wrapper */}
         <Hint content={groupId === null ? "先在右上角选择群" : null}>
           <span>
-            <Button onClick={() => setEditing("new")} disabled={groupId === null}>
+            <Button
+              onClick={() => setEditing("new")}
+              disabled={groupId === null}
+            >
               <PlusIcon /> 新增词条
             </Button>
           </span>
@@ -199,31 +415,58 @@ function Glossary({ groupId }: { groupId: number | null }) {
               <TableRow key={t.id}>
                 <TableCell>
                   <div className="font-medium">{t.term}</div>
-                  {!!t.aliases.length && <div className="text-xs text-muted-foreground">{t.aliases.join("、")}</div>}
-                  <div className="text-xs text-muted-foreground">群 {t.group_id}</div>
+                  {!!t.aliases.length && (
+                    <div className="text-xs text-muted-foreground">
+                      {t.aliases.join("、")}
+                    </div>
+                  )}
+                  <div className="text-xs text-muted-foreground">
+                    群 {t.group_id}
+                  </div>
                 </TableCell>
-                <TableCell className="max-w-xl text-sm whitespace-pre-wrap">{t.definition}</TableCell>
+                <TableCell className="max-w-xl text-sm whitespace-pre-wrap">
+                  {t.definition}
+                </TableCell>
                 <TableCell>
                   {t.hits}
-                  <div className="text-xs text-muted-foreground">置信 {t.confidence.toFixed(2)}</div>
+                  <div className="text-xs text-muted-foreground">
+                    置信 {t.confidence.toFixed(2)}
+                  </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={t.source === "admin" ? "default" : "outline"}>{t.source}</Badge>
+                  <Badge variant={t.source === "admin" ? "default" : "outline"}>
+                    {t.source}
+                  </Badge>
                   {t.locked && <LockIcon className="ml-1 inline size-3.5" />}
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => setEditing(t)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditing(t)}
+                    >
                       <PencilIcon /> 编辑
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => lock.mutate({ path: { term_id: t.id }, body: { locked: !t.locked } })}
+                      onClick={() =>
+                        lock.mutate({
+                          path: { term_id: t.id },
+                          body: { locked: !t.locked },
+                        })
+                      }
                     >
-                      {t.locked ? <LockOpenIcon /> : <LockIcon />} {t.locked ? "解锁" : "锁定"}
+                      {t.locked ? <LockOpenIcon /> : <LockIcon />}{" "}
+                      {t.locked ? "解锁" : "锁定"}
                     </Button>
-                    <ConfirmButton title={`删除「${t.term}」？`} onConfirm={() => remove.mutate({ path: { term_id: t.id } })}>
+                    <ConfirmButton
+                      title={`删除「${t.term}」？`}
+                      onConfirm={() =>
+                        remove.mutate({ path: { term_id: t.id } })
+                      }
+                    >
                       删除
                     </ConfirmButton>
                   </div>
@@ -233,7 +476,14 @@ function Glossary({ groupId }: { groupId: number | null }) {
           </TableBody>
         </Table>
       )}
-      {terms.data && <Pager total={terms.data.total} limit={limit} offset={offset} onChange={setOffset} />}
+      {terms.data && (
+        <Pager
+          total={terms.data.total}
+          limit={limit}
+          offset={offset}
+          onChange={setOffset}
+        />
+      )}
       {editing && (
         <GlossaryDialog
           term={editing === "new" ? null : editing}
@@ -245,31 +495,59 @@ function Glossary({ groupId }: { groupId: number | null }) {
   );
 }
 
-function GlossaryDialog({ term, groupId, onClose }: { term: GlossaryOut | null; groupId: number; onClose: () => void }) {
+function GlossaryDialog({
+  term,
+  groupId,
+  onClose,
+}: {
+  term: GlossaryOut | null;
+  groupId: number;
+  onClose: () => void;
+}) {
   const [form, setForm] = useState<GlossaryIn>({
     group_id: groupId,
     term: term?.term ?? "",
     aliases: term?.aliases ?? [],
     definition: term?.definition ?? "",
   });
-  const create = useMutation({ ...createGlossaryTermMutation(), onSuccess: onClose });
-  const update = useMutation({ ...updateGlossaryTermMutation(), onSuccess: onClose });
+  const create = useMutation({
+    ...createGlossaryTermMutation(),
+    onSuccess: onClose,
+  });
+  const update = useMutation({
+    ...updateGlossaryTermMutation(),
+    onSuccess: onClose,
+  });
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{term ? `编辑「${term.term}」` : `新增词条（群 ${groupId}）`}</DialogTitle>
+          <DialogTitle>
+            {term ? `编辑「${term.term}」` : `新增词条（群 ${groupId}）`}
+          </DialogTitle>
         </DialogHeader>
-        <p className="text-xs text-muted-foreground">管理员编辑的词条会被锁定，整理流水线不再覆盖。</p>
+        <p className="text-xs text-muted-foreground">
+          管理员编辑的词条会被锁定，整理流水线不再覆盖。
+        </p>
         <div className="grid gap-4">
           <Field label="词条">
-            <Input value={form.term} onChange={(e) => setForm({ ...form, term: e.target.value })} />
+            <Input
+              value={form.term}
+              onChange={(e) => setForm({ ...form, term: e.target.value })}
+            />
           </Field>
           <Field label="别名">
-            <TagInput value={form.aliases ?? []} onChange={(aliases) => setForm({ ...form, aliases })} />
+            <TagInput
+              value={form.aliases ?? []}
+              onChange={(aliases) => setForm({ ...form, aliases })}
+            />
           </Field>
           <Field label="释义">
-            <Textarea rows={5} value={form.definition} onChange={(e) => setForm({ ...form, definition: e.target.value })} />
+            <Textarea
+              rows={5}
+              value={form.definition}
+              onChange={(e) => setForm({ ...form, definition: e.target.value })}
+            />
           </Field>
         </div>
         <DialogFooter>
@@ -277,8 +555,17 @@ function GlossaryDialog({ term, groupId, onClose }: { term: GlossaryOut | null; 
             取消
           </Button>
           <Button
-            disabled={!form.term.trim() || !form.definition.trim() || create.isPending || update.isPending}
-            onClick={() => (term ? update.mutate({ path: { term_id: term.id }, body: form }) : create.mutate({ body: form }))}
+            disabled={
+              !form.term.trim() ||
+              !form.definition.trim() ||
+              create.isPending ||
+              update.isPending
+            }
+            onClick={() =>
+              term
+                ? update.mutate({ path: { term_id: term.id }, body: form })
+                : create.mutate({ body: form })
+            }
           >
             保存
           </Button>
@@ -292,17 +579,30 @@ function Profiles({ groupId }: { groupId: number | null }) {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;
-  const profiles = useQuery(listProfilesOptions({ query: { group_id: groupId, q: q || null, limit, offset } }));
-  const [selected, setSelected] = useState<{ group_id: number; user_id: number } | null>(null);
-  const remove = useMutation({ ...deleteProfileMutation(),
-      onSuccess: () => {
-        toast.success("已删除画像");
-        setSelected(null);
-      },
-    });
+  const profiles = useQuery(
+    listProfilesOptions({
+      query: { group_id: groupId, q: q || null, limit, offset },
+    }),
+  );
+  const [selected, setSelected] = useState<{
+    group_id: number;
+    user_id: number;
+  } | null>(null);
+  const remove = useMutation({
+    ...deleteProfileMutation(),
+    onSuccess: () => {
+      toast.success("已删除画像");
+      setSelected(null);
+    },
+  });
   return (
     <div className="grid gap-4">
-      <Input className="w-72" placeholder="搜索昵称、QQ 号或摘要" value={q} onChange={(e) => setQ(e.target.value)} />
+      <Input
+        className="w-72"
+        placeholder="搜索昵称、QQ 号或摘要"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
       <QueryState isLoading={profiles.isLoading} error={profiles.error} />
       {profiles.data?.items.length === 0 && <Empty />}
       {!!profiles.data?.items.length && (
@@ -320,7 +620,9 @@ function Profiles({ groupId }: { groupId: number | null }) {
             {profiles.data.items.map((p) => (
               <TableRow key={`${p.group_id}:${p.user_id}`}>
                 <TableCell>
-                  <div className="font-medium">{p.display_name || p.user_id}</div>
+                  <div className="font-medium">
+                    {p.display_name || p.user_id}
+                  </div>
                   <div className="font-mono text-xs text-muted-foreground">
                     {p.user_id} · 群 {p.group_id}
                   </div>
@@ -328,23 +630,36 @@ function Profiles({ groupId }: { groupId: number | null }) {
                 </TableCell>
                 {/* TableCell defaults to nowrap; long profile text must wrap and stay short (full text in 查看). */}
                 <TableCell className="min-w-80 max-w-xl text-sm whitespace-normal">
-                  <div className="line-clamp-3">
-                    {p.summary}
-                  </div>
+                  <div className="line-clamp-3">{p.summary}</div>
                 </TableCell>
                 <TableCell className="min-w-40 max-w-xs text-xs whitespace-normal">
                   <div className="line-clamp-3">{p.interests.join("、")}</div>
                 </TableCell>
-                <TableCell className="text-xs">{fmtTime(p.updated_at)}</TableCell>
+                <TableCell className="text-xs">
+                  {fmtTime(p.updated_at)}
+                </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => setSelected({ group_id: p.group_id, user_id: p.user_id })}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setSelected({
+                          group_id: p.group_id,
+                          user_id: p.user_id,
+                        })
+                      }
+                    >
                       查看
                     </Button>
                     <ConfirmButton
                       title={`删除 ${p.display_name || p.user_id} 的画像？`}
                       description="同时删除画像下的全部事实。"
-                      onConfirm={() => remove.mutate({ path: { group_id: p.group_id, user_id: p.user_id } })}
+                      onConfirm={() =>
+                        remove.mutate({
+                          path: { group_id: p.group_id, user_id: p.user_id },
+                        })
+                      }
                     >
                       删除
                     </ConfirmButton>
@@ -355,13 +670,30 @@ function Profiles({ groupId }: { groupId: number | null }) {
           </TableBody>
         </Table>
       )}
-      {profiles.data && <Pager total={profiles.data.total} limit={limit} offset={offset} onChange={setOffset} />}
-      {selected && <ProfileDialog {...selected} onClose={() => setSelected(null)} />}
+      {profiles.data && (
+        <Pager
+          total={profiles.data.total}
+          limit={limit}
+          offset={offset}
+          onChange={setOffset}
+        />
+      )}
+      {selected && (
+        <ProfileDialog {...selected} onClose={() => setSelected(null)} />
+      )}
     </div>
   );
 }
 
-function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_id: number; onClose: () => void }) {
+function ProfileDialog({
+  group_id,
+  user_id,
+  onClose,
+}: {
+  group_id: number;
+  user_id: number;
+  onClose: () => void;
+}) {
   const profile = useQuery(getProfileOptions({ path: { group_id, user_id } }));
   const removeFact = useMutation(deleteProfileFactMutation());
   const p = profile.data;
@@ -370,7 +702,10 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {p?.display_name || user_id} <span className="font-mono text-sm text-muted-foreground">群 {group_id}</span>
+            {p?.display_name || user_id}{" "}
+            <span className="font-mono text-sm text-muted-foreground">
+              群 {group_id}
+            </span>
           </DialogTitle>
         </DialogHeader>
         <QueryState isLoading={profile.isLoading} error={profile.error} />
@@ -389,15 +724,24 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
             {p.facts.length === 0 && <Empty>没有记录事实</Empty>}
             <div className="grid max-h-80 gap-1.5 overflow-auto">
               {p.facts.map((f) => (
-                <div key={f.id} className="flex items-start justify-between gap-2 rounded-md border px-3 py-2">
+                <div
+                  key={f.id}
+                  className="flex items-start justify-between gap-2 rounded-md border px-3 py-2"
+                >
                   <div>
                     {f.fact}
-                    <div className="text-xs text-muted-foreground">{fmtTime(f.created_at)}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {fmtTime(f.created_at)}
+                    </div>
                   </div>
                   <Button
                     size="xs"
                     variant="ghost"
-                    onClick={() => removeFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
+                    onClick={() =>
+                      removeFact.mutate({
+                        path: { group_id, user_id, fact_id: f.id },
+                      })
+                    }
                   >
                     删除
                   </Button>
@@ -440,11 +784,19 @@ function Pipelines() {
                 <TableCell className="font-mono">{p.pipeline}</TableCell>
                 <TableCell className="font-mono">{p.group_id}</TableCell>
                 <TableCell className="font-mono">{p.last_msg_id}</TableCell>
-                <TableCell>{p.backlog >= 10000 ? "≥10000" : p.backlog}</TableCell>
                 <TableCell>
-                  {Object.keys(p.state).length ? <Pre value={p.state} className="max-h-32" /> : "—"}
+                  {p.backlog >= 10000 ? "≥10000" : p.backlog}
                 </TableCell>
-                <TableCell className="text-xs">{fmtTime(p.updated_at)}</TableCell>
+                <TableCell>
+                  {Object.keys(p.state).length ? (
+                    <Pre value={p.state} className="max-h-32" />
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {fmtTime(p.updated_at)}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

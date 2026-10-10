@@ -86,6 +86,36 @@ export type AliasesResult = {
 };
 
 /**
+ * ArchiveIn
+ */
+export type ArchiveIn = {
+    /**
+     * Archived
+     */
+    archived: boolean;
+};
+
+/**
+ * ArchiveSmallIn
+ */
+export type ArchiveSmallIn = {
+    /**
+     * Group Id
+     */
+    group_id: number;
+};
+
+/**
+ * ArchiveSmallOut
+ */
+export type ArchiveSmallOut = {
+    /**
+     * Archived
+     */
+    archived: number;
+};
+
+/**
  * DecideIn
  */
 export type DecideIn = {
@@ -3234,6 +3264,34 @@ export type ListTopicsData = {
          */
         until?: string | null;
         /**
+         * Status
+         */
+        status?: 'open' | 'closed' | 'archived' | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * User Id
+         */
+        user_id?: number | null;
+        /**
+         * Min Messages
+         */
+        min_messages?: number | null;
+        /**
+         * Max Messages
+         */
+        max_messages?: number | null;
+        /**
+         * Min Participants
+         */
+        min_participants?: number | null;
+        /**
+         * Max Participants
+         */
+        max_participants?: number | null;
+        /**
          * Limit
          */
         limit?: number;
@@ -3262,6 +3320,61 @@ export type ListTopicsResponses = {
 };
 
 export type ListTopicsResponse = ListTopicsResponses[keyof ListTopicsResponses];
+
+export type ArchiveTopicData = {
+    body: ArchiveIn;
+    path: {
+        /**
+         * Topic Id
+         */
+        topic_id: number;
+    };
+    query?: never;
+    url: '/memory/topics/{topic_id}/archive';
+};
+
+export type ArchiveTopicErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArchiveTopicError = ArchiveTopicErrors[keyof ArchiveTopicErrors];
+
+export type ArchiveTopicResponses = {
+    /**
+     * Successful Response
+     */
+    200: TopicOut;
+};
+
+export type ArchiveTopicResponse = ArchiveTopicResponses[keyof ArchiveTopicResponses];
+
+export type ArchiveSmallTopicsData = {
+    body: ArchiveSmallIn;
+    path?: never;
+    query?: never;
+    url: '/memory/topics/archive-small';
+};
+
+export type ArchiveSmallTopicsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArchiveSmallTopicsError = ArchiveSmallTopicsErrors[keyof ArchiveSmallTopicsErrors];
+
+export type ArchiveSmallTopicsResponses = {
+    /**
+     * Successful Response
+     */
+    200: ArchiveSmallOut;
+};
+
+export type ArchiveSmallTopicsResponse = ArchiveSmallTopicsResponses[keyof ArchiveSmallTopicsResponses];
 
 export type ListDigestsData = {
     body?: never;

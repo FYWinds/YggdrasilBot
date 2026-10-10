@@ -1,7 +1,7 @@
 """Memory browser: topics, daily digests, glossary, user profiles, pipeline watermarks."""
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from yggdrasil.db.models import (
     UserProfileFact,
 )
 from yggdrasil.db.session import get_session
+from yggdrasil.memory import topics
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -39,41 +40,107 @@ class TopicOut(BaseModel):
     dirty: bool
 
 
+def _topic_out(t: Topic) -> TopicOut:
+    return TopicOut(
+        id=t.id,
+        group_id=t.group_id,
+        title=t.title,
+        summary=t.summary,
+        keywords=list(t.keywords),
+        participants=list(t.participants),
+        start_at=t.start_at,
+        end_at=t.end_at,
+        msg_count=t.msg_count,
+        status=t.status,
+        dirty=t.dirty,
+    )
+
+
 @router.get("/topics")
 async def list_topics(
     group_id: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    status: Literal["open", "closed", "archived"] | None = None,
+    q: str | None = None,
+    user_id: int | None = None,
+    min_messages: int | None = Query(None, ge=0),
+    max_messages: int | None = Query(None, ge=0),
+    min_participants: int | None = Query(None, ge=0),
+    max_participants: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[TopicOut]:
-    cond = []
+    cond: list[ColumnElement[bool]] = []
     if group_id is not None:
         cond.append(Topic.group_id == group_id)
     if since is not None:
         cond.append(Topic.end_at >= since)
     if until is not None:
         cond.append(Topic.start_at <= until)
+    if status is not None:
+        cond.append(Topic.status == status)
+    if q:
+        like = f"%{q}%"
+        cond.append(
+            or_(
+                Topic.title.ilike(like),
+                Topic.summary.ilike(like),
+                func.array_to_string(Topic.keywords, " ").ilike(like),
+            )
+        )
+    if user_id is not None:
+        cond.append(Topic.participants.contains([user_id]))
+    ranges = (
+        (Topic.msg_count, min_messages, max_messages),
+        (func.cardinality(Topic.participants), min_participants, max_participants),
+    )
+    for column, low, high in ranges:
+        if low is not None:
+            cond.append(column >= low)
+        if high is not None:
+            cond.append(column <= high)
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(Topic).where(*cond)) or 0
         rows = await s.scalars(select(Topic).where(*cond).order_by(Topic.start_at.desc()).limit(limit).offset(offset))
-        items = [
-            TopicOut(
-                id=t.id,
-                group_id=t.group_id,
-                title=t.title,
-                summary=t.summary,
-                keywords=list(t.keywords),
-                participants=list(t.participants),
-                start_at=t.start_at,
-                end_at=t.end_at,
-                msg_count=t.msg_count,
-                status=t.status,
-                dirty=t.dirty,
-            )
-            for t in rows.all()
-        ]
+        items = [_topic_out(t) for t in rows.all()]
     return Page[TopicOut](items=items, total=total)
+
+
+class ArchiveIn(BaseModel):
+    archived: bool
+
+
+@router.post("/topics/{topic_id}/archive")
+async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOut:
+    """Archive (hide from the agent) or restore one finished topic."""
+    async with change(actor, "topic", "archive" if body.archived else "restore", topic_id) as c:
+        t = await c.session.get(Topic, topic_id)
+        if t is None:
+            raise not_found("话题")
+        if t.status == "open":
+            raise conflict("进行中的话题不能归档，等它结束")
+        t.status = "archived" if body.archived else "closed"
+        await c.session.flush()
+        await c.session.refresh(t)
+    return _topic_out(t)
+
+
+class ArchiveSmallIn(BaseModel):
+    group_id: int
+
+
+class ArchiveSmallOut(BaseModel):
+    archived: int
+
+
+@router.post("/topics/archive-small")
+async def archive_small_topics(body: ArchiveSmallIn, actor: Actor) -> ArchiveSmallOut:
+    """Apply the group's current archive thresholds to its finished topics."""
+    async with change(actor, "topic", "archive_small", body.group_id) as c:
+        n = await topics.archive_closed(c.session, body.group_id)
+        c.detail = {"group_id": body.group_id, "archived": n}
+    return ArchiveSmallOut(archived=n)
 
 
 class DigestOut(BaseModel):
