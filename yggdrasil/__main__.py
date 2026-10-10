@@ -117,6 +117,9 @@ def main() -> None:
         alconna_auto_send_output=False,
         alconna_response_self=False,
         fastapi_reload=False,
+        # FastAPI >= 0.142 adds its own OTLP exporters from OTEL_EXPORTER_OTLP_ENDPOINT at lifespan
+        # startup, on top of setup_telemetry's: every span and metric was exported twice.
+        fastapi_extra={"telemetry": {"auto_configure": False}},
         # Don't let NoneBot read .env (it logs every key, incl. secrets, at DEBUG). A falsy value
         # makes it fall back to (".env", ".env.<env>"), so point it at a file that never exists.
         _env_file=("__nonebot_env_disabled__",),
