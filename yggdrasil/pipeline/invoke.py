@@ -10,12 +10,14 @@ from uuid import UUID
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic_ai import Agent
+from pydantic_ai import Agent, BinaryContent
+from pydantic_ai.messages import UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 from sqlalchemy import update
 
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.media import load_images, media_type
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, tool_names, tools_for
@@ -26,7 +28,7 @@ from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import Meta, react, send_forward, send_text
-from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
+from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage, sees_images
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
@@ -121,6 +123,27 @@ class Invocator:
                 INVOCATION_DURATION.record(self.meta.total_s, {"handler": self.handler})
                 if not self._finished:
                     await self._finish(status, error)
+
+    async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
+        """Attach the images of the quoted and trigger messages up front when the route can see them.
+
+        They are almost always what the request is about ("总结一下" on a reply to three screenshots),
+        and a view_image round trip per image costs a model turn.
+        """
+        limit = self.settings.context.inline_images
+        handles = [h for h in ctx.handles.items.values() if h.kind == "image"][:limit]
+        if not handles or not sees_images(self.handler):
+            return ctx.prompt
+        with TRACER.start_as_current_span("ygg.inline_images") as span:
+            loaded = await load_images(self.api, self.group_id, handles)
+            span.set_attribute("ygg.images", len(loaded))
+        if not loaded:
+            return ctx.prompt
+        keys = "、".join(key for key, _ in loaded)
+        prompt: list[UserContent] = [ctx.prompt, f"下面直接附上了 {keys} 的原图：直接看图，不用再调用 view_image。"]
+        for key, blob in loaded:
+            prompt += [f"{key}：", BinaryContent(data=blob, media_type=media_type(blob))]
+        return prompt
 
     # --- bookkeeping -------------------------------------------------------
     async def _start_row(self, ctx: BuiltContext) -> None:
@@ -246,10 +269,11 @@ class Invocator:
             name=self.handler,
             retries=2,
         )
+        prompt = await self._prompt_with_images(ctx)
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         agent_task = asyncio.create_task(
             agent.run(
-                ctx.prompt,
+                prompt,
                 deps=deps,
                 model_settings=resolved_model.settings,
                 usage_limits=UsageLimits(

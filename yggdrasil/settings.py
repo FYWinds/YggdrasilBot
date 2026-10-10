@@ -100,6 +100,12 @@ class ContextSettings(BaseModel):
     include_profiles: bool = True
     include_glossary: bool = True
     include_open_topics: bool = True
+    inline_images: int = Field(
+        default=4,
+        ge=0,
+        le=10,
+        description="被引用消息和触发消息里的图片，最多直接附几张给能看图的模型（0：不附，改由模型调用 view_image）",
+    )
 
 
 class ToolSettings(BaseModel):
