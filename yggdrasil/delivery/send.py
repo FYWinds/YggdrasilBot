@@ -197,19 +197,11 @@ async def send_forward(
     images: list[tuple[bytes, str]] | None = None,
 ) -> int:
     nodes = build_nodes(reply, meta_text, cfg, self_id=self_id, nickname=nickname, images=images)
-    title = (reply.title or "回复")[:30]
-    news = [s.title or strip_markdown(s.content)[:30] for s in reply.sections[:4]] or [title]
-    kwargs = {
-        "messages": nodes,
-        "source": title,
-        "summary": f"查看 {len(nodes)} 条消息",
-        "prompt": f"[{title}]",
-        "news": news,
-    }
+    title = (reply.title or "回复")[:30]  # only for our own message record; never sent as a preview
     if group_id is None:
-        res = await api.send_private_forward_msg(user_id=user_id, **kwargs)
+        res = await api.send_private_forward_msg(user_id=user_id, messages=nodes)
     else:
-        res = await api.send_group_forward_msg(group_id=group_id, **kwargs)
+        res = await api.send_group_forward_msg(group_id=group_id, messages=nodes)
         # Keep the node texts with our own record: QQ hands self-sent forwards back as an opaque
         # card, so this is how a later "reply to the bot's forward" can read what was in it.
         stored = [_textual_node(n) for n in nodes]
