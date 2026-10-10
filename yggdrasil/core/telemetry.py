@@ -74,9 +74,11 @@ class _DropOrphanClients(Sampler):
 
 def _resource(service_name: str) -> Resource:
     resource = Resource.create({SERVICE_NAME: service_name, SERVICE_VERSION: __version__})
-    if SERVICE_INSTANCE_ID not in resource.attributes:
-        resource = resource.merge(Resource({SERVICE_INSTANCE_ID: str(uuid.uuid4())}))
-    return resource
+    # Counters are cumulative per process, so every exporting process needs its own identity: two processes
+    # under one id (taskiq worker forks two) interleave their values, and each drop reads as a counter reset.
+    base = resource.attributes.get(SERVICE_INSTANCE_ID)
+    instance = f"{base}-{os.getpid()}" if base else str(uuid.uuid4())
+    return resource.merge(Resource({SERVICE_INSTANCE_ID: instance}))
 
 
 def setup_telemetry(service_name: str, app: FastAPI | None = None) -> bool:

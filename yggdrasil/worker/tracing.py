@@ -58,7 +58,8 @@ class TracingMiddleware(TaskiqMiddleware):
     def post_execute(self, message: TaskiqMessage, result: TaskiqResult[Any]) -> None:
         run = self._runs.pop(message.task_id, None)
         outcome = "error" if result.is_err else "ok"
-        attrs = {"job": message.task_name}
+        # Not "job": Prometheus overwrites it with the scrape job, which merged every task into one series.
+        attrs = {"ygg.job": message.task_name}
         JOB_RUNS.add(1, {**attrs, "outcome": outcome})
         if run is None:
             return
