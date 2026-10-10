@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class Section(BaseModel):
     # No title: the forward card preview shows the first lines of each node, so a heading wastes it.
-    content: str = Field(description="正文，纯文本，不要 markdown，不要加小标题")
+    content: str = Field(description="正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行")
 
 
 class SourceRef(BaseModel):
