@@ -1,6 +1,7 @@
 # local planning docs
 /docs/DESIGN.md
 /docs/SANDBOX.md
+/docs/SEARCH_APIS.md
 
 # env / secrets
 .env
