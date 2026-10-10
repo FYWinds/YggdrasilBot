@@ -99,51 +99,13 @@ class NapCatAPI:
     async def send_private_msg(self, *, user_id: int, message: Segments) -> SendResult:
         return _parse(SendResult, await self._call("send_private_msg", user_id=user_id, message=message))
 
-    async def send_group_forward_msg(
-        self,
-        *,
-        group_id: int,
-        messages: Segments,
-        source: str | None = None,
-        summary: str | None = None,
-        prompt: str | None = None,
-        news: list[str] | None = None,
-    ) -> ForwardResult:
-        return _parse(
-            ForwardResult,
-            await self._call(
-                "send_group_forward_msg",
-                group_id=group_id,
-                messages=messages,
-                source=source,
-                summary=summary,
-                prompt=prompt,
-                news=[{"text": n} for n in news] if news else None,
-            ),
-        )
+    # No source/summary/prompt/news overrides: a preview that doesn't match the nodes trips QQ's risk
+    # control ("risky link" warnings); NapCat derives the real one from the node contents.
+    async def send_group_forward_msg(self, *, group_id: int, messages: Segments) -> ForwardResult:
+        return _parse(ForwardResult, await self._call("send_group_forward_msg", group_id=group_id, messages=messages))
 
-    async def send_private_forward_msg(
-        self,
-        *,
-        user_id: int,
-        messages: Segments,
-        source: str | None = None,
-        summary: str | None = None,
-        prompt: str | None = None,
-        news: list[str] | None = None,
-    ) -> ForwardResult:
-        return _parse(
-            ForwardResult,
-            await self._call(
-                "send_private_forward_msg",
-                user_id=user_id,
-                messages=messages,
-                source=source,
-                summary=summary,
-                prompt=prompt,
-                news=[{"text": n} for n in news] if news else None,
-            ),
-        )
+    async def send_private_forward_msg(self, *, user_id: int, messages: Segments) -> ForwardResult:
+        return _parse(ForwardResult, await self._call("send_private_forward_msg", user_id=user_id, messages=messages))
 
     async def get_msg(self, *, message_id: int) -> MessageRecord:
         return _parse(MessageRecord, await self._call("get_msg", message_id=message_id))

@@ -86,13 +86,7 @@ async def create_review(
     ]
     for uid in snapshot().superusers:
         try:
-            await api.send_private_forward_msg(
-                user_id=uid,
-                messages=nodes,
-                source=f"审核 R{review_id}",
-                prompt=f"[审核 R{review_id}]",
-                summary="待审核回复",
-            )
+            await api.send_private_forward_msg(user_id=uid, messages=nodes)
             await api.send_private_msg(user_id=uid, message=[text_seg(header)])
         except Exception as e:
             LOGGER.warning("review notify to {} failed: {}", uid, e)
