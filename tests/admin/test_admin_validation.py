@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 
 from tests.admin.conftest import ADMIN
 from yggdrasil.admin import providers as providers_api
-from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SettingsDoc, TaskRoute
+from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SearchProvider, SettingsDoc, TaskRoute
 from yggdrasil.db.session import get_session
 from yggdrasil.llm.catalog import Catalog
 
@@ -191,6 +191,40 @@ async def test_provider_key_is_never_returned(
     finally:
         async with get_session() as s:
             await s.execute(delete(Provider).where(Provider.id == pid))
+
+
+async def test_search_provider_key_rules_and_default_endpoint(
+    client: httpx.AsyncClient, published: list[str], cleanup_audit: None
+) -> None:
+    name = f"pytest-{uuid.uuid4().hex[:8]}"
+    secret = f"exa-{uuid.uuid4().hex}"
+    keyless = await client.post("/api/search-providers", json={"name": name, "kind": "exa"})
+    assert keyless.status_code == 422
+    no_url = await client.post("/api/search-providers", json={"name": name, "kind": "searxng"})
+    assert no_url.status_code == 422
+
+    resp = await client.post(
+        "/api/search-providers", json={"name": name, "kind": "exa", "api_key": secret, "monthly_limit": 1300}
+    )
+    assert resp.status_code == 200, resp.text
+    sid = resp.json()["id"]
+    try:
+        assert secret not in resp.text
+        assert resp.json()["base_url"] == "https://api.exa.ai"
+        assert resp.json()["api_key_masked"] == f"…{secret[-4:]}"
+        # Clearing the only key of an Exa provider is refused; the stored key survives.
+        cleared = await client.put(
+            f"/api/search-providers/{sid}", json={"name": name, "kind": "exa", "clear_api_key": True}
+        )
+        assert cleared.status_code == 422
+        listed = await client.get("/api/search-providers")
+        row = next(p for p in listed.json() if p["id"] == sid)
+        assert row["api_key_masked"] == f"…{secret[-4:]}"
+        assert row["monthly_limit"] == 1300
+        assert secret not in listed.text
+    finally:
+        async with get_session() as s:
+            await s.execute(delete(SearchProvider).where(SearchProvider.id == sid))
 
 
 async def _audit_details(provider_id: int) -> list[dict]:

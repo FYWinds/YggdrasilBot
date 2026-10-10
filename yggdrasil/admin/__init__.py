@@ -18,6 +18,7 @@ from yggdrasil.admin import (
     providers,
     reviews,
     routes,
+    search_providers,
     settings_api,
     stickers,
     triggers,
@@ -29,6 +30,7 @@ from yggdrasil.core.log import LOGGER
 _ROUTERS = (
     dashboard.router,
     providers.router,
+    search_providers.router,
     routes.router,
     settings_api.router,
     groups.router,

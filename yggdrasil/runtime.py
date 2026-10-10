@@ -24,6 +24,7 @@ from yggdrasil.db.models import (
     Prompt,
     PromptVersion,
     Provider,
+    SearchProvider,
     SettingsDoc,
     TaskRoute,
 )
@@ -91,6 +92,19 @@ class EmbedSpaceInfo:
     dim: int
 
 
+@dataclass(frozen=True, slots=True)
+class SearchProviderInfo:
+    id: int
+    name: str
+    kind: str
+    base_url: str
+    api_key: str | None
+    enabled: bool
+    priority: int
+    monthly_limit: int | None
+    params: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class Snapshot:
     version: int = 0
@@ -103,6 +117,7 @@ class Snapshot:
     superusers: frozenset[int] = frozenset()
     admin_emails: frozenset[str] = frozenset()
     embed_space: EmbedSpaceInfo | None = None
+    search_providers: tuple[SearchProviderInfo, ...] = ()  # sorted by (priority, id)
     _settings_cache: dict[int | None, Settings] = field(default_factory=dict, repr=False)
 
     def settings(self, group_id: int | None = None) -> Settings:
@@ -136,23 +151,33 @@ async def load() -> Snapshot:
     async with get_session() as session:
         providers = {}
         for p in (await session.scalars(select(Provider))).all():
-            key = None
-            if p.api_key_enc:
-                try:
-                    key = decrypt(p.api_key_enc)
-                except Exception:
-                    LOGGER.error("cannot decrypt api key of provider {} (YGG_SECRET_KEY changed?)", p.name)
             providers[p.id] = ProviderInfo(
                 p.id,
                 p.name,
                 p.base_url.rstrip("/"),
-                key,
+                _decrypt_key(p.api_key_enc, p.name),
                 dict(p.headers),
                 p.enabled,
                 tuple(p.models or ()),
                 p.api_format,
                 {m: ModelCaps.model_validate(c) for m, c in (p.model_caps or {}).items()},
             )
+        search_providers = tuple(
+            SearchProviderInfo(
+                s.id,
+                s.name,
+                s.kind,
+                s.base_url.rstrip("/"),
+                _decrypt_key(s.api_key_enc, s.name),
+                s.enabled,
+                s.priority,
+                s.monthly_limit,
+                dict(s.params),
+            )
+            for s in (
+                await session.scalars(select(SearchProvider).order_by(SearchProvider.priority, SearchProvider.id))
+            ).all()
+        )
         routes = {
             r.task: Route(
                 r.task, r.provider_id, r.model, dict(r.params), r.fallback_provider_id, r.fallback_model, dict(r.limits)
@@ -205,6 +230,7 @@ async def load() -> Snapshot:
         superusers=frozenset(superusers),
         admin_emails=frozenset(emails),
         embed_space=EmbedSpaceInfo(space.id, space.provider_id, space.model, space.dim) if space else None,
+        search_providers=search_providers,
     )
     for fn in _listeners:
         result = fn(_snapshot)
@@ -219,6 +245,16 @@ async def load() -> Snapshot:
         len(triggers),
     )
     return _snapshot
+
+
+def _decrypt_key(enc: bytes | None, owner: str) -> str | None:
+    if not enc:
+        return None
+    try:
+        return decrypt(enc)
+    except Exception:
+        LOGGER.error("cannot decrypt api key of {} (YGG_SECRET_KEY changed?)", owner)
+        return None
 
 
 async def publish_change(reason: str) -> None:

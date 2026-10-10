@@ -179,11 +179,10 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
 @_tool("web_search")
 async def web_search(ctx: RunContext[Deps], query: str) -> str:
     """用搜索引擎查资料，返回标题、链接和摘要。需要细节时再用 read_url 读原文。"""
+    from yggdrasil.runtime import snapshot
     from yggdrasil.tools.search import web_search as _search
 
-    if not APP_CONFIG.searxng_url:
-        raise ToolError("搜索服务未配置")
-    hits = await _search(query, searxng_url=APP_CONFIG.searxng_url, n=ctx.deps.settings.tools.search_results)
+    hits = await _search(query, snapshot().search_providers, n=ctx.deps.settings.tools.search_results)
     if not hits:
         return "没有搜索结果"
     return "\n\n".join(f"{i + 1}. {h.title}\n{h.url}\n{h.snippet}" for i, h in enumerate(hits))

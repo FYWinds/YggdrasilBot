@@ -10,6 +10,7 @@ import { PromptsPage } from "@/pages/prompts";
 import { ProvidersPage } from "@/pages/providers";
 import { ReviewsPage } from "@/pages/reviews";
 import { RoutesPage } from "@/pages/routes";
+import { SearchPage } from "@/pages/search";
 import { SettingsPage } from "@/pages/settings";
 import { StickersPage } from "@/pages/stickers";
 import { TriggersPage } from "@/pages/triggers";
@@ -26,6 +27,7 @@ const routeTree = rootRoute.addChildren([
   page("/", OverviewPage),
   page("/providers", ProvidersPage),
   page("/routes", RoutesPage),
+  page("/search", SearchPage),
   page("/groups", GroupsPage),
   page("/triggers", TriggersPage),
   page("/settings", SettingsPage),

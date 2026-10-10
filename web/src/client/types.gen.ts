@@ -1393,6 +1393,155 @@ export type RouteOut = {
     updated_at: string;
 };
 
+export type SearchKind = 'searxng' | 'exa';
+
+/**
+ * SearchProviderIn
+ */
+export type SearchProviderIn = {
+    /**
+     * Name
+     */
+    name: string;
+    kind: SearchKind;
+    /**
+     * Base Url
+     */
+    base_url?: string;
+    /**
+     * Api Key
+     */
+    api_key?: string | null;
+    /**
+     * Clear Api Key
+     */
+    clear_api_key?: boolean;
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+    /**
+     * Priority
+     */
+    priority?: number;
+    /**
+     * Monthly Limit
+     */
+    monthly_limit?: number | null;
+    /**
+     * Params
+     */
+    params?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * SearchProviderOut
+ */
+export type SearchProviderOut = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Kind
+     */
+    kind: string;
+    /**
+     * Base Url
+     */
+    base_url: string;
+    /**
+     * Api Key Masked
+     */
+    api_key_masked: string | null;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * Priority
+     */
+    priority: number;
+    /**
+     * Monthly Limit
+     */
+    monthly_limit: number | null;
+    /**
+     * Params
+     */
+    params: {
+        [key: string]: unknown;
+    };
+    /**
+     * Used This Month
+     */
+    used_this_month: number;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * SearchTestHit
+ */
+export type SearchTestHit = {
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Snippet
+     */
+    snippet: string;
+};
+
+/**
+ * SearchTestIn
+ */
+export type SearchTestIn = {
+    /**
+     * Query
+     */
+    query?: string;
+};
+
+/**
+ * SearchTestResult
+ */
+export type SearchTestResult = {
+    /**
+     * Ok
+     */
+    ok: boolean;
+    /**
+     * Latency Ms
+     */
+    latency_ms: number;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Hits
+     */
+    hits?: Array<SearchTestHit>;
+};
+
 /**
  * SettingsView
  */
@@ -2009,6 +2158,139 @@ export type SetProviderAliasesResponses = {
 };
 
 export type SetProviderAliasesResponse = SetProviderAliasesResponses[keyof SetProviderAliasesResponses];
+
+export type ListSearchProvidersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/search-providers';
+};
+
+export type ListSearchProvidersResponses = {
+    /**
+     * Response List Search Providers
+     *
+     * Successful Response
+     */
+    200: Array<SearchProviderOut>;
+};
+
+export type ListSearchProvidersResponse = ListSearchProvidersResponses[keyof ListSearchProvidersResponses];
+
+export type CreateSearchProviderData = {
+    body: SearchProviderIn;
+    path?: never;
+    query?: never;
+    url: '/search-providers';
+};
+
+export type CreateSearchProviderErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateSearchProviderError = CreateSearchProviderErrors[keyof CreateSearchProviderErrors];
+
+export type CreateSearchProviderResponses = {
+    /**
+     * Successful Response
+     */
+    200: SearchProviderOut;
+};
+
+export type CreateSearchProviderResponse = CreateSearchProviderResponses[keyof CreateSearchProviderResponses];
+
+export type DeleteSearchProviderData = {
+    body?: never;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/search-providers/{provider_id}';
+};
+
+export type DeleteSearchProviderErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteSearchProviderError = DeleteSearchProviderErrors[keyof DeleteSearchProviderErrors];
+
+export type DeleteSearchProviderResponses = {
+    /**
+     * Successful Response
+     */
+    200: Ok;
+};
+
+export type DeleteSearchProviderResponse = DeleteSearchProviderResponses[keyof DeleteSearchProviderResponses];
+
+export type UpdateSearchProviderData = {
+    body: SearchProviderIn;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/search-providers/{provider_id}';
+};
+
+export type UpdateSearchProviderErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateSearchProviderError = UpdateSearchProviderErrors[keyof UpdateSearchProviderErrors];
+
+export type UpdateSearchProviderResponses = {
+    /**
+     * Successful Response
+     */
+    200: SearchProviderOut;
+};
+
+export type UpdateSearchProviderResponse = UpdateSearchProviderResponses[keyof UpdateSearchProviderResponses];
+
+export type TestSearchProviderData = {
+    body: SearchTestIn;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/search-providers/{provider_id}/test';
+};
+
+export type TestSearchProviderErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TestSearchProviderError = TestSearchProviderErrors[keyof TestSearchProviderErrors];
+
+export type TestSearchProviderResponses = {
+    /**
+     * Successful Response
+     */
+    200: SearchTestResult;
+};
+
+export type TestSearchProviderResponse = TestSearchProviderResponses[keyof TestSearchProviderResponses];
 
 export type ListRoutesData = {
     body?: never;

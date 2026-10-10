@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionErrors, ActivatePromptVersionResponses, AddAdminData, AddAdminErrors, AddAdminResponses, BackfillGroupData, BackfillGroupErrors, BackfillGroupResponses, CreateEmbedSpaceData, CreateEmbedSpaceErrors, CreateEmbedSpaceResponses, CreateGlossaryTermData, CreateGlossaryTermErrors, CreateGlossaryTermResponses, CreatePromptVersionData, CreatePromptVersionErrors, CreatePromptVersionResponses, CreateProviderData, CreateProviderErrors, CreateProviderResponses, CreateTriggerData, CreateTriggerErrors, CreateTriggerResponses, DecideEventData, DecideEventErrors, DecideEventResponses, DecideReviewData, DecideReviewErrors, DecideReviewResponses, DeleteGlossaryTermData, DeleteGlossaryTermErrors, DeleteGlossaryTermResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteProfileData, DeleteProfileErrors, DeleteProfileFactData, DeleteProfileFactErrors, DeleteProfileFactResponses, DeleteProfileResponses, DeleteProviderData, DeleteProviderErrors, DeleteProviderResponses, DeleteRouteData, DeleteRouteErrors, DeleteRouteResponses, DeleteTriggerData, DeleteTriggerErrors, DeleteTriggerResponses, GetGlobalSettingsData, GetGlobalSettingsResponses, GetGroupSettingsData, GetGroupSettingsErrors, GetGroupSettingsResponses, GetInvocationData, GetInvocationErrors, GetInvocationResponses, GetMeData, GetMeResponses, GetProfileData, GetProfileErrors, GetProfileResponses, GetPromptData, GetPromptErrors, GetPromptResponses, GetSettingsSchemaData, GetSettingsSchemaResponses, GetStatsData, GetStatsResponses, GetTriggerMetaData, GetTriggerMetaResponses, ListAdminsData, ListAdminsResponses, ListDigestsData, ListDigestsErrors, ListDigestsResponses, ListEmbedSpacesData, ListEmbedSpacesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListGlossaryData, ListGlossaryErrors, ListGlossaryResponses, ListGroupsData, ListGroupsResponses, ListInvocationsData, ListInvocationsErrors, ListInvocationsResponses, ListPipelinesData, ListPipelinesResponses, ListProfilesData, ListProfilesErrors, ListProfilesResponses, ListPromptsData, ListPromptsResponses, ListProvidersData, ListProvidersResponses, ListReviewsData, ListReviewsErrors, ListReviewsResponses, ListRoutesData, ListRoutesResponses, ListStickersData, ListStickersErrors, ListStickersResponses, ListTopicsData, ListTopicsErrors, ListTopicsResponses, ListTriggersData, ListTriggersResponses, LockGlossaryTermData, LockGlossaryTermErrors, LockGlossaryTermResponses, PreviewPromptData, PreviewPromptErrors, PreviewPromptResponses, PutGlobalSettingsData, PutGlobalSettingsErrors, PutGlobalSettingsResponses, PutGroupSettingsData, PutGroupSettingsErrors, PutGroupSettingsResponses, ReembedEmbedSpaceData, ReembedEmbedSpaceErrors, ReembedEmbedSpaceResponses, RefreshProviderModelsData, RefreshProviderModelsErrors, RefreshProviderModelsResponses, RemoveAdminData, RemoveAdminErrors, RemoveAdminResponses, ResetPromptData, ResetPromptErrors, ResetPromptResponses, SetProviderAliasesData, SetProviderAliasesErrors, SetProviderAliasesResponses, SetStickerEnabledData, SetStickerEnabledErrors, SetStickerEnabledResponses, TestProviderData, TestProviderErrors, TestProviderResponses, TestTriggerData, TestTriggerErrors, TestTriggerResponses, UpdateGlossaryTermData, UpdateGlossaryTermErrors, UpdateGlossaryTermResponses, UpdateProviderData, UpdateProviderErrors, UpdateProviderResponses, UpdateTriggerData, UpdateTriggerErrors, UpdateTriggerResponses, UpsertGroupData, UpsertGroupErrors, UpsertGroupResponses, UpsertRouteData, UpsertRouteErrors, UpsertRouteResponses } from './types.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionErrors, ActivatePromptVersionResponses, AddAdminData, AddAdminErrors, AddAdminResponses, BackfillGroupData, BackfillGroupErrors, BackfillGroupResponses, CreateEmbedSpaceData, CreateEmbedSpaceErrors, CreateEmbedSpaceResponses, CreateGlossaryTermData, CreateGlossaryTermErrors, CreateGlossaryTermResponses, CreatePromptVersionData, CreatePromptVersionErrors, CreatePromptVersionResponses, CreateProviderData, CreateProviderErrors, CreateProviderResponses, CreateSearchProviderData, CreateSearchProviderErrors, CreateSearchProviderResponses, CreateTriggerData, CreateTriggerErrors, CreateTriggerResponses, DecideEventData, DecideEventErrors, DecideEventResponses, DecideReviewData, DecideReviewErrors, DecideReviewResponses, DeleteGlossaryTermData, DeleteGlossaryTermErrors, DeleteGlossaryTermResponses, DeleteGroupData, DeleteGroupErrors, DeleteGroupResponses, DeleteProfileData, DeleteProfileErrors, DeleteProfileFactData, DeleteProfileFactErrors, DeleteProfileFactResponses, DeleteProfileResponses, DeleteProviderData, DeleteProviderErrors, DeleteProviderResponses, DeleteRouteData, DeleteRouteErrors, DeleteRouteResponses, DeleteSearchProviderData, DeleteSearchProviderErrors, DeleteSearchProviderResponses, DeleteTriggerData, DeleteTriggerErrors, DeleteTriggerResponses, GetGlobalSettingsData, GetGlobalSettingsResponses, GetGroupSettingsData, GetGroupSettingsErrors, GetGroupSettingsResponses, GetInvocationData, GetInvocationErrors, GetInvocationResponses, GetMeData, GetMeResponses, GetProfileData, GetProfileErrors, GetProfileResponses, GetPromptData, GetPromptErrors, GetPromptResponses, GetSettingsSchemaData, GetSettingsSchemaResponses, GetStatsData, GetStatsResponses, GetTriggerMetaData, GetTriggerMetaResponses, ListAdminsData, ListAdminsResponses, ListDigestsData, ListDigestsErrors, ListDigestsResponses, ListEmbedSpacesData, ListEmbedSpacesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListGlossaryData, ListGlossaryErrors, ListGlossaryResponses, ListGroupsData, ListGroupsResponses, ListInvocationsData, ListInvocationsErrors, ListInvocationsResponses, ListPipelinesData, ListPipelinesResponses, ListProfilesData, ListProfilesErrors, ListProfilesResponses, ListPromptsData, ListPromptsResponses, ListProvidersData, ListProvidersResponses, ListReviewsData, ListReviewsErrors, ListReviewsResponses, ListRoutesData, ListRoutesResponses, ListSearchProvidersData, ListSearchProvidersResponses, ListStickersData, ListStickersErrors, ListStickersResponses, ListTopicsData, ListTopicsErrors, ListTopicsResponses, ListTriggersData, ListTriggersResponses, LockGlossaryTermData, LockGlossaryTermErrors, LockGlossaryTermResponses, PreviewPromptData, PreviewPromptErrors, PreviewPromptResponses, PutGlobalSettingsData, PutGlobalSettingsErrors, PutGlobalSettingsResponses, PutGroupSettingsData, PutGroupSettingsErrors, PutGroupSettingsResponses, ReembedEmbedSpaceData, ReembedEmbedSpaceErrors, ReembedEmbedSpaceResponses, RefreshProviderModelsData, RefreshProviderModelsErrors, RefreshProviderModelsResponses, RemoveAdminData, RemoveAdminErrors, RemoveAdminResponses, ResetPromptData, ResetPromptErrors, ResetPromptResponses, SetProviderAliasesData, SetProviderAliasesErrors, SetProviderAliasesResponses, SetStickerEnabledData, SetStickerEnabledErrors, SetStickerEnabledResponses, TestProviderData, TestProviderErrors, TestProviderResponses, TestSearchProviderData, TestSearchProviderErrors, TestSearchProviderResponses, TestTriggerData, TestTriggerErrors, TestTriggerResponses, UpdateGlossaryTermData, UpdateGlossaryTermErrors, UpdateGlossaryTermResponses, UpdateProviderData, UpdateProviderErrors, UpdateProviderResponses, UpdateSearchProviderData, UpdateSearchProviderErrors, UpdateSearchProviderResponses, UpdateTriggerData, UpdateTriggerErrors, UpdateTriggerResponses, UpsertGroupData, UpsertGroupErrors, UpsertGroupResponses, UpsertRouteData, UpsertRouteErrors, UpsertRouteResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -77,6 +77,54 @@ export const refreshProviderModels = <ThrowOnError extends boolean = false>(opti
  */
 export const setProviderAliases = <ThrowOnError extends boolean = false>(options: Options<SetProviderAliasesData, ThrowOnError>): RequestResult<SetProviderAliasesResponses, SetProviderAliasesErrors, ThrowOnError> => (options.client ?? client).put<SetProviderAliasesResponses, SetProviderAliasesErrors, ThrowOnError>({
     url: '/providers/{provider_id}/aliases',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List Search Providers
+ */
+export const listSearchProviders = <ThrowOnError extends boolean = false>(options?: Options<ListSearchProvidersData, ThrowOnError>): RequestResult<ListSearchProvidersResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListSearchProvidersResponses, unknown, ThrowOnError>({ url: '/search-providers', ...options });
+
+/**
+ * Create Search Provider
+ */
+export const createSearchProvider = <ThrowOnError extends boolean = false>(options: Options<CreateSearchProviderData, ThrowOnError>): RequestResult<CreateSearchProviderResponses, CreateSearchProviderErrors, ThrowOnError> => (options.client ?? client).post<CreateSearchProviderResponses, CreateSearchProviderErrors, ThrowOnError>({
+    url: '/search-providers',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Delete Search Provider
+ */
+export const deleteSearchProvider = <ThrowOnError extends boolean = false>(options: Options<DeleteSearchProviderData, ThrowOnError>): RequestResult<DeleteSearchProviderResponses, DeleteSearchProviderErrors, ThrowOnError> => (options.client ?? client).delete<DeleteSearchProviderResponses, DeleteSearchProviderErrors, ThrowOnError>({ url: '/search-providers/{provider_id}', ...options });
+
+/**
+ * Update Search Provider
+ */
+export const updateSearchProvider = <ThrowOnError extends boolean = false>(options: Options<UpdateSearchProviderData, ThrowOnError>): RequestResult<UpdateSearchProviderResponses, UpdateSearchProviderErrors, ThrowOnError> => (options.client ?? client).put<UpdateSearchProviderResponses, UpdateSearchProviderErrors, ThrowOnError>({
+    url: '/search-providers/{provider_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Test Search Provider
+ *
+ * Run one real query against this provider only (counts toward its monthly limit).
+ */
+export const testSearchProvider = <ThrowOnError extends boolean = false>(options: Options<TestSearchProviderData, ThrowOnError>): RequestResult<TestSearchProviderResponses, TestSearchProviderErrors, ThrowOnError> => (options.client ?? client).post<TestSearchProviderResponses, TestSearchProviderErrors, ThrowOnError>({
+    url: '/search-providers/{provider_id}/test',
     ...options,
     headers: {
         'Content-Type': 'application/json',
