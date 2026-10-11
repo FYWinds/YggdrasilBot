@@ -2,6 +2,7 @@
 /docs/DESIGN.md
 /docs/SANDBOX.md
 /docs/SEARCH_APIS.md
+/docs/SITE_ADAPTERS.md
 
 # env / secrets
 .env
