@@ -1,6 +1,6 @@
 # YggdrasilBot
 
-QQ group-chat LLM bot (NoneBot2 + NapCat): TL;DR, replies, background memory.
+QQ group-chat LLM bot (NoneBot2 + SnowLuma): TL;DR, replies, background memory.
 
 ## Dashboard
 
