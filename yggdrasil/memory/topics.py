@@ -331,8 +331,10 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
             stats["recomputed"], stats["deleted"] = await _recompute_dirty(group_id)
     idle_open = (Topic.group_id == group_id, Topic.status == "open", Topic.end_at < idle_before)
     async with get_session() as session:
-        archived = await session.execute(update(Topic).where(*idle_open, archivable(mem)).values(status="archived"))
-        closed = await session.execute(update(Topic).where(*idle_open).values(status="closed"))
+        archived = await session.execute(
+            update(Topic).where(*idle_open, archivable(mem)).values(status="archived", closed_at=func.now())
+        )
+        closed = await session.execute(update(Topic).where(*idle_open).values(status="closed", closed_at=func.now()))
         stats["archived"] = archived.rowcount or 0  # type: ignore[attr-defined]
         stats["closed"] = closed.rowcount or 0  # type: ignore[attr-defined]
     return stats

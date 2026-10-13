@@ -1,4 +1,4 @@
-"""Search and topic consolidation against the local ParadeDB (rows are removed afterwards)."""
+"""Memory pipelines and search against the local ParadeDB (rows are removed afterwards)."""
 
 import json
 import re
@@ -10,12 +10,22 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import delete, select, update
 
-from yggdrasil.db.models import Message, PipelineState, Topic, TopicMessage
+from yggdrasil.db.models import (
+    GlossaryCandidate,
+    Message,
+    PipelineState,
+    Topic,
+    TopicMessage,
+    UserProfile,
+    UserProfileFact,
+)
 from yggdrasil.db.session import get_session
-from yggdrasil.memory import llm, search
+from yggdrasil.memory import glossary, llm, profiles, search
 from yggdrasil.memory.topics import archive_closed, consolidate_group
 
 SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP = 990003, 990004, 990002
+PROFILE_GROUP, GLOSSARY_GROUP = 990005, 990006
+GROUPS = (SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP, PROFILE_GROUP, GLOSSARY_GROUP)
 
 type Insert = Callable[..., Awaitable[int]]
 
@@ -24,13 +34,15 @@ async def _cleanup(groups: tuple[int, ...]) -> None:
     async with get_session() as session:
         await session.execute(delete(Topic).where(Topic.group_id.in_(groups)))
         await session.execute(delete(PipelineState).where(PipelineState.group_id.in_(groups)))
+        await session.execute(delete(UserProfileFact).where(UserProfileFact.group_id.in_(groups)))
+        await session.execute(delete(UserProfile).where(UserProfile.group_id.in_(groups)))
+        await session.execute(delete(GlossaryCandidate).where(GlossaryCandidate.group_id.in_(groups)))
         await session.execute(delete(Message).where(Message.group_id.in_(groups)))
 
 
 @pytest.fixture
 async def insert() -> AsyncIterator[Insert]:
-    groups = (SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP)
-    await _cleanup(groups)
+    await _cleanup(GROUPS)
     qq = iter(range(5000, 6000))
 
     async def _insert(group_id: int, user_id: int, text: str, *, ago: timedelta, recalled: bool = False) -> int:
@@ -51,7 +63,7 @@ async def insert() -> AsyncIterator[Insert]:
             return msg.id
 
     yield _insert
-    await _cleanup(groups)
+    await _cleanup(GROUPS)
 
 
 async def test_search_history_bm25_scoping(insert: Insert) -> None:
@@ -163,3 +175,87 @@ async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, g
         assert await archive_closed(session, TOPIC_GROUP) == 1
     async with get_session() as session:
         assert await session.scalar(select(Topic.status).where(Topic.id == topic_id)) == "archived"
+
+
+async def _topic(group_id: int, msg_ids: list[int], *, closed_ago: timedelta | None) -> int:
+    async with get_session() as session:
+        sent = dict((await session.execute(select(Message.id, Message.sent_at).where(Message.id.in_(msg_ids)))).all())
+        topic = Topic(
+            group_id=group_id,
+            title="话题",
+            summary="摘要",
+            keywords=[],
+            participants=[1],
+            start_at=min(sent.values()),
+            end_at=max(sent.values()),
+            first_msg_id=min(msg_ids),
+            last_msg_id=max(msg_ids),
+            msg_count=len(msg_ids),
+            status="open" if closed_ago is None else "closed",
+            closed_at=None if closed_ago is None else datetime.now(UTC) - closed_ago,
+        )
+        session.add(topic)
+        await session.flush()
+        session.add_all(TopicMessage(topic_id=topic.id, message_id=i) for i in msg_ids)
+        return topic.id
+
+
+async def test_profiles_consume_topics_in_close_order(insert: Insert, group_settings) -> None:
+    group_settings({PROFILE_GROUP: {"memory": {"profile_min_messages": 2}}})
+    h, m = timedelta(hours=1), timedelta(minutes=1)
+    # The climbing topic starts first (lower id) but is still open when the cat topic is consumed.
+    climbing = await _topic(
+        PROFILE_GROUP,
+        [
+            await insert(PROFILE_GROUP, 1, "我在练攀岩", ago=5 * h),
+            await insert(PROFILE_GROUP, 1, "攀岩馆周末人多", ago=h),
+        ],
+        closed_ago=None,
+    )
+    await _topic(
+        PROFILE_GROUP,
+        [
+            await insert(PROFILE_GROUP, 1, "我养了一只猫", ago=4 * h),
+            await insert(PROFILE_GROUP, 1, "猫又打翻水杯", ago=3 * h),
+        ],
+        closed_ago=30 * m,
+    )
+    prompts: list[str] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompts.append("".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts))
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"summary": "群友"}))])
+
+    async def run() -> int:
+        with llm.override_models(memory_profile=FunctionModel(respond)):
+            return (await profiles.update_group(PROFILE_GROUP))["updated"]
+
+    assert await run() == 1
+    assert "猫" in prompts[-1]
+    assert "攀岩" not in prompts[-1]
+
+    async with get_session() as session:
+        await session.execute(
+            update(Topic).where(Topic.id == climbing).values(status="closed", closed_at=datetime.now(UTC) - 10 * m)
+        )
+    assert await run() == 1
+    assert "攀岩" in prompts[-1]
+    assert "猫" not in prompts[-1]
+    assert await run() == 0
+
+
+async def test_glossary_mining_catches_up_past_one_batch(
+    insert: Insert, group_settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    group_settings({GLOSSARY_GROUP: {}})
+    monkeypatch.setattr(glossary, "MINE_BATCH", 40)
+    monkeypatch.setattr(glossary, "MINE_MIN_MESSAGES", 10)
+    ids = [
+        await insert(GLOSSARY_GROUP, 1 + i % 5, f"今晚开黑吗 第{i}局", ago=timedelta(minutes=200 - i))
+        for i in range(100)
+    ]
+    await glossary.mine_group(GLOSSARY_GROUP)
+    async with get_session() as session:
+        state = await session.get(PipelineState, ("glossary", GLOSSARY_GROUP))
+    assert state is not None
+    assert state.last_msg_id == ids[-1]
