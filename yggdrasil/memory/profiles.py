@@ -1,14 +1,17 @@
 """Incremental user profiles (task ``memory_profile``).
 
-A profile is updated from closed topics newer than ``last_topic_id`` in which the
-user wrote at least ``profile_min_messages`` messages. Every fact keeps the ids of the
-messages supporting it. Opted-out users are skipped entirely.
+A profile is updated from the closed topics it has not consumed yet in which the user
+wrote at least ``profile_min_messages`` messages. Topics are consumed in close order
+(``closed_at``, then id), not id order: topics close in a different order than they start,
+so an id watermark skipped a topic still open when a newer one was consumed. Every fact
+keeps the ids of the messages supporting it. Opted-out users are skipped entirely.
 """
 
 from collections.abc import Collection, Sequence
+from datetime import timedelta
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, exists, select, text
+from sqlalchemy import delete, exists, func, select, text, true, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from yggdrasil.core.log import LOGGER
@@ -25,6 +28,9 @@ MAX_USERS_PER_RUN = 20
 MAX_TOPICS = 20
 MAX_MESSAGES = 80
 MAX_FACTS_IN_PROMPT = 40
+# Only topics closed this long ago are consumed: a close committing while a run reads must not
+# land behind the watermark that run sets.
+CLOSE_SETTLE = timedelta(minutes=5)
 
 _DUE_SQL = text("""
 SELECT m.user_id, count(*) AS n
@@ -32,7 +38,8 @@ FROM topics t
 JOIN topic_messages tm ON tm.topic_id = t.id
 JOIN messages m ON m.id = tm.message_id AND m.group_id = t.group_id AND m.sent_at BETWEEN t.start_at AND t.end_at
 LEFT JOIN user_profiles p ON p.group_id = t.group_id AND p.user_id = m.user_id
-WHERE t.group_id = :g AND t.status = 'closed' AND t.id > COALESCE(p.last_topic_id, 0)
+WHERE t.group_id = :g AND t.status = 'closed' AND t.closed_at < now() - CAST(:settle AS interval)
+  AND (p.last_closed_at IS NULL OR (t.closed_at, t.id) > (p.last_closed_at, p.last_topic_id))
   AND NOT m.is_self AND NOT m.recalled AND NOT COALESCE(p.opted_out, false)
 GROUP BY m.user_id
 HAVING count(*) >= :min
@@ -91,16 +98,22 @@ async def update_user(group_id: int, user_id: int) -> bool:
             )
             .exists()
         )
+        unconsumed = (
+            tuple_(Topic.closed_at, Topic.id) > tuple_(profile.last_closed_at, profile.last_topic_id)
+            if profile is not None and profile.last_closed_at is not None
+            else true()
+        )
         topics = (
             await session.scalars(
                 select(Topic)
                 .where(
                     Topic.group_id == group_id,
                     Topic.status == "closed",
-                    Topic.id > ((profile.last_topic_id if profile else None) or 0),
+                    Topic.closed_at < func.now() - CLOSE_SETTLE,
+                    unconsumed,
                     participated,
                 )
-                .order_by(Topic.id)
+                .order_by(Topic.closed_at, Topic.id)
                 .limit(MAX_TOPICS)
             )
         ).all()
@@ -161,7 +174,10 @@ async def update_user(group_id: int, user_id: int) -> bool:
             "summary": result.summary or (profile.summary if profile else ""),
             "interests": result.interests,
             "traits": result.traits,
-            "last_topic_id": max(t.id for t in topics),
+            "last_closed_at": topics[-1].closed_at,
+            "last_topic_id": topics[-1].id,
+            # ON CONFLICT DO UPDATE skips the column's onupdate.
+            "updated_at": func.now(),
         }
         stmt = pg_insert(UserProfile).values(group_id=group_id, user_id=user_id, **values)
         await session.execute(stmt.on_conflict_do_update(index_elements=["group_id", "user_id"], set_=values))
@@ -184,7 +200,8 @@ async def due_users(group_id: int) -> Sequence[int]:
     mem = snapshot().settings(group_id).memory
     async with get_session() as session:
         rows = await session.execute(
-            _DUE_SQL, {"g": group_id, "min": mem.profile_min_messages, "lim": MAX_USERS_PER_RUN}
+            _DUE_SQL,
+            {"g": group_id, "min": mem.profile_min_messages, "lim": MAX_USERS_PER_RUN, "settle": CLOSE_SETTLE},
         )
         return [r.user_id for r in rows]
 

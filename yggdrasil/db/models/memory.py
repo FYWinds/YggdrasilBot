@@ -51,6 +51,9 @@ class Topic(Base, TimestampMixin):
     msg_count: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(Text, default="open")  # open | closed | archived (hidden from the agent)
     dirty: Mapped[bool] = mapped_column(default=False)  # a member message was recalled; recompute
+    # Set when the topic closes and again when an admin restores it from archived: profiles consume
+    # closed topics in (closed_at, id) order, since topics close in a different order than they start.
+    closed_at: Mapped[datetime | None]
 
 
 class TopicMessage(Base):
@@ -117,6 +120,8 @@ class UserProfile(Base, TimestampMixin):
     interests: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     traits: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     opted_out: Mapped[bool] = mapped_column(default=False)
+    # Profile watermark: the last consumed closed topic in (closed_at, id) order.
+    last_closed_at: Mapped[datetime | None]
     last_topic_id: Mapped[int | None]
 
 

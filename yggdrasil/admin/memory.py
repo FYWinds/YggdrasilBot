@@ -1,6 +1,6 @@
 """Memory browser: topics, daily digests, glossary, user profiles, pipeline watermarks."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Query
@@ -120,7 +120,11 @@ async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOu
             raise not_found("话题")
         if t.status == "open":
             raise conflict("进行中的话题不能归档，等它结束")
-        t.status = "archived" if body.archived else "closed"
+        if body.archived:
+            t.status = "archived"
+        elif t.status == "archived":
+            # Profiles skip archived topics; a restored one is new to them (see Topic.closed_at).
+            t.status, t.closed_at = "closed", datetime.now(UTC)
         await c.session.flush()
         await c.session.refresh(t)
     return _topic_out(t)

@@ -28,6 +28,7 @@ from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors, glossary_text, try_embed
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
+from yggdrasil.settings import MemorySettings
 
 PIPELINE = "glossary"
 TASK = "memory_glossary"
@@ -180,9 +181,21 @@ async def _excluded_terms(group_id: int, names: Collection[str]) -> set[str]:
 
 
 async def mine_group(group_id: int, *, now: datetime | None = None) -> int:
-    """Mine candidates from messages after the watermark; returns candidates upserted."""
+    """Mine candidates from messages after the watermark, batch after batch until caught up
+    (a group can outgrow one batch a day). Returns candidates upserted."""
     mem = snapshot().settings(group_id).memory
     now = now or datetime.now(UTC)
+    upserted = 0
+    while (batch := await _mine_batch(group_id, mem, now)) is not None:
+        upserted += batch[0]
+        if not batch[1]:
+            break
+    return upserted
+
+
+async def _mine_batch(group_id: int, mem: MemorySettings, now: datetime) -> tuple[int, bool] | None:
+    """One batch after the watermark: (candidates upserted, batch was full). None when fewer than
+    ``MINE_MIN_MESSAGES`` messages wait; they stay for a later run."""
     async with get_session() as session:
         st = await pipeline_state(session, PIPELINE, group_id)
         watermark = st.last_msg_id
@@ -193,9 +206,10 @@ async def mine_group(group_id: int, *, now: datetime | None = None) -> int:
             .order_by(Message.id)
             .limit(MINE_BATCH)
         )
-        recent = [r for r in rows.all() if r.plain_text.strip()]
+        loaded = rows.all()
+        recent = [r for r in loaded if r.plain_text.strip()]
         if len(recent) < MINE_MIN_MESSAGES:
-            return 0
+            return None
         history = list(
             (
                 await session.scalars(
@@ -249,8 +263,8 @@ async def mine_group(group_id: int, *, now: datetime | None = None) -> int:
             )
         )
         st = await pipeline_state(session, PIPELINE, group_id)
-        st.last_msg_id = recent[-1].id
-    return len(found)
+        st.last_msg_id = loaded[-1].id
+    return len(found), len(loaded) == MINE_BATCH
 
 
 class TermDecision(BaseModel):
