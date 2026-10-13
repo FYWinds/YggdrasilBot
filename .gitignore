@@ -5,6 +5,9 @@
 /docs/SITE_ADAPTERS.md
 /docs/SNOWLUMA.md
 
+# local SnowLuma (OneBot protocol endpoint) install for dev testing
+/snowluma/
+
 # env / secrets
 .env
 .env.*

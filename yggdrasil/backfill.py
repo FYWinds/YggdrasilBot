@@ -1,4 +1,4 @@
-"""Import recent group history via NapCat ``get_group_msg_history`` (throttled)."""
+"""Import recent group history via OneBot ``get_group_msg_history`` (throttled)."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -11,6 +11,7 @@ from yggdrasil.db.models import Group, Message
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
 from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.napcat.models import MessageRecord
 from yggdrasil.runtime import snapshot
 
 _PAGE = 50
@@ -39,36 +40,42 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
         return 0
     api = NapCatAPI(bot)
     target = snapshot().settings(group_id).memory.backfill_messages
-    # Our own sends are recorded without a message_seq, so match on message id too.
+    # Message ids are hashes private to the protocol endpoint (NapCat and SnowLuma disagree), so stored
+    # history is also matched by sender + send second. Our own sends are stamped locally: allow ±1s.
     async with get_session() as session:
         rows = (
             await session.execute(
-                select(Message.message_seq, Message.qq_message_id).where(Message.group_id == group_id)
+                select(Message.qq_message_id, Message.user_id, Message.sent_at).where(Message.group_id == group_id)
             )
         ).all()
-    known = {r.message_seq for r in rows if r.message_seq is not None}
     known_ids = {r.qq_message_id for r in rows}
+    known_at = {(r.user_id, int(r.sent_at.timestamp())) for r in rows}
+
+    def stored(m: MessageRecord) -> bool:
+        drift = (-1, 0, 1) if str(m.user_id) == bot.self_id else (0,)
+        return m.message_id in known_ids or any((m.user_id, m.time + d) in known_at for d in drift)
+
     seen: set[int] = set()
     imported = 0
     cursor: int | None = None
+    oldest_time: int | None = None
     while len(seen) < target:
         try:
-            history = await api.get_group_msg_history(group_id=group_id, count=_PAGE, message_seq=cursor)
+            history = await api.get_group_msg_history(group_id=group_id, count=_PAGE, before_id=cursor)
         except Exception as e:
             LOGGER.warning("backfill {} page failed: {}", group_id, e)
             break
-        batch = [m for m in history.messages if m.message_seq is not None and m.message_seq not in seen]
+        batch = [m for m in history.messages if m.message_id is not None and m.message_id not in seen]
         if not batch:
             break
         reached_known = False
         for m in batch:
-            seq = m.message_seq
-            assert seq is not None
-            seen.add(seq)
-            if seq in known or (m.message_id is not None and m.message_id in known_ids):
+            assert m.message_id is not None
+            seen.add(m.message_id)
+            if stored(m):
                 reached_known = True
                 continue
-            if m.message_id is None or m.user_id is None:
+            if m.user_id is None:
                 continue
             if before is not None and m.time >= before.timestamp():
                 continue
@@ -77,7 +84,7 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
                     group_id=group_id,
                     user_id=m.user_id,
                     qq_message_id=m.message_id,
-                    message_seq=seq,
+                    message_seq=m.message_seq,
                     sent_at=datetime.fromtimestamp(m.time, UTC),
                     sender_name=m.sender.card or m.sender.nickname,
                     segments=[s.model_dump() for s in m.segments],
@@ -85,10 +92,10 @@ async def backfill(group_id: int, *, before: datetime | None = None) -> int:
                 )
             )
             imported += 1
-        oldest = min(m.message_seq for m in batch if m.message_seq is not None)
-        if (cursor is not None and oldest >= cursor) or (before is not None and reached_known):
+        oldest = min(batch, key=lambda m: m.time)
+        if (oldest_time is not None and oldest.time >= oldest_time) or (before is not None and reached_known):
             break
-        cursor = oldest
+        cursor, oldest_time = oldest.message_id, oldest.time
         await WRITER.flush()
         await asyncio.sleep(_PAUSE_S)
     await WRITER.flush()

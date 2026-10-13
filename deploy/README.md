@@ -5,7 +5,7 @@ YggdrasilBot runs on the homelab k3s cluster, declared in
 
 | Path (k3s-gitops) | What |
 |---|---|
-| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, NapCat, TEI, llama.cpp rerank + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
+| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, SnowLuma (NapCat kept at 0 replicas as rollback), TEI, llama.cpp rerank + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
 | `observability/yggdrasil-dashboard.yaml` | Grafana dashboard (folder YggdrasilBot) |
 
 Sync waves: data (Postgres, Redis) 0 → `alembic upgrade head` Sync hook 1 →
@@ -66,21 +66,35 @@ Push k3s-gitops; the root ApplicationSet creates `apps-yggdrasil`. Order:
 `yggdrasil-pg` + `yggdrasil-redis` → migration Job → workloads. TEI and the
 llama.cpp pods download models on first start (startup probes allow 15 min).
 
-### 5. NapCat QR login
+### 5. SnowLuma QR login
 
-Open https://napcat.fyw.fyi (oauth2-proxy, then the WebUI token
-`NAPCAT_WEBUI_TOKEN`) and scan the QR code with the prod bot account
-**1609225832** (the local dev account 3147315517 is not used in the cluster).
-`ACCOUNT=1609225832` makes NapCat quick-login with the saved session on later
-restarts.
+SnowLuma runs Linux QQ in the `snowluma-0` pod; nothing is exposed outside
+the pod (NetworkPolicy `yggdrasil-snowluma`), so use port-forwards:
 
-The `onebot-config` initContainer writes `/app/napcat/config/onebot11.json`
-and `onebot11_1609225832.json` with a websocketClients entry
+```bash
+kubectl -n yggdrasil logs snowluma-0 -c snowluma | grep -E "远程桌面密码|临时密码"
+kubectl -n yggdrasil port-forward snowluma-0 6081:6081 5099:5099
+```
+
+Open http://127.0.0.1:6081/vnc.html with the remote-desktop password (printed
+once, on the first start of an empty data volume) and scan the QR code in the
+QQ window with the prod bot account **214029435**. The WebUI
+(http://127.0.0.1:5099, `admin` + the one-time password from the log) asks
+to accept SnowLuma's EULA/PRIVACY and to change the password on first login;
+keep the new password in 1Password.
+
+The `onebot-config` initContainer rewrites `config/onebot.json` and every
+`config/onebot_<uin>.json` on each start: one wsClients entry
 (`ws://yggdrasil-bot.yggdrasil.svc:8080/onebot/v11/ws`, token
-`ONEBOT_ACCESS_TOKEN`, array post format, no self messages, 30s heartbeat) and
-overwrites every existing `onebot11_<uin>.json` on each start. Do not edit the
-OneBot network config in the WebUI (it is reset on restart). QQ data and the
-login session persist on the `qq-data` PVC.
+`ONEBOT_ACCESS_TOKEN`, array format, no self messages), no HTTP/WS listeners,
+the built-in `#sl` status reply off. Do not edit the OneBot config in the
+WebUI (it is reset on restart). It also pins the machine-id; with the pinned
+MAC and hostname that keeps QQ on one device, so restarts reuse the session on
+the three PVCs.
+
+SnowLuma only serves group history once it has seen a message in that group,
+so the reconnect backfill after a fresh start finds nothing: trigger
+「回填」 on the Groups page once each group has new messages.
 
 ### 6. Seed providers and routes
 
@@ -132,6 +146,6 @@ Rollback) to try it without a release.
 
 ## Alerts
 
-`apps/yggdrasil/prometheusrule.yaml`: NapCat disconnected (5m), heartbeat
+`apps/yggdrasil/prometheusrule.yaml`: QQ endpoint disconnected (5m), heartbeat
 stale (>120s), invocation failure ratio (>20% over 15m), memory lag (>1000 for
 1h), pending reviews (90m), partition runway (<1 month).

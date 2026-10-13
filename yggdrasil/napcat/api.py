@@ -114,16 +114,17 @@ class NapCatAPI:
         return _parse(ForwardMsg, await self._call("get_forward_msg", id=id))
 
     async def get_group_msg_history(
-        self, *, group_id: int, count: int = 20, message_seq: int | None = None, reverse_order: bool | None = None
+        self, *, group_id: int, count: int = 20, before_id: int | None = None
     ) -> MsgHistory:
+        """A page of history: message ``before_id`` and older (the latest page when None).
+
+        The anchor is a message id under both names: NapCat calls it ``message_seq`` (its seq is the
+        short message id), SnowLuma ``message_id``. Both default to returning the anchor and older.
+        """
         return _parse(
             MsgHistory,
             await self._call(
-                "get_group_msg_history",
-                group_id=group_id,
-                count=count,
-                message_seq=message_seq,
-                reverseOrder=reverse_order,
+                "get_group_msg_history", group_id=group_id, count=count, message_seq=before_id, message_id=before_id
             ),
         )
 
