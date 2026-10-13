@@ -78,7 +78,7 @@ kubectl -n yggdrasil port-forward snowluma-0 6081:6081 5099:5099
 
 Open http://127.0.0.1:6081/vnc.html with the remote-desktop password (printed
 once, on the first start of an empty data volume) and scan the QR code in the
-QQ window with the prod bot account **214029435**. The WebUI
+QQ window with the prod bot account **2140292435**. The WebUI
 (http://127.0.0.1:5099, `admin` + the one-time password from the log) asks
 to accept SnowLuma's EULA/PRIVACY and to change the password on first login;
 keep the new password in 1Password.
