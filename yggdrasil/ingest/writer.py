@@ -1,6 +1,7 @@
 """Batched persistence of group messages (10k+/day) plus recall marking."""
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,25 @@ class IncomingMessage:
     sender_name: str
     segments: list[dict[str, Any]]
     is_self: bool = False
+
+
+# Postgres text and jsonb reject NUL. SnowLuma passes some group cards through as raw protobuf
+# bytes (e.g. "\x12\nName | \n\x0c\n\nsuffix\x10\x00"); a name never contains control characters.
+_NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_name(name: str) -> str:
+    return _NAME_CONTROL.sub("", name).strip()
+
+
+def _strip_nul(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    return value
 
 
 def _kind(segments: list[dict[str, Any]]) -> str:
@@ -79,7 +99,9 @@ class IngestWriter:
     async def _write(self, batch: list[IncomingMessage]) -> None:
         rows, aliases, stickers = [], {}, {}
         for m in batch:
-            norm = normalize(m.segments)
+            segments = _strip_nul(m.segments)
+            norm = normalize(segments)
+            name = _clean_name(m.sender_name)
             rows.append(
                 {
                     "sent_at": m.sent_at,
@@ -88,14 +110,14 @@ class IngestWriter:
                     "qq_message_id": m.qq_message_id,
                     "message_seq": m.message_seq,
                     "reply_to_qq_id": norm.reply_to,
-                    "sender_name": m.sender_name,
+                    "sender_name": name,
                     "plain_text": norm.text,
-                    "segments": m.segments,
+                    "segments": segments,
                     "is_self": m.is_self,
                 }
             )
-            if m.sender_name and not m.is_self:
-                aliases[(m.group_id, m.user_id, m.sender_name)] = m.sent_at
+            if name and not m.is_self:
+                aliases[(m.group_id, m.user_id, name)] = m.sent_at
             for att in norm.attachments:
                 d = att.data
                 if att.kind == "mface" and d.get("emoji_id") and d.get("emoji_package_id"):
