@@ -23,8 +23,8 @@ ROLES = ("member", "admin", "owner", "superuser")
 class MatchInput:
     scope: str  # group | private
     group_id: int | None
-    text: str  # plaintext with the leading @bot already stripped by the adapter
-    to_me: bool  # adapter: @bot / reply-to-bot / private chat
+    text: str  # plaintext (@ segments are not text; a leading/trailing @bot is stripped by the adapter)
+    to_me: bool  # @bot anywhere in the message / reply-to-bot / private chat
     replied_to_bot: bool
     role: str  # member | admin | owner | superuser
 

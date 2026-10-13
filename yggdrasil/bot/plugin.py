@@ -54,6 +54,12 @@ def _segments(message: Any) -> list[dict[str, Any]]:
     return [{"type": seg.type, "data": dict(seg.data)} for seg in message]
 
 
+def _at_me(event: MessageEvent, self_id: str) -> bool:
+    """@bot anywhere in the message. The adapter only sets ``to_me`` for an @ at the start or end
+    (and strips it); one in the middle stays an ``at`` segment."""
+    return event.to_me or any(seg.type == "at" and str(seg.data.get("qq")) == self_id for seg in event.message)
+
+
 # --- routing -----------------------------------------------------------------
 
 
@@ -98,7 +104,7 @@ async def _route(bot: Bot, event: Event, state: T_State) -> None:
             scope=scope,
             group_id=group_id,
             text=event.get_plaintext(),
-            to_me=event.to_me,
+            to_me=_at_me(event, bot.self_id),
             replied_to_bot=replied_to_bot,
             role=role,
         )
