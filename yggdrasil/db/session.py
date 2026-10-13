@@ -19,6 +19,8 @@ def init_engine() -> AsyncEngine:
             max_overflow=DB_CONFIG.pool_size,
             pool_pre_ping=True,
             pool_recycle=1800,
+            # Errors would otherwise echo bound parameters (chat text, names) into logs and traces.
+            hide_parameters=True,
         )
         instrument_engine(_engine)
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
