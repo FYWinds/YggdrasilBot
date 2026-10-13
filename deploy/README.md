@@ -5,7 +5,7 @@ YggdrasilBot runs on the Kubernetes cluster, declared in
 
 | Path (gitops) | What |
 |---|---|
-| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, SnowLuma (NapCat kept at 0 replicas as rollback), TEI, llama.cpp rerank + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
+| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, SnowLuma (NapCat kept at 0 replicas as rollback), llama.cpp embedding + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
 | `observability/yggdrasil-dashboard.yaml` | Grafana dashboard (folder YggdrasilBot) |
 
 Sync waves: data (Postgres, Redis) 0 → `alembic upgrade head` Sync hook 1 →
@@ -63,8 +63,8 @@ See [Build & release](#build--release). The kustomization floor tag is
 ### 4. Argo CD sync
 
 Push gitops; the root ApplicationSet creates `apps-yggdrasil`. Order:
-`yggdrasil-pg` + `yggdrasil-redis` → migration Job → workloads. TEI and the
-llama.cpp pods download models on first start (startup probes allow 15 min).
+`yggdrasil-pg` + `yggdrasil-redis` → migration Job → workloads. The llama.cpp
+pods (embed, guard) download their GGUF models on first start (startup probes allow 15 min).
 
 ### 5. SnowLuma QR login
 
@@ -104,9 +104,12 @@ dashboard:
 1. Providers: add the LLM endpoint(s) and the in-cluster inference services:
    - kami (new-api) `https://kami.example.com/v1` with format **anthropic**: its
      OpenAI endpoint rejects tool calls for Claude models.
-   - embeddings `http://yggdrasil-tei.yggdrasil.svc:8080/v1` (`qwen3-embedding-0.6b`)
-   - rerank `http://yggdrasil-rerank.yggdrasil.svc:8080/v1` (`qwen3-reranker-0.6b`)
-   - guard `http://yggdrasil-guard.yggdrasil.svc:8080/v1` (`qwen3guard-gen-0.6b`)
+   - local-embed `http://yggdrasil-embed.yggdrasil.svc:8080/v1` (`qwen3-embedding-0.6b-q8`)
+   - local-guard `http://yggdrasil-guard.yggdrasil.svc:8080/v1` (`qwen3guard-gen-0.6b`)
+
+   There is no rerank server: on CPU, reranking 40 candidates took 74 s (past
+   the 60 s timeout). Leave the `rerank` route unset; history search then keeps
+   the RRF-fused order.
 2. Routes: map every task to a provider/model; activate the embed space.
 3. Groups: enable the target QQ groups; adjust settings/triggers.
 
@@ -146,6 +149,7 @@ Rollback) to try it without a release.
 
 ## Alerts
 
-`apps/yggdrasil/prometheusrule.yaml`: QQ endpoint disconnected (5m), heartbeat
-stale (>120s), invocation failure ratio (>20% over 15m), memory lag (>1000 for
-1h), pending reviews (90m), partition runway (<1 month).
+`apps/yggdrasil/prometheusrule.yaml`: QQ endpoint disconnected (5m), QQ account
+logged out (3m), heartbeat stale (>120s), invocation failure ratio (>20% over
+15m), memory lag of the chunk/topic pipelines (>1000 for 1h), pending reviews
+(90m), partition runway (<1 month).
