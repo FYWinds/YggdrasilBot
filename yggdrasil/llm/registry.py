@@ -24,6 +24,7 @@ from pydantic_ai.usage import UsageLimits
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.metrics import LLM_REQUESTS, LLM_TOKENS
 from yggdrasil.llm.catalog import ModelCaps
+from yggdrasil.llm.streaming import MeteredModel
 from yggdrasil.runtime import ProviderInfo, Route, Snapshot, snapshot
 
 TASKS = (
@@ -143,11 +144,15 @@ class ResolvedModel:
 _NO_FORCED_TOOL_CHOICE = ModelProfile(supports_forced_tool_choice=False)
 
 
-def _build_model(name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
+def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
     profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
     if p.api_format == "anthropic":
-        return AnthropicModel(name, provider=AnthropicProvider(anthropic_client=anthropic_client(p)), profile=profile)
-    return OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
+        inner: Model = AnthropicModel(
+            name, provider=AnthropicProvider(anthropic_client=anthropic_client(p)), profile=profile
+        )
+    else:
+        inner = OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
+    return MeteredModel(inner, task=task, label=f"{p.name}/{name}")
 
 
 def chat_model(task: str, snap: Snapshot | None = None, *, default_limits: UsageLimits | None = None) -> ResolvedModel:
@@ -155,12 +160,12 @@ def chat_model(task: str, snap: Snapshot | None = None, *, default_limits: Usage
     r = route(task, snap)
     primary_p = _provider(snap, r.provider_id, task)
     forced = bool(r.params.get("forced_tool_choice", False))
-    primary = _build_model(r.model, primary_p, forced)
+    primary = _build_model(task, r.model, primary_p, forced)
     model = primary
     if r.fallback_provider_id and r.fallback_model:
         fb_p = snap.providers.get(r.fallback_provider_id)
         if fb_p and fb_p.enabled:
-            model = FallbackModel(primary, _build_model(r.fallback_model, fb_p, forced))
+            model = FallbackModel(primary, _build_model(task, r.fallback_model, fb_p, forced))
     settings: dict[str, Any] = {k: v for k, v in r.params.items() if k in _SETTING_KEYS}
     limits = default_limits or UsageLimits()
     if r.limits:

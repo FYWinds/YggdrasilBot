@@ -20,6 +20,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
+from yggdrasil.llm.streaming import drain_events
 from yggdrasil.prompts import render
 from yggdrasil.tools.errors import ToolError
 
@@ -71,7 +72,7 @@ async def _vision(ctx: RunContext[Deps], images: list[bytes], question: str) -> 
     agent = Agent(resolved.model, instructions=render("vision_system"), name="vision")
     content: list[Any] = [question or "描述这张图片，并完整转写其中的文字。"]
     content += [BinaryContent(data=img, media_type=media_type(img)) for img in images]
-    result = await agent.run(content, model_settings=resolved.settings)
+    result = await agent.run(content, model_settings=resolved.settings, event_stream_handler=drain_events)
     usage = result.usage
     ctx.deps.vision_tokens.append((resolved.label, usage.input_tokens or 0, usage.output_tokens or 0))
     return result.output

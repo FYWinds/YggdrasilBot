@@ -23,6 +23,13 @@ INVOCATION_DURATION = METER.create_histogram(
 )
 LLM_TOKENS = METER.create_counter("ygg.llm.tokens", unit="{token}")
 LLM_REQUESTS = METER.create_counter("ygg.llm.requests", unit="{request}")
+LLM_TTFT = METER.create_histogram("ygg.llm.ttft", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS)
+# Output tokens per second after the first chunk (thinking included).
+LLM_OUTPUT_SPEED = METER.create_histogram(
+    "ygg.llm.output_speed",
+    unit="{token}/s",
+    explicit_bucket_boundaries_advisory=[5, 10, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 500],
+)
 TOOL_CALLS = METER.create_counter("ygg.tool.calls", unit="{call}")
 TOOL_DURATION = METER.create_histogram(
     "ygg.tool.duration", unit="s", explicit_bucket_boundaries_advisory=_LATENCY_BUCKETS
