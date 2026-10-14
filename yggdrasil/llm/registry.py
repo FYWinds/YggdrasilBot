@@ -144,6 +144,28 @@ class ResolvedModel:
 _NO_FORCED_TOOL_CHOICE = ModelProfile(supports_forced_tool_choice=False)
 
 
+# models.dev provider ids → how the vendor writes its name.
+_VENDORS = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "deepseek": "DeepSeek",
+    "xai": "xAI",
+    "mistral": "Mistral",
+    "alibaba": "Alibaba",
+    "moonshotai": "Moonshot AI",
+    "zhipuai": "Zhipu AI",
+}
+
+
+def display_name(p: ProviderInfo, model: str) -> str:
+    """The model as users may see it: the models.dev match, never our provider or gateway prefixes."""
+    if caps := p.caps.get(model):
+        vendor, _, name = caps.catalog_id.partition("/")
+        return f"{_VENDORS.get(vendor, vendor.capitalize())}/{name}"
+    return model.rsplit("/", 1)[-1]
+
+
 def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
     profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
     if p.api_format == "anthropic":
@@ -152,7 +174,7 @@ def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool
         )
     else:
         inner = OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
-    return MeteredModel(inner, task=task, label=f"{p.name}/{name}")
+    return MeteredModel(inner, task=task, label=f"{p.name}/{name}", display=display_name(p, name))
 
 
 def chat_model(task: str, snap: Snapshot | None = None, *, default_limits: UsageLimits | None = None) -> ResolvedModel:

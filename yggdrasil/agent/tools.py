@@ -51,8 +51,10 @@ def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], Call
                 LOGGER.opt(exception=e).warning("tool {} failed", name)
                 return f"[工具错误] {type(e).__name__}: {str(e)[:200]}"
             finally:
+                elapsed = time.perf_counter() - started
+                ctx.deps.tool_seconds[name] += elapsed
                 TOOL_CALLS.add(1, {"tool": name, "outcome": outcome})
-                TOOL_DURATION.record(time.perf_counter() - started, {"tool": name})
+                TOOL_DURATION.record(elapsed, {"tool": name})
 
         return wrapper
 
@@ -113,19 +115,29 @@ async def web_search(ctx: RunContext[Deps], query: str) -> str:
 
 
 @_tool("read_file")
-async def read_file(ctx: RunContext[Deps], handle: str) -> str:
-    """读取文件内容（PDF/Office/文本/代码等），参数是 file#N 句柄。"""
+async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
+    """读取文件内容（PDF/Office/文本/代码等），参数是 file#N 句柄。扫描版 PDF：能看图的模型直接收到页面图片。"""
     from yggdrasil.tools.docs import parse_document
 
     h = _handle(ctx, handle, "file")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
     doc = await asyncio.to_thread(parse_document, blob, name, max_pages=cfg.file_max_pages)
+    note = "（内容已截断）" if doc.truncated else ""
+    header = f"文件：{name}（{doc.kind}，{doc.pages} 页）{note}"
+    if doc.scanned_pages and sees_images(ctx.deps.task):
+        pages: list[Any] = []
+        for i, page in enumerate(doc.scanned_pages, 1):
+            pages += [f"第 {i} 页：", BinaryContent(data=page, media_type=media_type(page))]
+        return ToolReturn(
+            return_value=f"{header}\n\n扫描版，没有文字层；前 {len(doc.scanned_pages)} 页的图片附在下一条消息里，"
+            "直接看图。",
+            content=pages,
+        )
     text = doc.text
     if doc.scanned_pages:
         text = await _vision(ctx, doc.scanned_pages, "这是扫描版文档的页面，请按顺序完整转写文字，保留结构。")
-    note = "（内容已截断）" if doc.truncated else ""
-    return f"文件：{name}（{doc.kind}，{doc.pages} 页）{note}\n\n{text}"
+    return f"{header}\n\n{text}"
 
 
 @_tool("view_image")

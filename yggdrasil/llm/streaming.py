@@ -2,11 +2,14 @@
 
 Every ``agent.run`` passes ``event_stream_handler=drain_events`` so pydantic-ai streams each model
 request; the time between chunks is what tells first-token latency apart from generation speed.
+A caller that wants the numbers for its own run (the reply metadata) sets ``RUN_STATS`` first.
 """
 
 import time
 from collections.abc import AsyncGenerator, AsyncIterable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -23,6 +26,42 @@ _MIN_SPEED_TOKENS = 16
 _MIN_SPEED_SECONDS = 0.25
 
 
+@dataclass(slots=True)
+class RequestStat:
+    model: str  # display name, no provider
+    ttft: float
+    generating: float
+    tokens: int
+
+    @property
+    def measurable(self) -> bool:
+        return self.tokens >= _MIN_SPEED_TOKENS and self.generating >= _MIN_SPEED_SECONDS
+
+
+@dataclass
+class RunStats:
+    """Streamed requests of one run, sub-agents (vision) included."""
+
+    requests: list[RequestStat] = field(default_factory=list)
+
+    @property
+    def models(self) -> list[str]:
+        return list(dict.fromkeys(r.model for r in self.requests))
+
+    @property
+    def ttft(self) -> float | None:
+        return self.requests[0].ttft if self.requests else None
+
+    @property
+    def tokens_per_s(self) -> float | None:
+        timed = [r for r in self.requests if r.measurable]
+        seconds = sum(r.generating for r in timed)
+        return sum(r.tokens for r in timed) / seconds if seconds else None
+
+
+RUN_STATS: ContextVar[RunStats | None] = ContextVar("ygg_run_stats", default=None)
+
+
 async def drain_events(_ctx: RunContext[Any], events: AsyncIterable[AgentStreamEvent]) -> None:
     async for _ in events:
         pass
@@ -31,9 +70,10 @@ async def drain_events(_ctx: RunContext[Any], events: AsyncIterable[AgentStreamE
 class MeteredModel(WrapperModel):
     """Records ``ygg.llm.ttft`` and ``ygg.llm.output_speed`` for each streamed request."""
 
-    def __init__(self, wrapped: Model, *, task: str, label: str) -> None:
+    def __init__(self, wrapped: Model, *, task: str, label: str, display: str) -> None:
         super().__init__(wrapped)
         self._attrs = {"task": task, "model": label}
+        self._display = display
 
     @asynccontextmanager
     async def request_stream(
@@ -52,8 +92,9 @@ class MeteredModel(WrapperModel):
         ttft = response.time_to_first_chunk(started)
         if ttft is None:
             return
+        stat = RequestStat(self._display, ttft, time.perf_counter() - started - ttft, response.usage.output_tokens or 0)
         LLM_TTFT.record(ttft, self._attrs)
-        generating = time.perf_counter() - started - ttft
-        tokens = response.usage.output_tokens or 0
-        if tokens >= _MIN_SPEED_TOKENS and generating >= _MIN_SPEED_SECONDS:
-            LLM_OUTPUT_SPEED.record(tokens / generating, self._attrs)
+        if stat.measurable:
+            LLM_OUTPUT_SPEED.record(stat.tokens / stat.generating, self._attrs)
+        if (stats := RUN_STATS.get()) is not None:
+            stats.requests.append(stat)
