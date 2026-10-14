@@ -29,6 +29,7 @@ from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import Meta, react, send_forward, send_text
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage, sees_images
+from yggdrasil.llm.streaming import drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
@@ -280,6 +281,7 @@ class Invocator:
                     request_limit=tools_cfg.request_limit, tool_calls_limit=tools_cfg.tool_calls_limit
                 ),
                 usage=run_usage,
+                event_stream_handler=drain_events,
             )
         )
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))

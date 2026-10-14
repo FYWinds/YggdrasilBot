@@ -25,6 +25,7 @@ from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import react, send_text
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
+from yggdrasil.llm.streaming import drain_events
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.ops.tools import OpsDeps, QuotedMessage, ops_tools
 from yggdrasil.prompts import render
@@ -112,6 +113,7 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
                 model_settings=resolved.settings,
                 usage_limits=resolved.limits,
                 usage=usage,
+                event_stream_handler=drain_events,
             )
             reply = result.output
             outcome = await _deliver(api, bot, event, reply, deps, settings.interaction)

@@ -10,6 +10,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
 from yggdrasil.llm import registry
+from yggdrasil.llm.streaming import drain_events
 
 _DEFAULT_LIMITS = UsageLimits(request_limit=4)
 _overrides: ContextVar[dict[str, Model] | None] = ContextVar("memory_model_overrides", default=None)
@@ -60,7 +61,7 @@ async def run_structured[T](task: str, output_type: type[T], prompt: str) -> T:
         resolved = registry.chat_model(task, default_limits=_DEFAULT_LIMITS)
         model, settings, limits, label = resolved.model, resolved.settings, resolved.limits, resolved.label
     agent = Agent(model, output_type=output_type, retries=2, name=task)
-    result = await agent.run(prompt, model_settings=settings, usage_limits=limits)
+    result = await agent.run(prompt, model_settings=settings, usage_limits=limits, event_stream_handler=drain_events)
     usage = result.usage
     registry.record_usage(
         task,
