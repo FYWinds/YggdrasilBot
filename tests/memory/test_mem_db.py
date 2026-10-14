@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from sqlalchemy import delete, select, update
 
 from yggdrasil.db.models import (
@@ -28,6 +28,20 @@ PROFILE_GROUP, GLOSSARY_GROUP = 990005, 990006
 GROUPS = (SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP, PROFILE_GROUP, GLOSSARY_GROUP)
 
 type Insert = Callable[..., Awaitable[int]]
+type Respond = Callable[[list[ModelMessage], AgentInfo], ModelResponse]
+
+
+def _model(respond: Respond) -> FunctionModel:
+    """Agents stream every request; replay ``respond``'s response as one chunk per part."""
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str | DeltaToolCalls]:
+        for i, part in enumerate(respond(messages, info).parts):
+            if isinstance(part, ToolCallPart):
+                yield {i: DeltaToolCall(name=part.tool_name, json_args=part.args_as_json_str())}
+            elif isinstance(part, TextPart):
+                yield part.content
+
+    return FunctionModel(respond, stream_function=stream)
 
 
 async def _cleanup(groups: tuple[int, ...]) -> None:
@@ -111,7 +125,7 @@ def _segmenting_model(bogus_topic: int) -> FunctionModel:
         ]
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"ops": ops}))])
 
-    return FunctionModel(respond)
+    return _model(respond)
 
 
 async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, group_settings) -> None:
@@ -157,7 +171,7 @@ async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, g
         args = {"title": "爬山", "summary": "讨论去哪座山", "keywords": ["山"]}
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps(args))])
 
-    with llm.override_models(memory_topic=FunctionModel(rewrite)):
+    with llm.override_models(memory_topic=_model(rewrite)):
         stats = await consolidate_group(TOPIC_GROUP)
     assert stats["recomputed"] == 1
     async with get_session() as session:
@@ -227,7 +241,7 @@ async def test_profiles_consume_topics_in_close_order(insert: Insert, group_sett
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"summary": "群友"}))])
 
     async def run() -> int:
-        with llm.override_models(memory_profile=FunctionModel(respond)):
+        with llm.override_models(memory_profile=_model(respond)):
             return (await profiles.update_group(PROFILE_GROUP))["updated"]
 
     assert await run() == 1
