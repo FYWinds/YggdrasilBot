@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,6 +58,7 @@ class Deps:
     recall_target: int | None = None
     actions: list[str] = field(default_factory=list)  # side effects done by action tools, for mode=done
     tool_counts: Counter[str] = field(default_factory=Counter)
+    tool_seconds: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))  # wall time per tool
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams
     on_slow_tool: Callable[[], Awaitable[None]] | None = None  # called before each tools.slow_tools call

@@ -29,7 +29,7 @@ from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import Meta, react, send_forward, send_text
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage, sees_images
-from yggdrasil.llm.streaming import drain_events
+from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
@@ -272,6 +272,8 @@ class Invocator:
         )
         prompt = await self._prompt_with_images(ctx)
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
+        run_stats = RunStats()
+        stats_token = RUN_STATS.set(run_stats)  # the task copies the context, sub-agents included
         agent_task = asyncio.create_task(
             agent.run(
                 prompt,
@@ -284,6 +286,7 @@ class Invocator:
                 event_stream_handler=drain_events,
             )
         )
+        RUN_STATS.reset(stats_token)
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
         blocked: Verdict | None = None
         try:
@@ -297,7 +300,7 @@ class Invocator:
             for t in (agent_task, input_task):
                 if not t.done():
                     t.cancel()
-            self._account(resolved_model.label, run_usage, deps)
+            self._account(resolved_model.label, run_usage, deps, run_stats)
 
         if blocked is not None:
             await self._status(self.settings.interaction.review_emoji)
@@ -323,7 +326,10 @@ class Invocator:
 
         v_out = await moderate("output", mod_text, reply.full_text(), group_id=self.group_id)
         await self._save_verdict(v_out)
-        self.meta.moderation = f"输入 {v_in.verdict} · 输出 {v_out.verdict}({v_out.score:.2f})"
+        checked = [f"输入 {v_in.verdict}"] if v_in.verdict != "Skipped" else []
+        if v_out.verdict != "Skipped":
+            checked.append(f"输出 {v_out.verdict}({v_out.score:.2f})")
+        self.meta.moderation = " · ".join(checked)
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
 
         if v_out.action == "pass":
@@ -392,7 +398,7 @@ class Invocator:
             self._slow_marked = True
             await self._status(self.settings.interaction.slow_tool_emoji)
 
-    def _account(self, model_label: str, usage: RunUsage, deps: Deps) -> None:
+    def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
         """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""
         self.meta.models.append(model_label)
         self.meta.tokens_in += usage.input_tokens
@@ -403,6 +409,11 @@ class Invocator:
             self.meta.tokens_in += tin
             self.meta.tokens_out += tout
         self.meta.tools = dict(deps.tool_counts)
+        self.meta.tool_seconds = dict(deps.tool_seconds)
+        self.meta.slow_tools = frozenset(self.settings.tools.slow_tools)
+        self.meta.model_names = stats.models
+        self.meta.ttft_s = stats.ttft
+        self.meta.tokens_per_s = stats.tokens_per_s
         record_usage(
             self.handler,
             model_label,
