@@ -222,7 +222,7 @@ async def send_image(ctx: RunContext[Deps], path: str, caption: str = "") -> str
 
 @_tool("serve")
 async def serve(ctx: RunContext[Deps], command: str, port: int) -> str:
-    """在工作区后台启动一个 Web 服务并生成公网链接（https://<随机id>.<域名>），返回链接。
+    """在工作区后台启动一个 Web 服务并生成公网链接（https://sbx-<随机id>.<域名>），返回链接。
     command 是启动命令（在 /workspace 下执行），服务必须监听 0.0.0.0:port。链接任何拿到它的人都能打开，
     工作区回收或 unserve 后失效。"""
     session = _session(ctx)

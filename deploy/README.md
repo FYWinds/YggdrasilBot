@@ -53,7 +53,7 @@ Environment variables (see `yggdrasil/config.py` and `.env.example` for the full
 | `LOG_JSON` | no | `true` for JSON logs |
 | `YGG_SANDBOX_TOKEN` | sandbox | shared sandboxd bearer token; the sandbox is off when unset |
 | `YGG_SANDBOX_NAMESPACE`, `YGG_SANDBOX_WARMPOOL` | sandbox | defaults `yggdrasil`, `yggdrasil-sandbox` |
-| `YGG_SANDBOX_LINK_DOMAIN` | sandbox | wildcard domain for public links (`https://<id>.<domain>`); `serve` is off when unset |
+| `YGG_SANDBOX_LINK_DOMAIN` | sandbox | wildcard domain for public links (`https://sbx-<id>.<domain>`); `serve` is off when unset |
 
 Everything else (providers, model routes, groups, triggers, prompts, moderation, tool settings) lives in the
 database and is edited in the dashboard.

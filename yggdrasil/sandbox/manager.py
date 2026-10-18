@@ -37,6 +37,7 @@ from yggdrasil.sandbox.state import (
     WorkspaceInfo,
     claim_name,
     link_id,
+    link_name,
     links_json,
     lock_key,
     shutdown_at,
@@ -643,7 +644,7 @@ class WorkspaceManager:
         if sandbox is None:
             raise SandboxError("找不到工作区对应的沙箱对象，没法建立公开链接。")
         owners = self._owner(sandbox)
-        name = f"sbx-{rid}"
+        name = link_name(rid)
         labels = {**_LABELS, _GROUP_LABEL: str(m.group_id)}
         service = {
             "apiVersion": "v1",
@@ -661,7 +662,7 @@ class WorkspaceManager:
             "spec": {
                 "entryPoints": ["websecure"],
                 "routes": [
-                    {"kind": "Rule", "match": f"Host(`{rid}.{domain}`)", "services": [{"name": name, "port": 80}]}
+                    {"kind": "Rule", "match": f"Host(`{name}.{domain}`)", "services": [{"name": name, "port": 80}]}
                 ],
             },
         }
@@ -673,7 +674,7 @@ class WorkspaceManager:
             raise
 
     async def _delete_link_objects(self, rid: str) -> None:
-        name = f"sbx-{rid}"
+        name = link_name(rid)
         for path in (self._route_path(name), self._service_path(name)):
             try:
                 await self._kube().delete(path)
@@ -825,7 +826,7 @@ class Session:
                 link = LinkRecord(
                     id=rid,
                     port=port,
-                    url=f"https://{rid}.{domain}",
+                    url=f"https://{link_name(rid)}.{domain}",
                     command=command,
                     created_at=time.time(),
                     pgid=pgid,

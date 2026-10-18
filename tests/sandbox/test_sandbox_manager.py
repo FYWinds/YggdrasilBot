@@ -197,15 +197,15 @@ async def test_serve_validation_and_link_lifecycle(mgr: WorkspaceManager, kube: 
     with pytest.raises(SandboxError, match="日志"):
         await s.serve("echo broken >&2; exit 1", 8001)
     link = await s.serve("python3 -m http.server 8000 --bind 0.0.0.0", 8000)
-    assert re.fullmatch(r"https://[a-z0-9]{10}\.links\.example\.com", link.url)
-    rid = link.url.removeprefix("https://").split(".", 1)[0]
+    assert re.fullmatch(r"https://sbx-[a-z0-9]{10}\.links\.example\.com", link.url)
+    rid = link.url.removeprefix("https://sbx-").split(".", 1)[0]
     service = kube.objects[f"/api/v1/namespaces/ns/services/sbx-{rid}"]
     claim = kube.claims()[0]["metadata"]["name"]
     assert service["spec"]["selector"] == {"sandbox.users.io/workspace": claim}
     assert service["spec"]["ports"][0]["targetPort"] == 8000
     assert service["metadata"]["ownerReferences"][0]["kind"] == "Sandbox"
     route = kube.objects[f"/apis/traefik.io/v1alpha1/namespaces/ns/ingressroutes/sbx-{rid}"]
-    assert route["spec"]["routes"][0]["match"] == f"Host(`{rid}.links.example.com`)"
+    assert route["spec"]["routes"][0]["match"] == f"Host(`sbx-{rid}.links.example.com`)"
     with pytest.raises(SandboxError, match="最多"):
         await s.serve("python3 -m http.server 8002", 8002)
     info = await mgr.get(GROUP)

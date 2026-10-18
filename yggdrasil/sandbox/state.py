@@ -36,6 +36,11 @@ def link_id() -> str:
     return random_id(10)
 
 
+def link_name(link: str) -> str:
+    """Service/IngressRoute name and public subdomain of a link: ``sbx-<id>``."""
+    return f"sbx-{link}"
+
+
 def validate_port(port: int) -> str | None:
     """Return the Chinese reason ``port`` cannot be exposed, or ``None`` when it can."""
     if type(port) is not int or not 1024 <= port <= 65535:
