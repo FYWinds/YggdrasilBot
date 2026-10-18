@@ -61,7 +61,7 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
     assert info.expires_at > time.time() + 29 * 60
     # A long run keeps renewing the claim from its commands, throttled.
     patches = kube.patches
-    session._renewed_at = 0.0  # pyright: ignore[reportPrivateUsage] - pretend the last renewal is long past
+    session._renewed_at -= 3600  # pyright: ignore[reportPrivateUsage] - pretend the last renewal is long past
     await session.backend.run("true", shell=True)
     assert kube.patches == patches + 1
     await session.backend.run("true", shell=True)
