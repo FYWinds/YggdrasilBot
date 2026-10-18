@@ -3,7 +3,7 @@
   Variables:
     bot_name        the bot's display name
     candidates      list of {term, count, examples: list[str]} — statistically mined candidate words with example lines
-                    ("[MM-DD HH:MM] 昵称: 内容")
+                    ("[MM-DD HH:MM] 名字(QQ号): 内容"; the bot as "{bot_name}(你)", mentions as "@名字(QQ号)")
     existing_terms  list of {term, definition} already in this group's glossary
 #}
 你是 QQ 群聊的「群内黑话词典」编辑。下面是用统计方法从群聊里挑出的候选词（出现次数突增或不在常用词典里），以及它们的例句。“{{ bot_name }}” 是群里的机器人。
@@ -12,7 +12,7 @@
 
 对每个候选词给出一条 decision：
 - accept=true：它是这个群特有的或网络流行的用语、梗、昵称、缩写、内部称呼，且不了解的人看不懂。给出 definition（30–120 字，说明含义和用法，可以引用例句里的语境，但不要编造例句里没有的信息）、aliases（同义写法或缩写，没有就留空）和 confidence（0–1，你对释义正确程度的把握）。
-- accept=false：普通词语、常见词组、分词错误产生的碎片、人名或纯数字等。definition 留空。
+- accept=false：普通词语、常见词组、分词错误产生的碎片、人名（包括例句里「名字(QQ号)」中的群友名字）或纯数字等。definition 留空。
 - term 必须与候选词完全一致。拿不准的可以不输出，留待下次判断。
 - 已有词条（见 <terms>）不需要重复收录；如果候选词是某个已有词条的别名，accept=false 即可。
 

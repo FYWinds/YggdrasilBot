@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from tests.memory.helpers import T0, mv
 from yggdrasil.memory.chunking import split_chunks
+from yggdrasil.people import People
 
 GAP = timedelta(minutes=20)
 LATER = T0 + timedelta(days=1)
@@ -9,7 +10,13 @@ LATER = T0 + timedelta(days=1)
 
 def split(messages, *, now=LATER, max_messages=60, max_chars=2400, more_pending=False):
     return split_chunks(
-        messages, gap=GAP, max_messages=max_messages, max_chars=max_chars, now=now, more_pending=more_pending
+        messages,
+        People("机器人"),
+        gap=GAP,
+        max_messages=max_messages,
+        max_chars=max_chars,
+        now=now,
+        more_pending=more_pending,
     )
 
 
@@ -51,9 +58,9 @@ def test_max_messages_cut() -> None:
 
 def test_max_chars_cut_and_long_line_truncated() -> None:
     msgs = [mv(0, "a" * 30), mv(1, "b" * 30), mv(2, "c" * 500)]
-    plan = split(msgs, max_chars=100)
+    plan = split(msgs, max_chars=120)  # each short line is 54 chars ("[10-01 12:00] 甲(10001): " + 30)
     assert [len(c.messages) for c in plan.chunks] == [2, 1]
-    assert all(len(c.text) <= 100 for c in plan.chunks)
+    assert all(len(c.text) <= 120 for c in plan.chunks)
 
 
 def test_empty_messages_skipped_but_consumed() -> None:
@@ -70,4 +77,4 @@ def test_empty_messages_skipped_but_consumed() -> None:
 
 def test_chunk_text_format_uses_shanghai_time() -> None:
     plan = split([mv(0, "你好", name="小明")])
-    assert plan.chunks[0].text == "[10-01 12:00] 小明: 你好"
+    assert plan.chunks[0].text == "[10-01 12:00] 小明(10001): 你好"

@@ -11,6 +11,7 @@ from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
 from yggdrasil.memory.common import LOCAL_TZ, local
 from yggdrasil.memory.vectors import digest_text, try_embed
+from yggdrasil.people import resolve
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 
@@ -55,21 +56,13 @@ async def build_digest(group_id: int, day: date) -> int | None:
             Message.sent_at < end,
         )
         count = await session.scalar(select(func.count()).select_from(Message).where(*day_messages)) or 0
-        names = dict(
-            (
-                await session.execute(
-                    select(Message.user_id, Message.sender_name)
-                    .where(*day_messages)
-                    .distinct(Message.user_id)
-                    .order_by(Message.user_id, Message.sent_at.desc())
-                )
-            ).all()
-        )
+    bot_name = snap.settings(group_id).persona.name
+    people = await resolve(group_id, {u for t in topics for u in t.participants}, bot_name=bot_name)
     prompt = render(
         TASK,
         day=day.isoformat(),
         weekday=f"周{_WEEKDAYS[day.weekday()]}",
-        bot_name=snap.settings(group_id).persona.name,
+        bot_name=bot_name,
         message_count=count,
         topics=[
             {
@@ -79,7 +72,7 @@ async def build_digest(group_id: int, day: date) -> int | None:
                 "start": f"{local(t.start_at):%H:%M}",
                 "end": f"{local(t.end_at):%H:%M}",
                 "msg_count": t.msg_count,
-                "participants": [llm.fence(names.get(u) or str(u)) for u in t.participants],
+                "participants": [llm.fence(people.who(u)) for u in t.participants],
             }
             for t in topics
         ],

@@ -19,6 +19,7 @@ from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import send_forward, send_text
 from yggdrasil.moderation.guard import Verdict
 from yggdrasil.napcat.api import NapCatAPI, node_seg, text_seg
+from yggdrasil.people import member_label
 from yggdrasil.runtime import snapshot
 
 pending_count = 0
@@ -74,8 +75,9 @@ async def create_review(
     ident = await identity(bot)
     api = NapCatAPI(bot)
     group = snapshot().groups.get(group_id)
+    who = await member_label(group_id, user_id)
     header = (
-        f"待审核 R{review_id}\n群：{group.name if group else ''}({group_id})  发起人：{user_id}\n"
+        f"待审核 R{review_id}\n群：{group.name if group else ''}({group_id})  发起人：{who}\n"
         f"判定：{verdict.verdict} {verdict.score:.2f} {'、'.join(verdict.categories) or ''}\n"
         f"{expire_minutes} 分钟内回复：通过 R{review_id} / 拒绝 R{review_id} / 改 R{review_id} 新内容"
     )

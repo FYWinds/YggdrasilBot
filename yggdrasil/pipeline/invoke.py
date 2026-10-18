@@ -32,6 +32,7 @@ from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage, 
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.people import self_label
 from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.prompts import render
@@ -242,6 +243,7 @@ class Invocator:
             ctx.handles,
             self.handler,
             recall_target=recall_target,
+            self_id=ident.self_id,
             on_slow_tool=self._mark_slow,
         )
         actions = action_tools(deps)
@@ -264,7 +266,7 @@ class Invocator:
                 actions=[t.name for t in actions],
                 recall_denied=replied_bot_msg is not None and recall_target is None,
                 style=render("style_rules"),
-                data_rules=render("data_rules", nonce=ctx.nonce),
+                data_rules=render("data_rules", nonce=ctx.nonce, me=self_label(self.settings.persona.name)),
             ),
             tools=tools_for(tool_list) + actions,
             name=self.handler,

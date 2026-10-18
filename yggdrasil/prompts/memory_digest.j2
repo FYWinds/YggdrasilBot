@@ -5,7 +5,8 @@
     weekday        Chinese weekday, e.g. "周三"
     bot_name       the bot's display name
     message_count  number of (non-recalled) messages that day
-    topics         list of {title, summary, keywords: list[str], start: "HH:MM", end: "HH:MM", msg_count, participants: list[str]}
+    topics         list of {title, summary, keywords: list[str], start: "HH:MM", end: "HH:MM", msg_count,
+                   participants: list[str] as "名字(QQ号)"}
 #}
 你是 QQ 群聊的记忆整理员。请根据 {{ day }}（{{ weekday }}）这一天整理出的话题，写一份当日群聊摘要。“{{ bot_name }}” 是群里的机器人。
 

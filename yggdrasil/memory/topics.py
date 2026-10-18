@@ -19,9 +19,10 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Topic, TopicMessage
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
-from yggdrasil.memory.common import format_line, pipeline_state
+from yggdrasil.memory.common import format_line, people_for, pipeline_state
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors, topic_text, try_embed
+from yggdrasil.people import People
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import MemorySettings
@@ -103,8 +104,8 @@ def participants_of(
     return out
 
 
-def _line(v: MessageView) -> str:
-    return llm.fence(format_line(v, with_id=True, with_uid=True)[:LINE_MAX_CHARS])
+def _line(v: MessageView, people: People) -> str:
+    return llm.fence(format_line(v, people, with_id=True)[:LINE_MAX_CHARS])
 
 
 async def _topic_messages(session: AsyncSession, topic: Topic, *, last: int | None = None) -> list[MessageView]:
@@ -204,25 +205,28 @@ async def _segment_window(group_id: int, force: bool) -> tuple[int, int, int] | 
                 .limit(MAX_OPEN_TOPICS)
             )
         ).all()
-        open_topics = [
-            {
-                "id": t.id,
-                "title": llm.fence(t.title),
-                "summary": llm.fence(t.summary),
-                "keywords": [llm.fence(k) for k in t.keywords],
-                "last_lines": [_line(v) for v in await _topic_messages(session, t, last=TOPIC_CONTEXT_LINES)],
-            }
-            for t in open_rows
-        ]
+        tails = {t.id: await _topic_messages(session, t, last=TOPIC_CONTEXT_LINES) for t in open_rows}
+    bot_name = snap.settings(group_id).persona.name
+    people = await people_for(group_id, [*window, *(v for tail in tails.values() for v in tail)], bot_name=bot_name)
+    open_topics = [
+        {
+            "id": t.id,
+            "title": llm.fence(t.title),
+            "summary": llm.fence(t.summary),
+            "keywords": [llm.fence(k) for k in t.keywords],
+            "last_lines": [_line(v, people) for v in tails[t.id]],
+        }
+        for t in open_rows
+    ]
     views = {v.id: v for v in window}
     ops: list[ContinueTopic | NewTopic] = []
     if window:
         prompt = render(
             TASK,
             mode="segment",
-            bot_name=snap.settings(group_id).persona.name,
+            bot_name=bot_name,
             open_topics=open_topics,
-            messages="\n".join(_line(v) for v in window),
+            messages="\n".join(_line(v, people) for v in window),
         )
         result = await llm.run_structured(TASK, TopicOps, prompt)
         ops = validate_ops(result.ops, views.keys(), [t["id"] for t in open_topics])
@@ -251,12 +255,14 @@ async def _recompute_dirty(group_id: int) -> tuple[int, int]:
             remaining = await _topic_messages(session, topic)
         rewrite: TopicRewrite | None = None
         if remaining:
+            bot_name = snap.settings(group_id).persona.name
+            people = await people_for(group_id, remaining, bot_name=bot_name)
             prompt = render(
                 TASK,
                 mode="recompute",
-                bot_name=snap.settings(group_id).persona.name,
+                bot_name=bot_name,
                 topic={"id": topic.id, "title": llm.fence(topic.title), "summary": llm.fence(topic.summary)},
-                messages="\n".join(_line(v) for v in remaining),
+                messages="\n".join(_line(v, people) for v in remaining),
             )
             rewrite = await llm.run_structured(TASK, TopicRewrite, prompt)
         async with get_session() as session:

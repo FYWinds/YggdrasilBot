@@ -7,6 +7,7 @@ so tools can fetch the real content on demand.
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,16 +63,22 @@ def _multimsg_resid(raw: str) -> str | None:
     return str(resid) if resid else None
 
 
-def normalize(segments: list[dict[str, Any]], names: dict[int, str] | None = None) -> Normalized:
-    names = names or {}
+def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | None = None) -> Normalized:
+    """``mention`` renders an at target for a model (``名字(QQ)``); without it the raw ``@<qq>`` is kept,
+    which is what ingest stores in ``plain_text``."""
     out = Normalized(text="")
     parts: list[str] = []
+    rendered_at = False  # previous part is a mention rendered through ``mention``
     for seg in segments:
+        after_at, rendered_at = rendered_at, False
         kind = seg.get("type", "")
         data = seg.get("data") or {}
         match kind:
             case "text":
-                parts.append(str(data.get("text", "")))
+                text = str(data.get("text", ""))
+                if after_at and text[:1].isspace():
+                    text = text[1:]  # the at already ends with a space (the stored form keeps both)
+                parts.append(text)
             case "at":
                 qq = str(data.get("qq", ""))
                 if qq == "all":
@@ -80,7 +87,11 @@ def normalize(segments: list[dict[str, Any]], names: dict[int, str] | None = Non
                 uid = int(qq) if qq.isdigit() else None
                 if uid is not None:
                     out.mentions.append(uid)
-                name = data.get("name") or (names.get(uid) if uid is not None else None) or qq
+                if uid is not None and mention is not None:
+                    parts.append(f"@{mention(uid)} ")
+                    rendered_at = True
+                    continue
+                name = data.get("name") or qq
                 parts.append(f"@{str(name).lstrip('@')} ")
             case "reply":
                 rid = str(data.get("id", ""))

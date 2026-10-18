@@ -32,6 +32,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import BOT_EVENTS
 from yggdrasil.db.models import BotEvent
 from yggdrasil.db.session import get_session
+from yggdrasil.people import member_label
 from yggdrasil.runtime import snapshot
 
 AUTO = "auto"
@@ -155,13 +156,14 @@ async def _apply_policy(bot: Bot, event_id: int, o: Observed) -> None:
         if cfg.notify_kicked:
             await notify_admins(
                 bot,
-                f"E{event_id} bot 被 {o.operator_id} 踢出了群 {o.group_id}"
+                f"E{event_id} bot 被 {await member_label(o.group_id, o.operator_id)} 踢出了群 {o.group_id}"
                 + ("，已停用该群。" if cfg.disable_group_when_kicked else "。"),
             )
     elif o.kind == "notice.group_ban.self.ban":
         if cfg.notify_banned:
             minutes = int(o.data.get("duration") or 0) // 60
-            await notify_admins(bot, f"E{event_id} bot 在群 {o.group_id} 被 {o.operator_id} 禁言 {minutes} 分钟。")
+            who = await member_label(o.group_id, o.operator_id)
+            await notify_admins(bot, f"E{event_id} bot 在群 {o.group_id} 被 {who} 禁言 {minutes} 分钟。")
     elif o.kind == "notice.bot_offline":
         bot_state.offline.add(bot.self_id)
 

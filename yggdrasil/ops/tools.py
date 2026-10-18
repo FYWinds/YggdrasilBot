@@ -41,6 +41,7 @@ from yggdrasil.db.models import (
 from yggdrasil.db.session import get_session
 from yggdrasil.kv import redis_client
 from yggdrasil.napcat.api import NapCatAPI
+from yggdrasil.people import label, names_in_groups, self_label
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
@@ -69,6 +70,24 @@ class OpsDeps:
     @property
     def actor(self) -> str:
         return f"qq:{self.user_id}"
+
+
+async def _labeler(
+    ctx: RunContext[OpsDeps], pairs: list[tuple[int | None, int | None]]
+) -> Callable[[int | None, int | None], str | int | None]:
+    """``名字(QQ)`` for users in listed rows (one alias lookup); the bot itself as ``{bot_name}(你)``."""
+    names = await names_in_groups(pairs)
+    self_id = int(ctx.deps.bot.self_id)
+    me = self_label(snapshot().settings(None).persona.name)
+
+    def who(group_id: int | None, user_id: int | None) -> str | int | None:
+        if not user_id:
+            return user_id
+        if user_id == self_id:
+            return me
+        return label(names.get((group_id, user_id)) if group_id else None, user_id)
+
+    return who
 
 
 def _op[**P](name: str, *, write: bool = False) -> Callable[[Callable[P, Awaitable[str]]], Callable[P, Awaitable[str]]]:
@@ -282,21 +301,24 @@ async def list_reviews(
 async def recent_invocations(ctx: RunContext[OpsDeps], limit: int = 10) -> str:
     """最近的调用记录：时间、群、触发人、handler、状态、耗时、错误。"""
     async with get_session() as s:
-        rows = await s.scalars(select(Invocation).order_by(Invocation.created_at.desc()).limit(min(max(limit, 1), 30)))
-        return _json(
-            [
-                {
-                    "at": i.created_at.astimezone().strftime("%m-%d %H:%M"),
-                    "group": i.group_id,
-                    "user": i.user_id,
-                    "handler": i.handler,
-                    "status": i.status,
-                    "ms": i.duration_ms,
-                    "error": (i.error or "")[:200] or None,
-                }
-                for i in rows.all()
-            ]
-        )
+        rows = (
+            await s.scalars(select(Invocation).order_by(Invocation.created_at.desc()).limit(min(max(limit, 1), 30)))
+        ).all()
+    who = await _labeler(ctx, [(i.group_id, i.user_id) for i in rows])
+    return _json(
+        [
+            {
+                "at": i.created_at.astimezone().strftime("%m-%d %H:%M"),
+                "group": i.group_id,
+                "user": who(i.group_id, i.user_id),
+                "handler": i.handler,
+                "status": i.status,
+                "ms": i.duration_ms,
+                "error": (i.error or "")[:200] or None,
+            }
+            for i in rows
+        ]
+    )
 
 
 # --- write ---------------------------------------------------------------------
@@ -512,6 +534,7 @@ async def list_events(
         if group_id is not None:
             q = q.where(BotEvent.group_id == group_id)
         rows = (await s.scalars(q)).all()
+    who = await _labeler(ctx, [(e.group_id, u) for e in rows for u in (e.user_id, e.operator_id)])
     return _json(
         [
             {
@@ -519,8 +542,8 @@ async def list_events(
                 "at": e.at.astimezone().strftime("%m-%d %H:%M"),
                 "kind": e.kind,
                 "group": e.group_id,
-                "user": e.user_id,
-                "operator": e.operator_id,
+                "user": who(e.group_id, e.user_id),
+                "operator": who(e.group_id, e.operator_id),
                 "status": e.status,
                 "comment": e.data.get("comment") or None,
             }

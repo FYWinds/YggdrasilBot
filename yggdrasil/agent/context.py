@@ -16,6 +16,7 @@ from yggdrasil.db.models import Message
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.ingest.writer import WRITER
+from yggdrasil.people import People, resolve
 from yggdrasil.settings import Settings
 from yggdrasil.triggers.index import Resolved
 
@@ -74,7 +75,7 @@ def trigger_message(event: MessageEvent, self_id: int) -> TargetMessage:
     return TargetMessage(
         qq_message_id=event.message_id,
         user_id=event.user_id,
-        sender_name=_sender_name(event.sender) or str(event.user_id),
+        sender_name=_sender_name(event.sender),
         text=normalize(_segments(event.original_message)).text,
         segments=_segments(event.original_message),
         is_self=event.user_id == self_id,
@@ -109,7 +110,7 @@ async def target_message(event: MessageEvent, resolved: Resolved, self_id: int) 
         return TargetMessage(
             qq_message_id=r.message_id,
             user_id=r.sender.user_id or 0,
-            sender_name=_sender_name(r.sender) or str(r.sender.user_id),
+            sender_name=_sender_name(r.sender),
             text=normalize(segs).text,
             segments=segs,
             is_self=is_self,
@@ -186,49 +187,64 @@ async def build_context(
     # the asker or the group's theme); it can pull recent chat with the recent_chat tool when needed.
     background = resolved.handler != "tldr"
 
-    def name_of(user_id: int, name: str, is_self: bool) -> str:
-        # Names go into tag attributes: drop characters that could close the attribute or tag.
-        clean = name.translate(str.maketrans("", "", '<>"'))
-        return f"{bot_name}(你)" if is_self else f"{clean}({user_id})"
-
     mentioned = normalize(trigger.segments).mentions
     if group_id is not None:
         await WRITER.flush()  # also lets recent_chat / search tools see the latest messages
+    recent: list[search.MessageView] = []
     if group_id is not None and background:
         try:
             recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
             LOGGER.exception("recent_messages failed")
-            recent = []
-        if recent:
-            lines = [
-                f"[{_ts(m.sent_at)}] #{m.id} {name_of(m.user_id, m.sender_name, m.is_self)}: {m.text}" for m in recent
-            ]
-            text = "\n".join(lines)
-            if len(text) > cfg.max_context_chars:
-                text = text[-cfg.max_context_chars :]
-                text = text[text.find("\n") + 1 :]
-            blocks.add("最近群聊", text)
+    # One alias lookup for everyone this prompt names: senders, @mentions, quoted authors.
+    try:
+        people = await resolve(
+            group_id,
+            {trigger.user_id, target.user_id, *mentioned, *normalize(target.segments).mentions},
+            bot_name=bot_name,
+            self_id=self_id,
+            texts=[request_text, *(m.text for m in recent)],
+        )
+    except Exception:
+        LOGGER.exception("name lookup failed")
+        people = People(bot_name, self_ids=frozenset({self_id}))
+    # Model-facing texts: mentions as 名字(QQ), the bot as {bot_name}(你).
+    trigger.text = normalize(trigger.segments, people.mention).text
+    target.text = trigger.text if target is trigger else normalize(target.segments, people.mention).text
+    request_text = people.mentions(request_text)
+
+    if recent:
+        lines = [
+            f"[{_ts(m.sent_at)}] #{m.id} {people.who(m.user_id, m.sender_name, is_self=m.is_self)}: "
+            f"{people.mentions(m.text)}"
+            for m in recent
+        ]
+        text = "\n".join(lines)
+        if len(text) > cfg.max_context_chars:
+            text = text[-cfg.max_context_chars :]
+            text = text[text.find("\n") + 1 :]
+        blocks.add("最近群聊", text)
 
     if target.qq_message_id != trigger.qq_message_id:
         suffix = _attach(handles, target)
         blocks.add(
             "被引用的消息",
             f"{target.text}{suffix}",
-            f' 发送者="{name_of(target.user_id, target.sender_name, target.is_self)}" 时间="{_ts(target.sent_at)}"',
+            f' 发送者="{people.who(target.user_id, target.sender_name, is_self=target.is_self)}" '
+            f'时间="{_ts(target.sent_at)}"',
         )
     trigger_suffix = _attach(handles, trigger)
 
     if group_id is not None:
-        people = {trigger.user_id, target.user_id, *mentioned} - {self_id}
-        if cfg.include_profiles and background and people:
+        others = {trigger.user_id, target.user_id, *mentioned} - {self_id}
+        if cfg.include_profiles and background and others:
             try:
-                profiles = list((await search.profiles(group_id, sorted(people))).values())
+                profiles = list((await search.profiles(group_id, sorted(others))).values())
             except Exception:
                 LOGGER.exception("profiles lookup failed")
                 profiles = []
             if profiles:
-                lines = [f"- {p.display_name}({p.user_id})：{p.summary}" for p in profiles if p.summary]
+                lines = [f"- {people.who(p.user_id, p.display_name)}：{p.summary}" for p in profiles if p.summary]
                 if lines:
                     blocks.add("相关群友画像", "\n".join(lines))
         if cfg.include_glossary:
@@ -249,7 +265,7 @@ async def build_context(
                 blocks.add("进行中的话题", "\n".join(f"- {t.title}：{t.summary}" for t in topics))
 
     available = ", ".join(f"{k}({v.kind})" for k, v in handles.items.items())
-    sender = f' 发送者="{name_of(trigger.user_id, trigger.sender_name, False)}"'
+    sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
     focused = resolved.handler == "tldr" and target.qq_message_id != trigger.qq_message_id and bool(request_text)
     if focused:
         # "tldr <words>" on a quoted message: the words say what to focus on.

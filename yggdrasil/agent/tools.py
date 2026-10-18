@@ -6,10 +6,10 @@ handed to a run when the code has already decided the speaker may do that action
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
@@ -21,8 +21,12 @@ from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
 from yggdrasil.llm.streaming import drain_events
+from yggdrasil.people import People, clean_name, resolve
 from yggdrasil.prompts import render
 from yggdrasil.tools.errors import ToolError
+
+if TYPE_CHECKING:
+    from yggdrasil.memory.search import MessageView
 
 type ToolResult = str | ToolReturn
 
@@ -78,6 +82,29 @@ async def _vision(ctx: RunContext[Deps], images: list[bytes], question: str) -> 
     usage = result.usage
     ctx.deps.vision_tokens.append((resolved.label, usage.input_tokens or 0, usage.output_tokens or 0))
     return result.output
+
+
+async def _people(ctx: RunContext[Deps], user_ids: Iterable[int] = (), texts: Iterable[str] = ()) -> People:
+    """One batched name lookup for everything a tool result shows (``名字(QQ)``, the bot as ``名字(你)``)."""
+    return await resolve(
+        ctx.deps.group_id,
+        user_ids,
+        bot_name=ctx.deps.settings.persona.name,
+        self_id=ctx.deps.self_id or None,
+        texts=texts,
+    )
+
+
+async def _people_for_messages(ctx: RunContext[Deps], msgs: "Sequence[MessageView]") -> People:
+    return await _people(ctx, [m.user_id for m in msgs], [m.text for m in msgs])
+
+
+def _chat_lines(msgs: "Sequence[MessageView]", people: People) -> str:
+    return "\n".join(
+        f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {people.who(m.user_id, m.sender_name, is_self=m.is_self)}: "
+        f"{people.mentions(m.text)}"
+        for m in msgs
+    )
 
 
 @_tool("read_url")
@@ -161,10 +188,11 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
 async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
     """展开合并转发（聊天记录），参数是 fwd#N 句柄。嵌套的转发也会展开。"""
     h = _handle(ctx, handle, "forward")
-    lines: list[str] = []
+    # (indent, time, sender id, sender name, segments, handle keys); rendered after one batched name lookup
+    nodes: list[tuple[str, str, int, str, list[dict[str, Any]], list[str]]] = []
 
     async def walk(forward_id: str, depth: int, content: list | None) -> None:
-        if depth > 3 or len(lines) > 400:
+        if depth > 3 or len(nodes) > 400:
             return
         records = content
         if records is None:
@@ -178,18 +206,26 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
                 segs = [{"type": "text", "data": {"text": segs}}]
             norm = normalize(segs)
             ts = datetime.fromtimestamp(rec["time"]).strftime("%m-%d %H:%M") if rec.get("time") else ""
-            name = sender.get("card") or sender.get("nickname") or rec.get("nickname") or "?"
-            lines.append(f"{'  ' * depth}[{ts}] {name}: {norm.text}")
+            name = sender.get("card") or sender.get("nickname") or rec.get("nickname") or ""
+            uid = str(sender.get("user_id") or rec.get("user_id") or "")
+            keys: list[str] = []
+            nodes.append(("  " * depth, ts, int(uid) if uid.isdigit() else 0, str(name), segs, keys))
             for att in norm.attachments:
                 key = ctx.deps.handles.add(att.kind, att.data)
                 if key:
-                    lines[-1] += f" ({key})"
+                    keys.append(key)
                 if att.kind == "forward":
                     inner = att.data.get("content")
                     await walk(str(att.data.get("id", "")), depth + 1, inner if isinstance(inner, list) else None)
 
     inner = h.data.get("content")
     await walk(str(h.data.get("id", "")), 0, inner if isinstance(inner, list) else None)
+    people = await _people(ctx, [n[2] for n in nodes] + [u for n in nodes for u in normalize(n[4]).mentions])
+    lines = []
+    for indent, ts, uid, name, segs, keys in nodes:
+        who = people.who(uid, name) if uid else clean_name(name) or "?"
+        text = normalize(segs, people.mention).text
+        lines.append(f"{indent}[{ts}] {who}: {text}" + "".join(f" ({k})" for k in keys))
     return "\n".join(lines) or "（空的合并转发）"
 
 
@@ -208,12 +244,13 @@ async def search_history(ctx: RunContext[Deps], query: str, days: int | None = N
     )
     if not hits:
         return "没有找到相关记录"
+    people = await _people(ctx, [h.user_id for h in hits if h.user_id], [h.text for h in hits])
     out = []
     for h in hits:
         when = h.when.astimezone().strftime("%Y-%m-%d %H:%M") if h.when else ""
         ref = f"#{h.msg_id}" if h.msg_id else f"{h.kind}:{h.ref_id}"
-        who = f"{h.sender_name}: " if h.sender_name else ""
-        out.append(f"[{when}] ({ref}) {who}{h.text}")
+        who = f"{people.who(h.user_id, h.sender_name)}: " if h.user_id else ""
+        out.append(f"[{when}] ({ref}) {who}{people.mentions(h.text)}")
     return "\n".join(out)
 
 
@@ -225,7 +262,7 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
     if ctx.deps.group_id is None:
         raise ToolError("私聊里不能检索群历史")
     msgs = await messages_around(ctx.deps.group_id, message_id, min(before, 40), min(after, 40))
-    return "\n".join(f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {m.sender_name}: {m.text}" for m in msgs) or "无"
+    return _chat_lines(msgs, await _people_for_messages(ctx, msgs)) or "无"
 
 
 @_tool("recent_chat")
@@ -240,10 +277,7 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
     msgs = await recent_messages(ctx.deps.group_id, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
     if not msgs:
         return "这段时间没有聊天记录"
-    me = f"{ctx.deps.settings.persona.name}(你)"
-    text = "\n".join(
-        f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {me if m.is_self else m.sender_name}: {m.text}" for m in msgs
-    )
+    text = _chat_lines(msgs, await _people_for_messages(ctx, msgs))
     if len(text) > cfg.max_context_chars:
         text = text[-cfg.max_context_chars :]
         text = text[text.find("\n") + 1 :]
@@ -265,7 +299,7 @@ async def lookup_glossary(ctx: RunContext[Deps], term: str) -> str:
 
 @_tool("get_profile")
 async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
-    """查群友画像（昵称、兴趣、常聊话题）。"""
+    """查群友画像（昵称、兴趣、常聊话题）。user_id 是 QQ 号，即「名字(QQ号)」括号里的数字。"""
     from yggdrasil.memory.search import get_profile as _get
 
     if ctx.deps.group_id is None:
@@ -273,7 +307,8 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     p = await _get(ctx.deps.group_id, user_id)
     if p is None:
         return "没有这个人的画像（可能选择了不被记录）"
-    return f"{p.display_name}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
+    who = (await _people(ctx, [user_id])).who(p.user_id, p.display_name)
+    return f"{who}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
 
 
 _MAX_IMAGES = 4

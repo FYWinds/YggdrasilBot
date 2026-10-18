@@ -18,8 +18,9 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Topic, TopicMessage, UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
-from yggdrasil.memory.common import format_line
+from yggdrasil.memory.common import format_line, people_for
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
+from yggdrasil.people import UNKNOWN_NAME, clean_name
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 
@@ -144,10 +145,12 @@ async def update_user(group_id: int, user_id: int) -> bool:
     if not messages:
         return False
     name = messages[-1].sender_name or str(user_id)
+    bot_name = snap.settings(group_id).persona.name
+    people = await people_for(group_id, messages, bot_name=bot_name)
     prompt = render(
         TASK,
-        bot_name=snap.settings(group_id).persona.name,
-        name=llm.fence(name),
+        bot_name=bot_name,
+        name=llm.fence(clean_name(people.names.get(user_id) or messages[-1].sender_name) or UNKNOWN_NAME),
         user_id=user_id,
         profile={
             "summary": llm.fence(profile.summary) if profile else "",
@@ -156,7 +159,7 @@ async def update_user(group_id: int, user_id: int) -> bool:
         },
         facts=[{"id": fid, "fact": llm.fence(f)} for fid, f in facts],
         topics=[{"title": llm.fence(t.title), "summary": llm.fence(t.summary)} for t in topics],
-        messages="\n".join(llm.fence(format_line(m, with_id=True)[:300]) for m in messages),
+        messages="\n".join(llm.fence(format_line(m, people, with_id=True)[:300]) for m in messages),
     )
     result = validate_update(
         await llm.run_structured(TASK, ProfileUpdate, prompt), [m.id for m in messages], [f[0] for f in facts]

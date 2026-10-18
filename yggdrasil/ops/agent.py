@@ -28,6 +28,7 @@ from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import drain_events
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.ops.tools import OpsDeps, QuotedMessage, ops_tools
+from yggdrasil.people import People, resolve
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import InteractionSettings
@@ -43,12 +44,18 @@ class OpsReply(BaseModel):
     text: str | None = Field(default=None, description="mode=reply 时发出的文字，纯文本，简短")
 
 
-def _quoted(event: MessageEvent, self_id: int) -> QuotedMessage | None:
+async def _quoted(event: MessageEvent, self_id: int, bot_name: str) -> QuotedMessage | None:
     r = event.reply
     if r is None:
         return None
     segs = [{"type": s.type, "data": dict(s.data)} for s in r.message]
-    return QuotedMessage(r.message_id, r.sender.user_id == self_id, normalize(segs).text)
+    group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
+    try:
+        people = await resolve(group_id, normalize(segs).mentions, bot_name=bot_name, self_id=self_id)
+    except Exception:
+        LOGGER.exception("name lookup failed")
+        people = People(bot_name, self_ids=frozenset({self_id}))
+    return QuotedMessage(r.message_id, r.sender.user_id == self_id, normalize(segs, people.mention).text)
 
 
 def _prompt(event: MessageEvent, quoted: QuotedMessage | None, nonce: str) -> str:
@@ -80,7 +87,7 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
 
     started = time.perf_counter()
     ident = await identity(bot)
-    deps = OpsDeps(bot, api, event.user_id, group_id, _quoted(event, ident.self_id))
+    deps = OpsDeps(bot, api, event.user_id, group_id, await _quoted(event, ident.self_id, settings.persona.name))
     nonce = secrets.token_hex(3)
     group = snap.groups.get(group_id) if group_id is not None else None
     outcome: Outcome = "failed"

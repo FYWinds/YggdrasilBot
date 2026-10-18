@@ -23,7 +23,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import GlossaryCandidate, GlossaryTerm, Message
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
-from yggdrasil.memory.common import format_line, pipeline_state
+from yggdrasil.memory.common import format_line, people_for, pipeline_state
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors, glossary_text, try_embed
 from yggdrasil.prompts import render
@@ -332,15 +332,17 @@ async def define_group(group_id: int) -> dict[str, int]:
                 .limit(MAX_EXISTING_IN_PROMPT)
             )
         ).all()
+    bot_name = snapshot().settings(group_id).persona.name
+    people = await people_for(group_id, examples.values(), bot_name=bot_name)
     prompt = render(
         TASK,
-        bot_name=snapshot().settings(group_id).persona.name,
+        bot_name=bot_name,
         candidates=[
             {
                 "term": llm.fence(c.term),
                 "count": c.count,
                 "examples": [
-                    llm.fence(format_line(examples[i])[:300])
+                    llm.fence(format_line(examples[i], people)[:300])
                     for i in c.example_msg_ids[:PROMPT_EXAMPLES]
                     if i in examples
                 ],

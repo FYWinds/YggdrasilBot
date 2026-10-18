@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yggdrasil.db.models import Message, MessageChunk
 from yggdrasil.db.session import get_session
-from yggdrasil.memory.common import format_line, pipeline_state
+from yggdrasil.memory.common import format_line, people_for, pipeline_state
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors
+from yggdrasil.people import People
 from yggdrasil.runtime import snapshot
 
 PIPELINE = "chunk"
@@ -53,12 +54,13 @@ class ChunkPlan:
     watermark: int | None = None
 
 
-def render(messages: Sequence[MessageView]) -> list[str]:
-    return [format_line(m) for m in messages]
+def render(messages: Sequence[MessageView], people: People) -> list[str]:
+    return [format_line(m, people) for m in messages]
 
 
 def split_chunks(
     messages: Sequence[MessageView],
+    people: People,
     *,
     gap: timedelta,
     max_messages: int,
@@ -83,7 +85,7 @@ def split_chunks(
     for i, m in enumerate(messages):
         if not m.text.strip():
             continue
-        line = format_line(m)[:max_chars]
+        line = format_line(m, people)[:max_chars]
         if current and (
             m.sent_at - current[-1][1].sent_at > gap
             or len(current) >= max_messages
@@ -142,7 +144,8 @@ async def _rechunk_recalled(session: AsyncSession, group_id: int, checked_at: da
         if not views:
             await session.execute(delete(MessageChunk).where(MessageChunk.id == c.id))
             continue
-        c.text = "\n".join(render(views))
+        people = await people_for(group_id, views, bot_name=snapshot().settings(group_id).persona.name)
+        c.text = "\n".join(render(views, people))
         c.first_msg_id, c.last_msg_id, c.msg_count = views[0].id, views[-1].id, len(views)
         c.start_at, c.end_at = min(v.sent_at for v in views), max(v.sent_at for v in views)
     return len(chunks)
@@ -167,8 +170,10 @@ async def chunk_group(group_id: int, *, now: datetime | None = None) -> dict[str
                 .limit(BATCH)
             )
             views = [MessageView(*r) for r in rows]
+            people = await people_for(group_id, views, bot_name=snapshot().settings(group_id).persona.name)
             plan = split_chunks(
                 views,
+                people,
                 gap=gap,
                 max_messages=mem.chunk_max_messages,
                 max_chars=mem.chunk_max_chars,
