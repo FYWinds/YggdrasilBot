@@ -3239,6 +3239,91 @@
           }
         }
       }
+    },
+    "/sandbox/workspaces": {
+      "get": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "List Workspaces",
+        "operationId": "list_workspaces",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WorkspaceOut_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandbox/workspaces/{group_id}": {
+      "delete": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "Destroy Workspace",
+        "description": "Destroy one group's workspace now, even while an invocation is using it.",
+        "operationId": "destroy_workspace",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandbox/workspaces/destroy-all": {
+      "post": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "Destroy All Workspaces",
+        "operationId": "destroy_all_workspaces",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestroyedOut"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3441,6 +3526,19 @@
           "action"
         ],
         "title": "DecideIn"
+      },
+      "DestroyedOut": {
+        "properties": {
+          "destroyed": {
+            "type": "integer",
+            "title": "Destroyed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destroyed"
+        ],
+        "title": "DestroyedOut"
       },
       "DigestOut": {
         "properties": {
@@ -4325,6 +4423,35 @@
         ],
         "title": "InvocationSummary"
       },
+      "LinkOut": {
+        "properties": {
+          "port": {
+            "type": "integer",
+            "title": "Port"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "port",
+          "url",
+          "command",
+          "created_at"
+        ],
+        "title": "LinkOut"
+      },
       "LockIn": {
         "properties": {
           "locked": {
@@ -4646,6 +4773,27 @@
           "total"
         ],
         "title": "Page[TopicOut]"
+      },
+      "Page_WorkspaceOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "Page[WorkspaceOut]"
       },
       "PipelineOut": {
         "properties": {
@@ -6352,6 +6500,77 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkspaceOut": {
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id"
+          },
+          "claim": {
+            "type": "string",
+            "title": "Claim"
+          },
+          "sandbox": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox"
+          },
+          "pod_ip": {
+            "type": "string",
+            "title": "Pod Ip"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_used": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Used"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "active": {
+            "type": "integer",
+            "title": "Active"
+          },
+          "recreate": {
+            "type": "boolean",
+            "title": "Recreate"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/LinkOut"
+            },
+            "type": "array",
+            "title": "Links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_id",
+          "claim",
+          "sandbox",
+          "pod_ip",
+          "created_at",
+          "last_used",
+          "expires_at",
+          "active",
+          "recreate",
+          "links"
+        ],
+        "title": "WorkspaceOut"
       }
     }
   }

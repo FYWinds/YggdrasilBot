@@ -1,10 +1,13 @@
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.settings import Settings
+
+if TYPE_CHECKING:
+    from yggdrasil.sandbox import Session
 
 _PREFIX = {"image": "img", "file": "file", "forward": "fwd", "card": "card", "url": "url"}
 
@@ -63,3 +66,4 @@ class Deps:
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams
     on_slow_tool: Callable[[], Awaitable[None]] | None = None  # called before each tools.slow_tools call
+    sandbox: "Session | None" = None  # this run's workspace session (chat with the sandbox suite only)

@@ -1,7 +1,8 @@
 """Agent tools; failures are returned as text so the model can adapt.
 
 Everything in ``ALL_TOOLS`` is read-only. Action tools (``action_tools``) change things and are only
-handed to a run when the code has already decided the speaker may do that action.
+handed to a run when the code has already decided the speaker may do that action. The sandbox workspace
+suite lives in ``agent/sandbox_tools.py``.
 """
 
 import asyncio
@@ -311,7 +312,7 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     return f"{who}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
 
 
-_MAX_IMAGES = 4
+MAX_IMAGES = 4  # images per reply, shared by render_* and send_image
 
 
 async def _attach_render(ctx: RunContext[Deps], kind: str, source: str, caption: str) -> str:
@@ -319,8 +320,8 @@ async def _attach_render(ctx: RunContext[Deps], kind: str, source: str, caption:
 
     if not APP_CONFIG.browser_ws_url:
         raise ToolError("没有可用的渲染浏览器")
-    if len(ctx.deps.images) >= _MAX_IMAGES:
-        raise ToolError(f"这次回复已经有 {_MAX_IMAGES} 张图了")
+    if len(ctx.deps.images) >= MAX_IMAGES:
+        raise ToolError(f"这次回复已经有 {MAX_IMAGES} 张图了")
     fn = {"mermaid": renderer.render_mermaid, "markdown": renderer.render_markdown, "html": renderer.render_html}[kind]
     png = await fn(source, browser_ws_url=APP_CONFIG.browser_ws_url)
     ctx.deps.images.append((png, caption.strip()))
@@ -366,11 +367,18 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
 
 
 # chat gets recent chat injected into the prompt; tldr summarizes the target itself, so it fetches chat
-# context only on demand and gets no profiles (they slant the summary toward the asker).
+# context only on demand and gets no profiles (they slant the summary toward the asker). The sandbox
+# suite (pseudo tool name SANDBOX, see agent/sandbox_tools.py) is chat only.
+SANDBOX = "sandbox"
 _HANDLER_EXCLUDED: dict[str, frozenset[str]] = {
     "chat": frozenset({"recent_chat"}),
-    "tldr": frozenset({"get_profile"}),
+    "tldr": frozenset({"get_profile", SANDBOX}),
 }
+
+
+def sandbox_requested(enabled: list[str], handler: str) -> bool:
+    """Whether this handler's settings ask for the sandbox suite (deployment gates are checked separately)."""
+    return SANDBOX in enabled and SANDBOX not in _HANDLER_EXCLUDED.get(handler, frozenset())
 
 
 def tool_names(enabled: list[str], handler: str) -> list[str]:

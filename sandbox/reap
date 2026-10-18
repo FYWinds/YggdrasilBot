@@ -1,0 +1,79 @@
+#!/bin/sh
+# reap [--keep-pgid N ...]
+# Kill every process in the sandbox except PID 1 (tini), sandboxd, this script and its ancestor chain,
+# and processes whose process-group id is listed via --keep-pgid. SIGTERM first, SIGKILL whatever is
+# still alive after 2s. Prints the number of processes signalled. Uses only /proc (works under gVisor).
+set -u
+
+keep=" "
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --keep-pgid) [ $# -ge 2 ] || { echo "reap: --keep-pgid needs a value" >&2; exit 2; }; keep="$keep$2 "; shift 2 ;;
+        --keep-pgid=*) keep="$keep${1#*=} "; shift ;;
+        *) echo "usage: reap [--keep-pgid N ...]" >&2; exit 2 ;;
+    esac
+done
+
+# Prints "<state> <ppid> <pgid> <comm>" for a pid, or nothing if it is gone. comm may contain spaces and
+# parentheses, so split on the last ")".
+stat_of() {
+    s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    [ -n "$s" ] || return 1
+    comm=${s#*\(}
+    comm=${comm%\)*}
+    rest=${s##*\) }
+    set -- $rest
+    echo "$1 $2 $3 $comm"
+}
+
+alive() {
+    st=$(stat_of "$1") || return 1
+    case "$st" in Z* | X*) return 1 ;; esac
+    return 0
+}
+
+# Ancestor chain of this script (includes $$ itself).
+protected=" 1 "
+p=$$
+while [ "$p" -gt 1 ] 2>/dev/null; do
+    protected="$protected$p "
+    st=$(stat_of "$p") || break
+    set -- $st
+    p=$2
+done
+
+targets=""
+for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    case "$protected" in *" $pid "*) continue ;; esac
+    st=$(stat_of "$pid") || continue
+    set -- $st
+    state=$1 pgid=$3
+    shift 3
+    name=$*
+    case "$state" in Z* | X*) continue ;; esac
+    [ "$name" = sandboxd ] && continue
+    [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = /usr/local/bin/sandboxd ] && continue
+    case "$keep" in *" $pgid "*) continue ;; esac
+    targets="$targets $pid"
+done
+
+n=0
+for pid in $targets; do
+    kill -TERM "$pid" 2>/dev/null && n=$((n + 1))
+done
+
+if [ -n "$targets" ]; then
+    i=0
+    while [ $i -lt 20 ]; do
+        left=""
+        for pid in $targets; do alive "$pid" && left="$left $pid"; done
+        targets=$left
+        [ -z "$targets" ] && break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    for pid in $targets; do kill -KILL "$pid" 2>/dev/null; done
+fi
+
+echo "$n"

@@ -80,8 +80,14 @@ class AppConfig(BaseSettings):
     web_dist: str = Field(default="web/dist", alias="YGG_WEB_DIST")
     # Extra headers for outbound LLM calls; Cloudflare in front of new-api rejects default SDK user agents.
     llm_user_agent: str = Field(default="yggdrasil-bot/0.1", alias="YGG_LLM_USER_AGENT")
-    # Dashboard links invocations to their Tempo trace in this Grafana.
-    grafana_url: str = Field(default="https://grafana.example.com", alias="YGG_GRAFANA_URL")
+    # Dashboard links invocations to their Tempo trace in this Grafana (no links when unset).
+    grafana_url: str | None = Field(default=None, alias="YGG_GRAFANA_URL")
+    # Sandbox workspaces (yggdrasil.sandbox); disabled while the shared sandboxd token is unset.
+    sandbox_token: str | None = Field(default=None, alias="YGG_SANDBOX_TOKEN")
+    sandbox_namespace: str = Field(default="yggdrasil", alias="YGG_SANDBOX_NAMESPACE")
+    sandbox_warmpool: str = Field(default="yggdrasil-sandbox", alias="YGG_SANDBOX_WARMPOOL")
+    # Public links to services served from a workspace are https://<random id>.<this domain>; unset disables them.
+    sandbox_link_domain: str | None = Field(default=None, alias="YGG_SANDBOX_LINK_DOMAIN")
 
 
 DB_CONFIG = DbConfig()

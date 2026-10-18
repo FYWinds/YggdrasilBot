@@ -18,6 +18,7 @@ from yggdrasil.admin import (
     providers,
     reviews,
     routes,
+    sandbox_api,
     search_providers,
     settings_api,
     stickers,
@@ -42,6 +43,7 @@ _ROUTERS = (
     memory.router,
     invocations.router,
     stickers.router,
+    sandbox_api.router,
 )
 # Paths the SPA fallback must never shadow.
 _RESERVED = ("api", "onebot")

@@ -1,0 +1,5 @@
+# System-wide matplotlib defaults for the sandbox (selected via MATPLOTLIBRC).
+backend: Agg
+font.family: sans-serif
+font.sans-serif: Noto Sans CJK SC, Noto Sans CJK JP, DejaVu Sans, Noto Color Emoji
+axes.unicode_minus: False

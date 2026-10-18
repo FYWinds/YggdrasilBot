@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillGroup, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteSearchProvider, deleteTrigger, getGlobalSettings, getGroupSettings, getInvocation, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickers, listTopics, listTriggers, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, testProvider, testSearchProvider, testTrigger, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
+import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillGroup, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteSearchProvider, deleteTrigger, destroyAllWorkspaces, destroyWorkspace, getGlobalSettings, getGroupSettings, getInvocation, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickers, listTopics, listTriggers, listWorkspaces, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, testProvider, testSearchProvider, testTrigger, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, DestroyAllWorkspacesData, DestroyAllWorkspacesResponse, DestroyWorkspaceData, DestroyWorkspaceError, DestroyWorkspaceResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, ListWorkspacesData, ListWorkspacesResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -1460,6 +1460,60 @@ export const setStickerEnabledMutation = (options?: Partial<Options<SetStickerEn
     const mutationOptions: UseMutationOptions<SetStickerEnabledResponse, SetStickerEnabledError, Options<SetStickerEnabledData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await setStickerEnabled({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const listWorkspacesQueryKey = (options?: Options<ListWorkspacesData>) => createQueryKey('listWorkspaces', options);
+
+/**
+ * List Workspaces
+ */
+export const listWorkspacesOptions = (options?: Options<ListWorkspacesData>) => queryOptions<ListWorkspacesResponse, DefaultError, ListWorkspacesResponse, ReturnType<typeof listWorkspacesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listWorkspaces({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listWorkspacesQueryKey(options)
+});
+
+/**
+ * Destroy Workspace
+ *
+ * Destroy one group's workspace now, even while an invocation is using it.
+ */
+export const destroyWorkspaceMutation = (options?: Partial<Options<DestroyWorkspaceData>>): UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> => {
+    const mutationOptions: UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await destroyWorkspace({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Destroy All Workspaces
+ */
+export const destroyAllWorkspacesMutation = (options?: Partial<Options<DestroyAllWorkspacesData>>): UseMutationOptions<DestroyAllWorkspacesResponse, DefaultError, Options<DestroyAllWorkspacesData>> => {
+    const mutationOptions: UseMutationOptions<DestroyAllWorkspacesResponse, DefaultError, Options<DestroyAllWorkspacesData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await destroyAllWorkspaces({
                 ...options,
                 ...fnOptions,
                 throwOnError: true

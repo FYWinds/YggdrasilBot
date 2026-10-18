@@ -4,6 +4,7 @@ import {
   BotIcon,
   BrainIcon,
   CalendarClockIcon,
+  ContainerIcon,
   GaugeIcon,
   HistoryIcon,
   MessageSquareTextIcon,
@@ -33,6 +34,7 @@ export const NAV = [
   { to: "/events", label: "事件", icon: CalendarClockIcon },
   { to: "/memory", label: "记忆", icon: BrainIcon },
   { to: "/invocations", label: "调用记录", icon: HistoryIcon },
+  { to: "/sandbox", label: "工作区", icon: ContainerIcon },
   { to: "/stickers", label: "表情包", icon: SmileIcon },
   { to: "/admins", label: "管理员", icon: BotIcon },
 ] as const;

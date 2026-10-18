@@ -11,6 +11,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/fywinds/yggdrasil-bot
+  SANDBOX_IMAGE: ghcr.io/fywinds/yggdrasil-sandbox
 
 jobs:
   check:
@@ -34,6 +35,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --locked
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # Minimal sandboxd (target `sandboxd` of sandbox/Dockerfile) for the sandbox conformance tests.
+      - name: Build sandboxd test image
+        uses: docker/build-push-action@v6
+        with:
+          context: sandbox
+          file: sandbox/Dockerfile
+          target: sandboxd
+          load: true
+          tags: ygg-sandboxd-test:ci
+          cache-from: type=gha,scope=sandboxd
+          cache-to: type=gha,mode=max,scope=sandboxd
+      - name: Start sandboxd
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+          docker run -d --name ygg-sandboxd-test -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 \
+            ygg-sandboxd-test:ci --root-dir=/workspace "--auth-token-sha256=$digest"
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/v1/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/v1/health
+          {
+            echo "YGG_TEST_SANDBOXD_REST=http://127.0.0.1:18080"
+            echo "YGG_TEST_SANDBOXD_GRPC=127.0.0.1:19090"
+            echo "YGG_TEST_SANDBOXD_TOKEN=$token"
+          } >> "$GITHUB_ENV"
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run basedpyright
@@ -83,5 +114,27 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # vX.Y.Z on tags, otherwise the branch/sha tag; lands in telemetry service.version.
           build-args: YGG_VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=bot
+          cache-to: type=gha,mode=max,scope=bot
+
+      # Sandbox workspace image; shares the bot's tags so a release pins both.
+      - name: Sandbox metadata
+        id: sandbox-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SANDBOX_IMAGE }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=sha,prefix=sha-
+            type=raw,value=main,enable={{is_default_branch}}
+
+      - name: Build and push sandbox
+        uses: docker/build-push-action@v6
+        with:
+          context: sandbox
+          file: sandbox/Dockerfile
+          push: true
+          tags: ${{ steps.sandbox-meta.outputs.tags }}
+          labels: ${{ steps.sandbox-meta.outputs.labels }}
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,mode=max,scope=sandbox

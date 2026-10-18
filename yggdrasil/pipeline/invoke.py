@@ -10,11 +10,13 @@ from uuid import UUID
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic_ai import Agent, BinaryContent
+from pydantic_ai import Agent, BinaryContent, Tool
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 from sqlalchemy import update
 
+from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import load_images, media_type
@@ -37,7 +39,8 @@ from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
-from yggdrasil.settings import Settings
+from yggdrasil.sandbox import Session, manager
+from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.triggers.index import Resolved
 
 Handler = Literal["chat", "tldr"]
@@ -97,6 +100,7 @@ class Invocator:
         self._slow_marked = False
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
+        self.sandbox: Session | None = None  # set when this run gets the workspace suite
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -125,6 +129,10 @@ class Invocator:
                 INVOCATION_DURATION.record(self.meta.total_s, {"handler": self.handler})
                 if not self._finished:
                     await self._finish(status, error)
+                if self.sandbox is not None:
+                    # Kills leftover processes, renews the claim, releases the workspace; never raises.
+                    with contextlib.suppress(Exception):
+                        await self.sandbox.close()
 
     async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
         """Attach the images of the quoted and trigger messages up front when the route can see them.
@@ -210,6 +218,13 @@ class Invocator:
     async def _run(self) -> str:
         ident = await identity(self.bot)
         persona = self.settings.persona.name
+        sandbox_on = sandbox_tools.suite_enabled(
+            self.settings,
+            self.handler,
+            self.group_id,
+            global_settings=snapshot().settings(),
+            configured=manager().configured,
+        )
         ctx = await build_context(
             self.event,
             self.resolved,
@@ -217,6 +232,7 @@ class Invocator:
             self_id=ident.self_id,
             bot_name=persona,
             request_text=self.request_text,
+            workspace=sandbox_on,
         )
         await self._start_row(ctx)
         try:
@@ -249,6 +265,18 @@ class Invocator:
         actions = action_tools(deps)
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, self.handler)
+        prompt_tools = list(tool_list)
+        extra_tools: list[Tool[Deps]] = []
+        capabilities: list[AbstractCapability[Deps]] = []
+        if sandbox_on and self.group_id is not None:
+            self.sandbox = deps.sandbox = manager().session(
+                self.group_id,
+                invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
+                cfg=tools_cfg,
+            )
+            extra_tools = sandbox_tools.bot_tools()
+            prompt_tools += [*sandbox_tools.HARNESS_TOOL_NAMES, *(t.name for t in extra_tools)]
+            capabilities = sandbox_tools.capabilities(tools_cfg)
         group_name = ""
         if self.group_id is not None:
             info = snapshot().groups.get(self.group_id)
@@ -262,13 +290,20 @@ class Invocator:
                 persona=self.settings.persona,
                 group_name=group_name or "本群",
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
-                tools=tool_list,
+                tools=prompt_tools,
+                sandbox=tools_cfg if self.sandbox is not None else None,
                 actions=[t.name for t in actions],
                 recall_denied=replied_bot_msg is not None and recall_target is None,
                 style=render("style_rules"),
-                data_rules=render("data_rules", nonce=ctx.nonce, me=self_label(self.settings.persona.name)),
+                data_rules=render(
+                    "data_rules",
+                    nonce=ctx.nonce,
+                    me=self_label(self.settings.persona.name),
+                    sandbox=self.sandbox is not None,
+                ),
             ),
-            tools=tools_for(tool_list) + actions,
+            tools=tools_for(tool_list) + actions + extra_tools,
+            capabilities=capabilities,
             name=self.handler,
             retries=2,
         )
@@ -281,11 +316,10 @@ class Invocator:
                 prompt,
                 deps=deps,
                 model_settings=resolved_model.settings,
-                usage_limits=UsageLimits(
-                    request_limit=tools_cfg.request_limit, tool_calls_limit=tools_cfg.tool_calls_limit
-                ),
+                usage_limits=self._usage_limits(tools_cfg),
                 usage=run_usage,
                 event_stream_handler=drain_events,
+                workspace=self.sandbox.backend if self.sandbox is not None else None,
             )
         )
         RUN_STATS.reset(stats_token)
@@ -399,6 +433,12 @@ class Invocator:
         if not self._slow_marked:
             self._slow_marked = True
             await self._status(self.settings.interaction.slow_tool_emoji)
+
+    def _usage_limits(self, cfg: ToolSettings) -> UsageLimits:
+        # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.
+        if self.sandbox is not None:
+            return UsageLimits(request_limit=cfg.sandbox_request_limit, tool_calls_limit=cfg.sandbox_tool_calls_limit)
+        return UsageLimits(request_limit=cfg.request_limit, tool_calls_limit=cfg.tool_calls_limit)
 
     def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
         """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""

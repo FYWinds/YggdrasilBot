@@ -19,7 +19,8 @@ _gauges: dict[str, list[tuple[float, dict[str, str]]]] = {}
 
 
 async def _gauge_loop() -> None:
-    """Refresh DB-derived gauges (memory lag, partitions runway, pending reviews) once a minute."""
+    """Refresh DB-derived gauges (memory lag, partitions runway, pending reviews) and sandbox workspace
+    gauges once a minute; also drops sandbox mappings whose claim is gone."""
     from yggdrasil.db.partitions import months_of_runway
     from yggdrasil.db.session import engine
     from yggdrasil.moderation.review import refresh_pending
@@ -50,7 +51,25 @@ async def _gauge_loop() -> None:
             raise
         except Exception:
             LOGGER.exception("gauge refresh failed")
+        await _sandbox_gauges()
         await asyncio.sleep(60)
+
+
+async def _sandbox_gauges() -> None:
+    from yggdrasil.sandbox import manager
+
+    mgr = manager()
+    if not mgr.configured:
+        return
+    try:
+        await mgr.reconcile()
+        infos = await mgr.list()
+        _gauges["sandbox_workspaces"] = [(float(len(infos)), {})]
+        _gauges["sandbox_links"] = [(float(sum(len(i.links) for i in infos)), {})]
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("sandbox gauge refresh failed")
 
 
 def _register_gauges() -> None:
@@ -70,6 +89,8 @@ def _register_gauges() -> None:
     observe_gauge("ygg.review.pending", "{review}", lambda: _gauges.get("review", []))
     observe_gauge("ygg.partitions.runway", "mo", lambda: _gauges.get("runway", []))
     observe_gauge("ygg.memory.lag", "{message}", lambda: _gauges.get("lag", []))
+    observe_gauge("ygg.sandbox.workspaces", "{workspace}", lambda: _gauges.get("sandbox_workspaces", []))
+    observe_gauge("ygg.sandbox.links", "{link}", lambda: _gauges.get("sandbox_links", []))
 
 
 def _health_routes(app: FastAPI) -> None:

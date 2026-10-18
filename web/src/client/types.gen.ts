@@ -130,6 +130,16 @@ export type DecideIn = {
 };
 
 /**
+ * DestroyedOut
+ */
+export type DestroyedOut = {
+    /**
+     * Destroyed
+     */
+    destroyed: number;
+};
+
+/**
  * DigestOut
  */
 export type DigestOut = {
@@ -652,6 +662,28 @@ export type InvocationSummary = {
 };
 
 /**
+ * LinkOut
+ */
+export type LinkOut = {
+    /**
+     * Port
+     */
+    port: number;
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Command
+     */
+    command: string;
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+/**
  * LockIn
  */
 export type LockIn = {
@@ -867,6 +899,20 @@ export type PageTopicOut = {
      * Items
      */
     items: Array<TopicOut>;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+/**
+ * Page[WorkspaceOut]
+ */
+export type PageWorkspaceOut = {
+    /**
+     * Items
+     */
+    items: Array<WorkspaceOut>;
     /**
      * Total
      */
@@ -1962,6 +2008,52 @@ export type ValidationError = {
     ctx?: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * WorkspaceOut
+ */
+export type WorkspaceOut = {
+    /**
+     * Group Id
+     */
+    group_id: number;
+    /**
+     * Claim
+     */
+    claim: string;
+    /**
+     * Sandbox
+     */
+    sandbox: string | null;
+    /**
+     * Pod Ip
+     */
+    pod_ip: string;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Last Used
+     */
+    last_used: string;
+    /**
+     * Expires At
+     */
+    expires_at: string;
+    /**
+     * Active
+     */
+    active: number;
+    /**
+     * Recreate
+     */
+    recreate: boolean;
+    /**
+     * Links
+     */
+    links: Array<LinkOut>;
 };
 
 export type GetMeData = {
@@ -3884,3 +3976,65 @@ export type SetStickerEnabledResponses = {
 };
 
 export type SetStickerEnabledResponse = SetStickerEnabledResponses[keyof SetStickerEnabledResponses];
+
+export type ListWorkspacesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sandbox/workspaces';
+};
+
+export type ListWorkspacesResponses = {
+    /**
+     * Successful Response
+     */
+    200: PageWorkspaceOut;
+};
+
+export type ListWorkspacesResponse = ListWorkspacesResponses[keyof ListWorkspacesResponses];
+
+export type DestroyWorkspaceData = {
+    body?: never;
+    path: {
+        /**
+         * Group Id
+         */
+        group_id: number;
+    };
+    query?: never;
+    url: '/sandbox/workspaces/{group_id}';
+};
+
+export type DestroyWorkspaceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DestroyWorkspaceError = DestroyWorkspaceErrors[keyof DestroyWorkspaceErrors];
+
+export type DestroyWorkspaceResponses = {
+    /**
+     * Successful Response
+     */
+    200: Ok;
+};
+
+export type DestroyWorkspaceResponse = DestroyWorkspaceResponses[keyof DestroyWorkspaceResponses];
+
+export type DestroyAllWorkspacesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sandbox/workspaces/destroy-all';
+};
+
+export type DestroyAllWorkspacesResponses = {
+    /**
+     * Successful Response
+     */
+    200: DestroyedOut;
+};
+
+export type DestroyAllWorkspacesResponse = DestroyAllWorkspacesResponses[keyof DestroyAllWorkspacesResponses];

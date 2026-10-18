@@ -20,7 +20,7 @@ router = APIRouter(prefix="/invocations", tags=["invocations"])
 
 def trace_url(trace_id: str | None) -> str | None:
     """Grafana Explore link opening the trace in the Tempo datasource (uid ``tempo``)."""
-    if not trace_id:
+    if not trace_id or not APP_CONFIG.grafana_url:
         return None
     left = {
         "datasource": "tempo",

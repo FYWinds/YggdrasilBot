@@ -5,9 +5,9 @@ a group's ``groups.settings`` is deep-merged over it. The dashboard renders form
 from ``Settings.model_json_schema()``, so every field here is editable.
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PersonaSettings(BaseModel):
@@ -124,7 +124,9 @@ class ToolSettings(BaseModel):
             "render_mermaid",
             "render_markdown",
             "render_html",
-        ]
+            "sandbox",
+        ],
+        description="启用的工具；sandbox 表示整套工作区工具（命令行、文件、send_image、serve 等，只在群聊 chat 生效）",
     )
     slow_tools: list[str] = Field(
         default_factory=lambda: [
@@ -136,6 +138,11 @@ class ToolSettings(BaseModel):
             "render_mermaid",
             "render_markdown",
             "render_html",
+            "run_command",
+            "sandbox_put",
+            "send_image",
+            "serve",
+            "reset_workspace",
         ],
         description="耗时工具：第一次调用时贴 interaction.slow_tool_emoji",
     )
@@ -147,6 +154,39 @@ class ToolSettings(BaseModel):
     history_top_k: int = 12
     request_limit: int = 12
     tool_calls_limit: int = 16
+    sandbox_enabled: bool = Field(
+        default=True, description="工作区总开关（只看全局设置，群设置里改它无效）；关掉后所有群都没有工作区工具"
+    )
+    sandbox_command_timeout_s: int = Field(default=60, ge=1, le=300, description="工作区单条命令的默认超时（秒）")
+    sandbox_command_max_s: int = Field(
+        default=300, ge=1, le=1800, description="工作区单条命令最长允许的超时（秒），模型指定更长的会被截到这里"
+    )
+    sandbox_invocation_s: int = Field(
+        default=600, ge=30, le=3600, description="一次请求里工作区命令累计最多运行多久（秒）"
+    )
+    sandbox_max_commands: int = Field(default=40, ge=1, le=200, description="一次请求里最多执行多少条工作区命令")
+    sandbox_idle_min: int = Field(
+        default=30, ge=5, le=1440, description="工作区闲置多久（分钟）后回收，回收后文件全部丢失"
+    )
+    sandbox_max_age_min: int = Field(
+        default=240, ge=10, le=10080, description="工作区最长存活时间（分钟），到期后下次使用会重建"
+    )
+    sandbox_max_workspaces: int = Field(default=4, ge=1, le=50, description="全局同时存在的工作区上限")
+    sandbox_max_links: int = Field(default=3, ge=0, le=20, description="每个工作区同时公开的链接（serve）上限")
+    sandbox_request_limit: int = Field(
+        default=40, ge=1, le=200, description="有工作区工具的请求的模型调用次数上限（取代 request_limit）"
+    )
+    sandbox_tool_calls_limit: int = Field(
+        default=60, ge=1, le=400, description="有工作区工具的请求的工具调用次数上限（取代 tool_calls_limit）"
+    )
+
+    @model_validator(mode="after")
+    def _sandbox_timeouts(self) -> Self:
+        if self.sandbox_idle_min * 60 <= self.sandbox_invocation_s:
+            raise ValueError("sandbox_idle_min 换算成秒必须大于 sandbox_invocation_s，否则工作区可能在请求进行中被回收")
+        if self.sandbox_command_timeout_s > self.sandbox_command_max_s:
+            raise ValueError("sandbox_command_timeout_s 不能大于 sandbox_command_max_s")
+        return self
 
 
 class OpsSettings(BaseModel):
