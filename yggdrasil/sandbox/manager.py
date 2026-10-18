@@ -58,12 +58,17 @@ _WORKSPACE_LABEL = "sandbox.users.io/workspace"
 
 READY_TIMEOUT = 60.0
 _LOCK_TTL = 150
-_WAIT_FOR_CREATOR = 120.0
+"""Seconds the per-group Redis lock lives; covers the longest holder (creating a workspace, ~READY_TIMEOUT)."""
+_ATTACH_LOCK_WAIT = 120.0
+"""How long attaching waits for the group lock (another invocation creating or releasing the workspace)."""
+_RELEASE_LOCK_WAIT = 20.0
+"""How long the last release waits for the lock before it gives up reaping (it still decrements)."""
+_LOCK_POLL = 0.2
 _SERVE_WAIT_STEPS = 60  # x 0.5s
 _REAP = "/opt/ygg/reap"
 _SERVE_DIR = f"{DEFAULT_ROOT}/.ygg/serve"
 
-_GONE_NOTICE = "[工作区] 之前的工作区已过期回收，里面的文件都没了；这是新建的空工作区。"
+_GONE_NOTICE = "[工作区] 之前的工作区已过期或出故障被回收，里面的文件都没了；这是新建的空工作区。"
 _AGED_NOTICE = "[工作区] 之前的工作区到了最长存活时间，已回收，里面的文件都没了；这是新建的空工作区。"
 _RESET_NOTICE = "[工作区] 工作区已按要求重置；这是新建的空工作区。"
 _RESTARTED_NOTICE = "[工作区] 工作区的沙箱重启过，之前的文件都没了。"
@@ -78,6 +83,14 @@ _INCR_IF_CLAIM = (
     "return redis.call('HINCRBY', KEYS[1], 'active', ARGV[2]) end return -1"
 )
 _UNLOCK = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
+# Destroy the mapping only if it still names this claim and at most ARGV[2] invocations use it: 1 = deleted,
+# 0 = busy (and `recreate` marked when ARGV[3] is 1), -1 = the mapping names another claim or is gone.
+_DESTROY_IF_IDLE = (
+    "if redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return -1 end "
+    "if tonumber(redis.call('HGET', KEYS[1], 'active') or '0') <= tonumber(ARGV[2]) then "
+    "redis.call('DEL', KEYS[1]) return 1 end "
+    "if ARGV[3] == '1' then redis.call('HSET', KEYS[1], 'recreate', '1') end return 0"
+)
 
 _TREE_SKIP = (
     ".local",
@@ -106,6 +119,14 @@ _TREE_SCRIPT = (
     + " -o ".join(f"-name {shlex.quote(n)}" for n in _TREE_SKIP)
     + " \\) -prune -o -printf '%y\\t%s\\t%T@\\t%P\\n' | head -n 2000"
 )
+
+
+class _ClaimLost(SandboxToolError):
+    """The claim vanished or its pod failed for good while waiting for it to become ready."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def _rfc3339(ts: float) -> str:
@@ -249,12 +270,13 @@ class WorkspaceManager:
         m = await self._load(group_id)
         if m is None:
             return False
-        if m.active > 0 and not force:
-            await self._r().hset(ws_key(group_id), "recreate", "1")  # pyright: ignore[reportGeneralTypeIssues]
-            self._audit(group_id, "destroy_deferred", claim=m.claim, reason=reason, active=m.active)
-            return False
-        await self._destroy_mapping(m, reason=reason)
-        return True
+        if force:
+            await self._destroy_mapping(m, reason=reason)
+            return True
+        if await self._destroy_if_idle(m, reason=reason, mark_recreate=True) == 1:
+            return True
+        self._audit(group_id, "destroy_deferred", claim=m.claim, reason=reason)
+        return False
 
     async def destroy_all(self, *, reason: str) -> int:
         mappings = await self._all_mappings()
@@ -322,15 +344,22 @@ class WorkspaceManager:
         self._audit(m.group_id, "drop_mapping", claim=m.claim, reason=reason)
 
     @asynccontextmanager
-    async def _creator_lock(self, group_id: int) -> AsyncIterator[bool]:
+    async def _group_lock(self, group_id: int, *, wait: float) -> AsyncIterator[bool]:
+        """Hold ``ygg:sandbox:lock:<gid>`` (shared by all bot replicas), polling up to ``wait`` seconds; yields
+        whether it was acquired. Attaching and the last release run under it, so a release never reaps or
+        recreates a workspace another invocation is just attaching to."""
         token = link_id()
-        got = bool(await self._r().set(lock_key(group_id), token, nx=True, ex=_LOCK_TTL))
+        deadline = time.monotonic() + wait
+        while not (got := bool(await self._r().set(lock_key(group_id), token, nx=True, ex=_LOCK_TTL))):
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_LOCK_POLL)
         try:
             yield got
         finally:
             if got:
                 try:
-                    await self._r().eval(_UNLOCK, 1, lock_key(group_id), token)  # pyright: ignore[reportGeneralTypeIssues]
+                    await asyncio.shield(self._r().eval(_UNLOCK, 1, lock_key(group_id), token))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
                 except Exception:
                     LOGGER.exception("releasing sandbox lock for group {} failed", group_id)
 
@@ -346,6 +375,25 @@ class WorkspaceManager:
         finally:
             await self._drop(m, reason=reason)
         self._audit(m.group_id, "destroy", claim=m.claim, reason=reason)
+
+    async def _destroy_if_idle(
+        self, m: Mapping, *, reason: str, max_active: int = 0, mark_recreate: bool = False
+    ) -> int:
+        """Atomically drop the mapping if it still names ``m.claim`` and at most ``max_active`` invocations use
+        it, then delete the claim. Returns 1 (destroyed), 0 (in use; ``recreate`` marked if asked) or -1 (the
+        mapping already names another claim or is gone)."""
+        result = int(
+            cast(
+                int,
+                await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
+                    _DESTROY_IF_IDLE, 1, ws_key(m.group_id), m.claim, str(max_active), "1" if mark_recreate else "0"
+                ),
+            )
+        )
+        if result == 1:
+            self._audit(m.group_id, "destroy", claim=m.claim, reason=reason)
+            await self._kube().delete(self._claim_path(m.claim))
+        return result
 
     async def _renew(self, m: Mapping, cfg: ToolSettings) -> bool:
         """Push the claim's shutdownTime out; False when the claim is gone."""
@@ -366,23 +414,25 @@ class WorkspaceManager:
         await self._save(m, "expires_at", "last_used")
         return True
 
+    async def _healthy(self, http: httpx.AsyncClient, ip: str) -> bool:
+        try:
+            return (await http.get(f"{self._endpoint(ip).rest_url}/v1/health")).status_code == 200
+        except httpx.HTTPError:
+            return False
+
     async def _wait_ready(self, name: str, deadline: float) -> tuple[str, str | None]:
-        """Wait until the claim is Ready with a pod IP and sandboxd answers /v1/health; (pod ip, sandbox name)."""
+        """Wait until the claim is Ready with a pod IP and sandboxd answers /v1/health; (pod ip, sandbox name).
+        Raises ``_ClaimLost`` when the claim disappears or its pod fails for good."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as http:
             while True:
                 claim = await self._kube().get(self._claim_path(name))
                 if claim is None:
-                    raise SandboxToolError("新建的工作区被回收了，稍后再试。")
+                    raise _ClaimLost("工作区被回收了，稍后再试。", reason="claim gone")
                 ready, ip, sandbox, failure = _claim_ready(claim)
                 if failure:
-                    raise SandboxToolError(f"工作区启动失败（{failure}），稍后再试。")
-                if ready and ip:
-                    try:
-                        health = await http.get(f"{self._endpoint(ip).rest_url}/v1/health")
-                        if health.status_code == 200:
-                            return ip, sandbox
-                    except httpx.HTTPError:
-                        pass
+                    raise _ClaimLost(f"工作区启动失败（{failure}），稍后再试。", reason=f"pod failed ({failure})")
+                if ready and ip and await self._healthy(http, ip):
+                    return ip, sandbox
                 if time.monotonic() > deadline:
                     raise SandboxToolError(f"工作区没能在 {READY_TIMEOUT:.0f} 秒内就绪，稍后再试。")
                 await asyncio.sleep(0.5)
@@ -390,15 +440,17 @@ class WorkspaceManager:
     async def _evict_for(self, group_id: int, cfg: ToolSettings) -> None:
         others = [m for m in await self._all_mappings() if m.group_id != group_id]
         excess = len(others) - cfg.sandbox_max_workspaces + 1
-        if excess <= 0:
-            return
-        idle = sorted((m for m in others if m.active <= 0), key=lambda m: m.last_used)
-        if len(idle) < excess:
+        # `active` in this snapshot may be stale: the destroy re-checks it atomically and skips a workspace an
+        # invocation attached to meanwhile.
+        for m in sorted((m for m in others if m.active <= 0), key=lambda m: m.last_used):
+            if excess <= 0:
+                break
+            if await self._destroy_if_idle(m, reason=f"evicted (LRU) for group {group_id}") == 1:
+                excess -= 1
+        if excess > 0:
             raise SandboxToolError(
                 f"同时存在的工作区已达上限（{cfg.sandbox_max_workspaces} 个），而且都在使用中，稍后再试。"
             )
-        for m in idle[:excess]:
-            await self._destroy_mapping(m, reason=f"evicted (LRU) for group {group_id}")
 
     async def _create(self, group_id: int, cfg: ToolSettings) -> Mapping:
         await self._evict_for(group_id, cfg)
@@ -451,20 +503,32 @@ class WorkspaceManager:
         return m
 
     async def _usable(self, m: Mapping, cfg: ToolSettings) -> tuple[Mapping | None, str | None]:
-        """Check an existing mapping: (mapping to use, None) or (None, notice) after dropping a dead one."""
+        """Check an existing mapping (under the group lock): (mapping to use, notice or None), or (None, notice)
+        after dropping or destroying a workspace that must not be used any more."""
         claim = await self._kube().get(self._claim_path(m.claim))
         if claim is None:
             await self._drop(m, reason="claim gone")
             return None, _GONE_NOTICE
-        if m.active <= 0 and m.recreate:
-            await self._destroy_mapping(m, reason="pending recreate")
+        ready, ip, sandbox, failure = _claim_ready(claim)
+        if failure:
+            # A failed pod (e.g. evicted for filling /workspace) never comes back: replace it now rather than
+            # failing every invocation until the claim expires.
+            await self._destroy_mapping(m, reason=f"pod failed ({failure})")
+            return None, _GONE_NOTICE
+        if m.recreate and await self._destroy_if_idle(m, reason="pending recreate") == 1:
             return None, _RESET_NOTICE
-        if m.active <= 0 and m.created_at + cfg.sandbox_max_age_min * 60 - time.time() < cfg.sandbox_invocation_s:
-            await self._destroy_mapping(m, reason="max age")
+        if m.created_at + cfg.sandbox_max_age_min * 60 - time.time() < cfg.sandbox_invocation_s:
+            # Too close to its hard max age for a whole invocation. If others still use it, only retire the
+            # mapping: their claim's shutdownTime is already capped at the max age, so it expires on its own.
+            if await self._destroy_if_idle(m, reason="max age") != 1:
+                await self._drop(m, reason="max age (still in use, expires on its own)")
             return None, _AGED_NOTICE
-        ready, ip, sandbox, _ = _claim_ready(claim)
         if not ready:
-            ip, sandbox = await self._wait_ready(m.claim, time.monotonic() + READY_TIMEOUT)
+            try:
+                ip, sandbox = await self._wait_ready(m.claim, time.monotonic() + READY_TIMEOUT)
+            except _ClaimLost as e:
+                await self._destroy_mapping(m, reason=e.reason)
+                return None, _GONE_NOTICE
         notice = None
         if ip and ip != m.pod_ip:
             if m.pod_ip:
@@ -475,31 +539,40 @@ class WorkspaceManager:
         return m, notice
 
     async def _provide(self, group_id: int, cfg: ToolSettings) -> tuple[Mapping, str | None]:
-        """The group's workspace, attached or created, with ``active`` already incremented for the caller."""
+        """The group's workspace, attached or created, with ``active`` already incremented for the caller.
+
+        Runs under the group lock, so it never interleaves with another invocation's last release (reap and
+        pending recreate) or with a concurrent create."""
         notice: str | None = None
-        deadline = time.monotonic() + _WAIT_FOR_CREATOR
+        deadline = time.monotonic() + _ATTACH_LOCK_WAIT
         while True:
-            m = await self._load(group_id)
-            if m is not None:
-                usable, why = await self._usable(m, cfg)
-                if usable is not None:
-                    if await self._incr_active(usable, 1) >= 0:
+            async with self._group_lock(group_id, wait=max(0.0, deadline - time.monotonic())) as got:
+                if not got:
+                    raise SandboxToolError("工作区正忙（另一个请求正在创建或收尾），等太久了，稍后再试。")
+                m = await self._load(group_id)
+                if m is not None:
+                    usable, why = await self._usable(m, cfg)
+                    if usable is None:
+                        notice = why
+                    else:
+                        if await self._incr_active(usable, 1) < 0:
+                            continue  # replaced meanwhile (lock expired under a slow holder): look again
                         usable.active += 1
-                        await self._renew(usable, cfg)
-                        return usable, notice
-                    continue
-                notice = why
-            async with self._creator_lock(group_id) as got:
-                if got:
-                    if (await self._load(group_id)) is None:
-                        m = await self._create(group_id, cfg)
-                        await self._incr_active(m, 1)
-                        m.active = 1
-                        return m, notice
-                    continue
-            if time.monotonic() > deadline:
-                raise SandboxToolError("工作区正在被另一个请求创建，等太久了，稍后再试。")
-            await asyncio.sleep(0.5)
+                        try:
+                            alive = await self._renew(usable, cfg)
+                        except BaseException:
+                            await asyncio.shield(self._incr_active(usable, -1))
+                            raise
+                        if alive:
+                            return usable, why or notice
+                        await self._incr_active(usable, -1)
+                        await self._drop(usable, reason="claim gone")
+                        notice = _GONE_NOTICE
+                        continue
+                m = await self._create(group_id, cfg)
+                await self._incr_active(m, 1)
+                m.active = 1
+                return m, notice
 
     # --- describe -------------------------------------------------------------------------------------------
 
@@ -624,6 +697,7 @@ class Session:
         self._cfg = cfg
         self._mapping: Mapping | None = None
         self._counted = False
+        self._renewed_at = 0.0  # monotonic time of this session's last claim renewal
         self.backend = SandboxdWorkspace(
             resolver=self,
             token=mgr.token,
@@ -649,6 +723,7 @@ class Session:
             raise SandboxToolError("工作区暂时不可用（内部错误），稍后再试。") from e
         self._mapping = m
         self._counted = True
+        self._renewed_at = time.monotonic()  # _provide renewed it
         # Recorded only once the workspace is Ready: a claim that never became ready was deleted again, and the
         # next operation must create a fresh one rather than attach to it.
         on_ref(WorkspaceRef(provider=PROVIDER, id=m.claim))
@@ -665,6 +740,19 @@ class Session:
         if ip:
             return self._mgr._endpoint(ip)
         return self._mgr._endpoint(self._mapping.pod_ip) if self._mapping else None
+
+    async def touch(self, ref: WorkspaceRef) -> None:
+        """Renew the claim during a long run (model turns between commands count as idle time to the
+        controller): at most every quarter of the idle timeout, from the freshly loaded mapping so live links
+        keep their longer lifetime."""
+        now = time.monotonic()
+        if not self._counted or now - self._renewed_at < self._cfg.sandbox_idle_min * 60 / 4:
+            return
+        self._renewed_at = now
+        m = await self._mgr._load(self._group_id)
+        if m is None or m.claim != ref.id:
+            return
+        await self._mgr._renew(m, self._cfg)
 
     # --- bot tools ------------------------------------------------------------------------------------------
 
@@ -816,12 +904,10 @@ class Session:
                 self._counted = False
                 return "当前没有工作区，不用重置；下次用到时会新建一个空工作区。"
             mine = self._counted and self._mapping is not None and self._mapping.claim == m.claim
-            others = m.active - (1 if mine else 0)
-            if others > 0:
-                await self._mgr._r().hset(ws_key(m.group_id), "recreate", "1")  # pyright: ignore[reportGeneralTypeIssues]
+            reason = f"reset_workspace ({self._invocation_id})"
+            if await self._mgr._destroy_if_idle(m, reason=reason, max_active=int(mine), mark_recreate=True) == 0:
                 self._mgr._audit(self._group_id, "reset_deferred", invocation=self._invocation_id, claim=m.claim)
                 return "有其他请求正在使用这个工作区，等它们结束后会重建；这次请求里文件还在。"
-            await self._mgr._destroy_mapping(m, reason=f"reset_workspace ({self._invocation_id})")
             await self.backend.detach()
             self._counted = False
             self._mapping = None
@@ -829,6 +915,9 @@ class Session:
 
     async def close(self) -> None:
         try:
+            # An acquisition still in flight (a tool call cancelled mid-attach) may yet count this session in
+            # `active`; wait for it so the count is released, not leaked.
+            await self.backend.settle()
             if self._counted and self._mapping is not None:
                 await self._release(self._mapping)
         except Exception:
@@ -841,29 +930,35 @@ class Session:
                 LOGGER.exception("closing sandbox connections failed")
 
     async def _release(self, mine: Mapping) -> None:
-        remaining = await self._mgr._incr_active(mine, -1)
-        if remaining < 0:
-            return  # mapping gone or replaced meanwhile
-        m = await self._mgr._load(self._group_id)
-        if m is None or m.claim != mine.claim:
-            return
-        if remaining == 0:
-            keep = [str(x.pgid) for x in m.links if x.pgid is not None]
-            argv = [_REAP]
-            for pgid in keep:
-                argv += ["--keep-pgid", pgid]
-            try:
-                result = await self.backend.exec(argv, seconds=30)
-                if result.exit_code != 0:
-                    LOGGER.warning("sandbox reap exited {}: {}", result.exit_code, result.stderr[:300])
-            except WorkspaceUnavailableError:
+        async with self._mgr._group_lock(self._group_id, wait=_RELEASE_LOCK_WAIT) as locked:
+            remaining = await self._mgr._incr_active(mine, -1)
+            if remaining < 0:
+                return  # mapping gone or replaced meanwhile
+            m = await self._mgr._load(self._group_id)
+            if m is None or m.claim != mine.claim:
                 return
-            except Exception:
-                LOGGER.exception("sandbox reap failed for group {}", self._group_id)
-            if m.recreate:
-                await self._mgr._destroy_mapping(m, reason="pending recreate")
-                return
-        await self._mgr._renew(m, self._cfg)
+            if remaining == 0 and not locked:
+                # Reaping without the lock could kill an invocation attaching right now; leave the leftovers.
+                LOGGER.warning("sandbox group {} lock busy; skipping reap on release", self._group_id)
+            elif remaining == 0:
+                await self._reap(m)
+                if m.recreate and await self._mgr._destroy_if_idle(m, reason="pending recreate") == 1:
+                    return
+            await self._mgr._renew(m, self._cfg)
+
+    async def _reap(self, m: Mapping) -> None:
+        argv = [_REAP]
+        for link in m.links:
+            if link.pgid is not None:
+                argv += ["--keep-pgid", str(link.pgid)]
+        try:
+            result = await self.backend.exec(argv, seconds=30)
+            if result.exit_code != 0:
+                LOGGER.warning("sandbox reap exited {}: {}", result.exit_code, result.stderr[:300])
+        except WorkspaceUnavailableError:
+            pass  # the sandbox is gone; nothing left to reap
+        except Exception:
+            LOGGER.exception("sandbox reap failed for group {}", self._group_id)
 
 
 @asynccontextmanager

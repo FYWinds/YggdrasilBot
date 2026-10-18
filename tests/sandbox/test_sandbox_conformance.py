@@ -9,31 +9,26 @@ coroutine test first and runs it on the shared session loop, so the anyio marker
 `anyio_backend` is still pinned to asyncio for runs with pytest-asyncio disabled (`-p no:asyncio`).
 """
 
-import os
 from collections.abc import AsyncIterator, Callable
 
 import pytest
 from pydantic_ai.workspaces import WorkspaceRef
 from pydantic_ai.workspaces.conformance import WorkspaceBackendSuite
 
-from yggdrasil.sandbox.backend import Endpoint, SandboxdWorkspace, StaticResolver
+from tests.sandbox.helpers import HAVE_SANDBOXD, NO_SANDBOXD, SANDBOXD_TOKEN
+from yggdrasil.sandbox.backend import CommandLimits, Endpoint, SandboxdWorkspace, StaticResolver
 
-_REST = os.environ.get("YGG_TEST_SANDBOXD_REST")
-_GRPC = os.environ.get("YGG_TEST_SANDBOXD_GRPC")
-_TOKEN = os.environ.get("YGG_TEST_SANDBOXD_TOKEN")
+pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
 
-pytestmark = pytest.mark.skipif(
-    not (_REST and _GRPC and _TOKEN),
-    reason="set YGG_TEST_SANDBOXD_REST / YGG_TEST_SANDBOXD_GRPC / YGG_TEST_SANDBOXD_TOKEN to run against a sandboxd",
-)
+# A hang guard, not a limit under test: every command without its own timeout gets a 120s deadline, so a lost
+# exit status fails one rule instead of stalling the run (no rule needs a command to outlive it).
+_HANG_GUARD = CommandLimits(max_commands=1_000_000, invocation_s=1e9, command_max_s=120.0, default_timeout_s=120.0)
 
 
-def _make(ref: WorkspaceRef | None = None) -> SandboxdWorkspace:
-    assert _REST
-    assert _GRPC
-    assert _TOKEN
-    resolver = StaticResolver(Endpoint(rest_url=_REST, grpc_target=_GRPC), "conformance")
-    return SandboxdWorkspace(resolver=resolver, token=_TOKEN, ref=ref)
+def _make(endpoint: Endpoint, ref: WorkspaceRef | None = None) -> SandboxdWorkspace:
+    assert SANDBOXD_TOKEN
+    resolver = StaticResolver(endpoint, "conformance")
+    return SandboxdWorkspace(resolver=resolver, token=SANDBOXD_TOKEN, ref=ref, limits=_HANG_GUARD)
 
 
 class TestSandboxdWorkspace(WorkspaceBackendSuite):
@@ -42,8 +37,8 @@ class TestSandboxdWorkspace(WorkspaceBackendSuite):
         return "asyncio"
 
     @pytest.fixture
-    async def backend(self) -> AsyncIterator[SandboxdWorkspace]:
-        backend = _make()
+    async def backend(self, sandboxd: Endpoint) -> AsyncIterator[SandboxdWorkspace]:
+        backend = _make(sandboxd)
         yield backend
         await backend.aclose()
 
@@ -55,10 +50,10 @@ class TestSandboxdWorkspace(WorkspaceBackendSuite):
             await backend.aclose()
 
     @pytest.fixture
-    def fresh_backend(self, _made: list[SandboxdWorkspace]) -> Callable[[], SandboxdWorkspace]:
+    def fresh_backend(self, sandboxd: Endpoint, _made: list[SandboxdWorkspace]) -> Callable[[], SandboxdWorkspace]:
         # A fresh backend resolves the same sandboxd, as a group's second invocation does.
         def factory() -> SandboxdWorkspace:
-            _made.append(backend := _make())
+            _made.append(backend := _make(sandboxd))
             return backend
 
         return factory
@@ -70,9 +65,11 @@ class TestSandboxdWorkspace(WorkspaceBackendSuite):
         return None
 
     @pytest.fixture
-    def attach_backend(self, _made: list[SandboxdWorkspace]) -> Callable[[WorkspaceRef], SandboxdWorkspace]:
+    def attach_backend(
+        self, sandboxd: Endpoint, _made: list[SandboxdWorkspace]
+    ) -> Callable[[WorkspaceRef], SandboxdWorkspace]:
         def factory(ref: WorkspaceRef) -> SandboxdWorkspace:
-            _made.append(backend := _make(ref))
+            _made.append(backend := _make(sandboxd, ref))
             return backend
 
         return factory

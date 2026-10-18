@@ -67,6 +67,7 @@ test = [
     "pytest",
     "pytest-asyncio",
     "nonebug",
+    "fakeredis[lua]>=2.40.0",
 ]
 
 [tool.uv]

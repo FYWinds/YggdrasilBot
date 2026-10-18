@@ -155,6 +155,11 @@ class WorkspaceResolver(Protocol):
         Errors mean "unknown" and are treated as transient."""
         ...
 
+    async def touch(self, ref: WorkspaceRef) -> None:
+        """Called before every operation once attached; keeps the environment alive while a run uses it. Must be
+        cheap when there is nothing to do (it is the resolver's job to throttle). Errors are logged and ignored."""
+        ...
+
 
 class StaticResolver:
     """A resolver for one known sandboxd (tests, and the manager's read-only views of a mapped workspace)."""
@@ -182,6 +187,9 @@ class StaticResolver:
         if self._alive is not None and not await self._alive():
             return None
         return self._endpoint
+
+    async def touch(self, ref: WorkspaceRef) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -454,15 +462,28 @@ class SandboxdWorkspace:
         self._gone = False
         self._notice = None
 
-    async def aclose(self) -> None:
-        """Close connections; the sandbox itself is never destroyed here."""
+    async def settle(self) -> None:
+        """Wait for an acquisition still in flight (it outlives cancelled callers), without raising its error."""
         task = self._acquiring
         if task is not None and not task.done():
             await asyncio.wait([task])
+
+    async def aclose(self) -> None:
+        """Close connections; the sandbox itself is never destroyed here."""
+        await self.settle()
         await self._drop_conn()
+
+    async def _touch(self) -> None:
+        if self._ref is None:
+            return
+        try:
+            await self._resolver.touch(self._ref)
+        except Exception:
+            LOGGER.opt(exception=True).warning("sandbox touch failed for {}", self._ref.id)
 
     async def _with_retry[T](self, op: Callable[[_Conn], Awaitable[T]], *, retry: bool = True) -> T:
         conn = await self._ensure()
+        await self._touch()
         for delay in (*_RETRY_DELAYS, None) if retry else (None,):
             try:
                 return await op(conn)
@@ -489,6 +510,7 @@ class SandboxdWorkspace:
         merged = {**self._env, **(env or {})}
         _validate_env(merged)
         conn = await self._ensure()
+        await self._touch()
         effective, note = self._budget.admit(timeout)
         started = time.monotonic()
         outcome = "error"
@@ -535,6 +557,7 @@ class SandboxdWorkspace:
         reached = False
         exit_code: int | None = None
         # The gRPC deadline travels to sandboxd, which kills the process group when it passes.
+        started = time.monotonic()
         call = conn.stub.Start(request, metadata=self._metadata, timeout=seconds)
         try:
             async for event in call:
@@ -556,7 +579,14 @@ class SandboxdWorkspace:
                     )
         except grpc.aio.AioRpcError as e:
             code = e.code()
-            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+            # At the deadline the stream sometimes ends as CANCELLED (RST_STREAM from the server killing the
+            # command) instead of DEADLINE_EXCEEDED; both mean the timeout fired.
+            timed_out = code == grpc.StatusCode.DEADLINE_EXCEEDED or (
+                code == grpc.StatusCode.CANCELLED
+                and seconds is not None
+                and time.monotonic() - started >= seconds - 0.25  # server-side deadline may fire marginally early
+            )
+            if timed_out:
                 tail = f"\n{note}" if note else ""
                 raise WorkspaceTimeoutError(
                     f"Command timed out after {seconds or 0:g} seconds",

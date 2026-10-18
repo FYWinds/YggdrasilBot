@@ -1,131 +1,40 @@
-"""WorkspaceManager / Session flows against real Redis and a real sandboxd, with a fake Kubernetes API.
+"""WorkspaceManager / Session flows against a real sandboxd, with a fake Kubernetes API and in-process Redis.
 
-Needs the same YGG_TEST_SANDBOXD_* variables as the conformance suite plus a Redis at REDIS_URL (CI provides
-both); skipped otherwise. The fake API answers SandboxClaim / Sandbox / Service / IngressRoute calls and
-reports every claim as Ready on pod IP 127.0.0.1, which the manager maps onto the local sandboxd.
+Needs the same YGG_TEST_SANDBOXD_* variables as the conformance suite; skipped otherwise. The fake API answers
+SandboxClaim / Sandbox / Service / IngressRoute calls and reports every claim as Ready on pod IP 127.0.0.1,
+which the manager maps onto the local sandboxd.
 """
 
-import json
-import os
 import re
 import time
-from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
-import httpx
+import fakeredis
 import pytest
-import redis.asyncio as aioredis
 
+from tests.sandbox.helpers import HAVE_SANDBOXD, NO_SANDBOXD, SANDBOXD_TOKEN, FakeKube
 from yggdrasil.sandbox import SandboxError, WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint
 from yggdrasil.sandbox.k8s import KubeClient
 from yggdrasil.sandbox.state import WS_KEY_PREFIX
 from yggdrasil.settings import ToolSettings
 
-_REST = os.environ.get("YGG_TEST_SANDBOXD_REST")
-_GRPC = os.environ.get("YGG_TEST_SANDBOXD_GRPC")
-_TOKEN = os.environ.get("YGG_TEST_SANDBOXD_TOKEN")
-_REDIS = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
-
-pytestmark = pytest.mark.skipif(
-    not (_REST and _GRPC and _TOKEN),
-    reason="set YGG_TEST_SANDBOXD_REST / YGG_TEST_SANDBOXD_GRPC / YGG_TEST_SANDBOXD_TOKEN to run against a sandboxd",
-)
+pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
 
 GROUP = 10001
 
 
-class FakeKube:
-    """Just enough of the API server: objects keyed by path, claims Ready immediately."""
-
-    def __init__(self) -> None:
-        self.objects: dict[str, dict[str, Any]] = {}
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        body: dict[str, Any] = json.loads(request.content) if request.content else {}
-        if request.method == "POST":
-            name = body["metadata"]["name"]
-            obj = {**body, "metadata": {**body["metadata"], "uid": f"uid-{name}"}}
-            if path.endswith("/sandboxclaims"):
-                obj["status"] = {
-                    "conditions": [{"type": "Ready", "status": "True"}],
-                    "sandbox": {"name": name, "podIPs": ["127.0.0.1"]},
-                }
-                sandbox_path = path.replace("extensions.agents.x-k8s.io/v1beta1", "agents.x-k8s.io/v1beta1").replace(
-                    "sandboxclaims", "sandboxes"
-                )
-                self.objects[f"{sandbox_path}/{name}"] = {"metadata": {"name": name, "uid": f"uid-sb-{name}"}}
-            self.objects[f"{path}/{name}"] = obj
-            return httpx.Response(201, json=obj)
-        if request.method == "GET" and path.endswith(("/sandboxclaims", "/services", "/ingressroutes")):
-            items = [v for k, v in self.objects.items() if k.rsplit("/", 1)[0] == path]
-            return httpx.Response(200, json={"items": items})
-        obj = self.objects.get(path)
-        if obj is None:
-            return httpx.Response(404, json={"message": "not found"})
-        if request.method == "GET":
-            return httpx.Response(200, json=obj)
-        if request.method == "PATCH":
-            obj["spec"]["lifecycle"].update(body["spec"]["lifecycle"])
-            return httpx.Response(200, json=obj)
-        if request.method == "DELETE":
-            del self.objects[path]
-            if "/sandboxclaims/" in path:  # the controller cascades to the Sandbox and its links
-                name = path.rsplit("/", 1)[1]
-                for key in [k for k in self.objects if k.endswith(f"/sandboxes/{name}")]:
-                    del self.objects[key]
-            return httpx.Response(200, json={})
-        return httpx.Response(405)
-
-    def claims(self) -> list[dict[str, Any]]:
-        return [v for k, v in self.objects.items() if "/sandboxclaims/" in k]
-
-
 @pytest.fixture
-async def redis_conn() -> AsyncIterator[aioredis.Redis]:
-    conn = aioredis.from_url(_REDIS, decode_responses=True)
-    try:
-        await conn.ping()
-    except Exception:
-        await conn.aclose()
-        pytest.skip(f"no Redis at {_REDIS}")
-    await _clean(conn)
-    yield conn
-    await _clean(conn)
-    await conn.aclose()
-
-
-async def _clean(conn: aioredis.Redis) -> None:
-    async for key in conn.scan_iter(match="ygg:sandbox:*"):
-        await conn.delete(key)
-
-
-@pytest.fixture
-def kube() -> FakeKube:
-    return FakeKube()
-
-
-@pytest.fixture
-async def mgr(kube: FakeKube, redis_conn: aioredis.Redis, tmp_path: Path) -> AsyncIterator[WorkspaceManager]:
-    assert _REST
-    assert _GRPC
-    token = tmp_path / "token"
-    token.write_text("test")
-    client = KubeClient(base_url="https://k8s.test", token_path=token, transport=httpx.MockTransport(kube.handler))
-    endpoint = Endpoint(rest_url=_REST, grpc_target=_GRPC)
-    manager = WorkspaceManager(
-        token=_TOKEN,
+def mgr(sandboxd: Endpoint, kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> WorkspaceManager:
+    return WorkspaceManager(
+        token=SANDBOXD_TOKEN,
         namespace="ns",
         warmpool="pool",
         link_domain="links.example.com",
-        kube=client,
-        redis=lambda: redis_conn,
-        endpoint=lambda _ip: endpoint,
+        kube=kube_client,
+        redis=lambda: fake_redis,
+        endpoint=lambda _ip: sandboxd,
     )
-    yield manager
-    await client.aclose()
 
 
 def _cfg(**kw: Any) -> ToolSettings:
@@ -150,6 +59,13 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
     assert info.claim == name
     assert info.active == 1
     assert info.expires_at > time.time() + 29 * 60
+    # A long run keeps renewing the claim from its commands, throttled.
+    patches = kube.patches
+    session._renewed_at = 0.0  # pyright: ignore[reportPrivateUsage] - pretend the last renewal is long past
+    await session.backend.run("true", shell=True)
+    assert kube.patches == patches + 1
+    await session.backend.run("true", shell=True)
+    assert kube.patches == patches + 1
     # A second invocation attaches to the same workspace and sees the file.
     other = mgr.session(GROUP, invocation_id="inv-2", cfg=_cfg())
     assert (await other.backend.read_bytes("/workspace/in-ws.txt")) == b"hi\n"
@@ -170,8 +86,9 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
 
 
 async def test_expired_claim_is_reported_and_replaced(
-    mgr: WorkspaceManager, kube: FakeKube, redis_conn: aioredis.Redis
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
+    redis_conn = fake_redis
     first = mgr.session(GROUP, invocation_id="a", cfg=_cfg())
     await first.backend.working_dir()
     await first.close()

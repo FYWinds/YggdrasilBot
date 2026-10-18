@@ -1,8 +1,10 @@
 #!/bin/sh
 # reap [--keep-pgid N ...]
-# Kill every process in the sandbox except PID 1 (tini), sandboxd, this script and its ancestor chain,
-# and processes whose process-group id is listed via --keep-pgid. SIGTERM first, SIGKILL whatever is
-# still alive after 2s. Prints the number of processes signalled. Uses only /proc (works under gVisor).
+# Kill every process in the sandbox except PID 1 (tini), this script and its ancestor chain (the bot runs
+# it through sandboxd's Execute, so the real sandboxd is its parent), and processes whose process-group id
+# is listed via --keep-pgid. Nothing is spared by name or binary: model code can name a process anything.
+# SIGTERM first, SIGKILL whatever is still alive after 2s. Prints the number of processes signalled. Uses
+# only /proc (works under gVisor).
 set -u
 
 keep=" "
@@ -14,16 +16,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Prints "<state> <ppid> <pgid> <comm>" for a pid, or nothing if it is gone. comm may contain spaces and
-# parentheses, so split on the last ")".
+# Prints "<state> <ppid> <pgid>" for a pid, or nothing if it is gone. comm (field 2) may contain spaces and
+# parentheses, so the fields are taken after the last ")".
 stat_of() {
     s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
     [ -n "$s" ] || return 1
-    comm=${s#*\(}
-    comm=${comm%\)*}
     rest=${s##*\) }
     set -- $rest
-    echo "$1 $2 $3 $comm"
+    echo "$1 $2 $3"
 }
 
 alive() {
@@ -49,11 +49,7 @@ for d in /proc/[0-9]*; do
     st=$(stat_of "$pid") || continue
     set -- $st
     state=$1 pgid=$3
-    shift 3
-    name=$*
     case "$state" in Z* | X*) continue ;; esac
-    [ "$name" = sandboxd ] && continue
-    [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = /usr/local/bin/sandboxd ] && continue
     case "$keep" in *" $pgid "*) continue ;; esac
     targets="$targets $pid"
 done
