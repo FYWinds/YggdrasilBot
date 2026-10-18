@@ -1,155 +1,146 @@
-# Deployment runbook
+# Deployment
 
-YggdrasilBot runs on the Kubernetes cluster, declared in
-`FYWinds/gitops` (Argo CD, root ApplicationSet):
+This guide shows how to run YggdrasilBot on Kubernetes with Argo CD. Names, domains and accounts below are
+placeholders: replace `example.com`, `<qq-account>`, `<admin-email>` and friends with your own.
 
-| Path (gitops) | What |
-|---|---|
-| `apps/yggdrasil/` | Namespace `yggdrasil`: ParadeDB (CNPG `yggdrasil-pg`), Redis, migration hook, bot / worker / scheduler, SnowLuma (NapCat kept at 0 replicas as rollback), llama.cpp embedding + guard, Playwright, SearXNG, NetworkPolicies, IngressRoutes, alerts, ImageUpdater, SealedSecrets |
-| `observability/yggdrasil-dashboard.yaml` | Grafana dashboard (folder YggdrasilBot) |
+## What you need
 
-Sync waves: data (Postgres, Redis) 0 → `alembic upgrade head` Sync hook 1 →
-workloads 2. GitHub Actions (`.github/workflows/ci.yaml`) builds the image
-`ghcr.io/fywinds/yggdrasil-bot`; one image serves every role:
+| Component | Purpose | Notes |
+|---|---|---|
+| PostgreSQL with ParadeDB (`pg_search`, `vector`) | messages, memory, settings, audit | e.g. CloudNativePG with the `paradedb/paradedb` image |
+| Redis 7+ | rate limits, queues, sandbox mappings, config pub/sub | |
+| A OneBot v11 endpoint | the QQ connection | SnowLuma or NapCat, configured as a **reverse WebSocket client** to the bot |
+| An OpenAI- or Anthropic-compatible LLM endpoint | chat, tldr, memory, ops | configured in the dashboard |
+| Embedding endpoint (OpenAI-compatible) | memory search | e.g. llama.cpp serving a Qwen3 embedding GGUF |
+| Optional: guard model endpoint | input/output moderation | e.g. llama.cpp serving Qwen3Guard |
+| Optional: Playwright server | rendering, browser fallback for `read_url` | `YGG_BROWSER_WS_URL` |
+| Optional: SearXNG | web search | configured in the dashboard |
+| Optional: agent-sandbox + gVisor | the sandbox workspace tools | see [Sandbox](#sandbox) |
+
+## Images and roles
+
+CI (`.github/workflows/ci.yaml`) builds two images:
+
+- `ghcr.io/<owner>/yggdrasil-bot`: one image for every role.
+- `ghcr.io/<owner>/yggdrasil-sandbox`: the sandbox workspace (only needed with the sandbox).
 
 | Role | Command |
 |---|---|
-| bot (default) | `python -m yggdrasil` (port 8080: `/onebot/v11/ws`, dashboard, `/healthz`, `/readyz`) |
+| bot (default) | `python -m yggdrasil` (port 8080: `/onebot/v11/ws`, dashboard and `/api`, `/healthz`, `/readyz`, `/drainz`) |
 | worker | `taskiq worker yggdrasil.worker.broker:broker yggdrasil.worker.tasks` |
 | scheduler | `taskiq scheduler yggdrasil.worker.broker:scheduler yggdrasil.worker.tasks` |
 | migration | `alembic upgrade head` |
 
-## First-time setup
+Run one bot replica: it owns the OneBot connection. The bot and worker wait up to 5 minutes for Postgres and
+Redis at startup.
 
-All `kubeseal` commands use
-`--controller-name sealed-secrets-controller --controller-namespace kube-system`.
+## Configuration
 
-### 1. GHCR pull secret
+Environment variables (see `yggdrasil/config.py` and `.env.example` for the full list):
 
-The package is private (the repo is private). Create a classic GitHub PAT
-with only `read:packages`, store it in the secret store as `GHCR-Pull` (field
-`credential`), then seal it as `ghcr-pull` for both the pods (`yggdrasil`) and
-argocd-image-updater (`argocd`) into `apps/yggdrasil/ghcr-pull-secret.yaml`:
-a `kubernetes.io/dockerconfigjson` Secret with
-`{"auths": {"ghcr.io": {"username": "FYWinds", "password": "<PAT>"}}}`,
-piped through `kubeseal -o yaml` once per namespace.
+| Variable | Required | Meaning |
+|---|---|---|
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | yes | database |
+| `REDIS_URL` | yes | e.g. `redis://redis:6379/0` |
+| `YGG_SECRET_KEY` | yes | encrypts provider API keys in the database; keep it safe, it cannot be rotated without losing them |
+| `ONEBOT_ACCESS_TOKEN` | yes | shared with the OneBot endpoint |
+| `YGG_SUPERUSERS` | yes | QQ numbers allowed to use ops commands |
+| `YGG_ADMIN_EMAILS` | yes | dashboard admins; the dashboard trusts `X-Auth-Request-Email` from your auth proxy |
+| `YGG_ENV` | no | `prod` / `dev`, used in telemetry |
+| `YGG_BROWSER_WS_URL` | no | Playwright server, e.g. `ws://browser:3000/` |
+| `YGG_GRAFANA_URL` | no | links invocations to traces in the dashboard |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` etc. | no | OpenTelemetry traces, metrics and logs |
+| `LOG_JSON` | no | `true` for JSON logs |
+| `YGG_SANDBOX_TOKEN` | sandbox | shared sandboxd bearer token; the sandbox is off when unset |
+| `YGG_SANDBOX_NAMESPACE`, `YGG_SANDBOX_WARMPOOL` | sandbox | defaults `yggdrasil`, `yggdrasil-sandbox` |
+| `YGG_SANDBOX_LINK_DOMAIN` | sandbox | wildcard domain for public links (`https://<id>.<domain>`); `serve` is off when unset |
 
-### 2. App secrets
+Everything else (providers, model routes, groups, triggers, prompts, moderation, tool settings) lives in the
+database and is edited in the dashboard.
 
-`apps/yggdrasil/secret.yaml` is the SealedSecret `yggdrasil-secrets`; keys are
-documented in `apps/yggdrasil/secret.example.yaml`. The plaintext values live
-in the secret store `the secret store`. To rotate, edit that item and reseal:
+## Example: Kubernetes + Argo CD
 
-```sh
-kubectl create secret generic yggdrasil-secrets -n yggdrasil \
-  --from-literal=ONEBOT_ACCESS_TOKEN=... --from-literal=YGG_SECRET_KEY=... \
-  --from-literal=NAPCAT_WEBUI_TOKEN=... --from-literal=SEARXNG_SECRET=... \
-  --dry-run=client -o yaml \
-  | kubeseal --controller-name sealed-secrets-controller --controller-namespace kube-system -o yaml \
-  > apps/yggdrasil/secret.yaml
+Lay the manifests out in a GitOps repository, one directory per Argo CD Application:
+
+```
+apps/yggdrasil/
+  namespace.yaml
+  postgres.yaml          # CNPG Cluster (ParadeDB image) + backups
+  redis.yaml
+  migration.yaml         # Job running `alembic upgrade head`, Argo Sync hook
+  bot.yaml               # Deployment + Service (8080)
+  worker.yaml
+  scheduler.yaml
+  onebot.yaml            # SnowLuma or NapCat StatefulSet
+  embed.yaml, guard.yaml # optional llama.cpp Deployments
+  browser.yaml           # optional Playwright server
+  networkpolicy.yaml
+  ingressroute.yaml      # dashboard behind your auth proxy; never expose /onebot
+  secret.yaml            # SealedSecret (or any secret manager)
+  rbac.yaml, sandbox.yaml  # sandbox only
+  kustomization.yaml
+infra/agent-sandbox/     # sandbox only: controller
+infra/gvisor/            # sandbox only: RuntimeClass
 ```
 
-Never rotate `YGG_SECRET_KEY` casually: provider API keys in the database are
-encrypted with it and are unrecoverable without it.
+Order the sync with waves: data (Postgres, Redis) `0`, migration hook `1`, workloads `2`.
 
-Postgres credentials are not sealed: CNPG creates `yggdrasil-pg-app`
-(`host`, `port`, `user`, `password`, `dbname`), which the pods read directly.
+Pod hardening that the images support: run as non-root, `readOnlyRootFilesystem: true` with an `emptyDir` on
+`/tmp`, drop all capabilities, `seccompProfile: RuntimeDefault`. Give the bot a `preStop` hook calling
+`/drainz?max_wait=170` and `terminationGracePeriodSeconds: 200` so in-flight replies finish.
 
-### 3. Build the first image
+### First-time setup
 
-See [Build & release](#build--release). The kustomization floor tag is
-`v0.1.0`; that tag must exist before the first sync can roll out.
+1. **Secrets.** Create the app secret with the variables above. Postgres credentials can come straight from the
+   operator's generated secret (CNPG creates `<cluster>-app`).
+2. **Image.** Push a release tag (see [Releases](#releases)) so the image exists before the first sync. If the
+   package is private, add an image pull secret.
+3. **Sync.** Let Argo CD create the namespace, databases, run the migration and start the workloads.
+4. **OneBot login.** Log the QQ account in on the OneBot endpoint (SnowLuma/NapCat show a QR code in their web
+   UI or VNC). Point its reverse WebSocket client at `ws://<bot-service>:8080/onebot/v11/ws` with
+   `ONEBOT_ACCESS_TOKEN`, array message format, and self messages off. Keep its web UI off the public internet.
+5. **Dashboard.** Open the dashboard as an admin and:
+   1. add providers (LLM, embedding, optional guard);
+   2. map every task route to a provider/model and activate an embedding space;
+   3. enable groups and adjust triggers and settings.
 
-### 4. Argo CD sync
+### Releases
 
-Push gitops; the root ApplicationSet creates `apps-yggdrasil`. Order:
-`yggdrasil-pg` + `yggdrasil-redis` → migration Job → workloads. The llama.cpp
-pods (embed, guard) download their GGUF models on first start (startup probes allow 15 min).
+- Pushes to `main` publish `sha-<short>` and `main` image tags; tags `vX.Y.Z` publish `vX.Y.Z`.
+- `pyproject.toml` stays at `0.0.0`; the git tag reaches the image as `YGG_VERSION`.
+- With argocd-image-updater, track `^v\d+\.\d+\.\d+$` for both images; a sync runs the migration first.
 
-### 5. SnowLuma QR login
+### Rollback
 
-SnowLuma runs Linux QQ in the `snowluma-0` pod; nothing is exposed outside
-the pod (NetworkPolicy `yggdrasil-snowluma`), so use port-forwards:
+- **Image:** pin the previous tag on the Application (or delete the bad tag from the registry so the updater does
+  not move forward again).
+- **Schema:** migrations only run forward. If the older image cannot run against the new schema, run
+  `alembic downgrade <revision>` from the new image first, then roll the image back.
+- **Data:** restore from your Postgres backups (e.g. CNPG volume snapshots into a new Cluster).
 
-```bash
-kubectl -n yggdrasil logs snowluma-0 -c snowluma | grep -E "远程桌面密码|临时密码"
-kubectl -n yggdrasil port-forward snowluma-0 6081:6081 5099:5099
-```
+## Sandbox
 
-Open http://127.0.0.1:6081/vnc.html with the remote-desktop password (printed
-once, on the first start of an empty data volume) and scan the QR code in the
-QQ window with the prod bot account **1000000001**. The WebUI
-(http://127.0.0.1:5099, `admin` + the one-time password from the log) asks
-to accept SnowLuma's EULA/PRIVACY and to change the password on first login;
-keep the new password in the secret store.
+The sandbox gives the chat model a persistent, per-group Linux workspace (shell, files, optional public links).
+It needs:
 
-The `onebot-config` initContainer rewrites `config/onebot.json` and every
-`config/onebot_<uin>.json` on each start: one wsClients entry
-(`ws://yggdrasil-bot.yggdrasil.svc:8080/onebot/v11/ws`, token
-`ONEBOT_ACCESS_TOKEN`, array format, no self messages), no HTTP/WS listeners,
-the built-in `#sl` status reply off. Do not edit the OneBot config in the
-WebUI (it is reset on restart). It also pins the machine-id; with the pinned
-MAC and hostname that keeps QQ on one device, so restarts reuse the session on
-the three PVCs.
+1. **gVisor** on the nodes: install `runsc` + `containerd-shim-runsc-v1`, register the `runsc` runtime with
+   containerd (on k3s via a drop-in under `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/`), and
+   create `RuntimeClass gvisor` with `handler: runsc`.
+2. **kubernetes-sigs/agent-sandbox** v1.0.7 with extensions (`sandbox-with-extensions.yaml` release asset).
+3. A `SandboxTemplate` + `SandboxWarmPool` named `yggdrasil-sandbox` in the bot's namespace using the sandbox
+   image, `runtimeClassName: gvisor`, uid 1000, read-only root fs, `emptyDir` on `/workspace` and `/tmp`, args
+   `--root-dir=/workspace --auth-token-sha256=<sha256 of YGG_SANDBOX_TOKEN>`. Set `spec.networkPolicy`
+   explicitly (without it the controller's default policy applies): allow ingress from the bot pods on 8080/9090
+   (and from your ingress controller on the app ports if you use public links), allow egress only to the public
+   internet (exclude cluster, private, link-local and your own public ranges) and to public DNS resolvers with
+   `dnsPolicy: None`.
+4. **RBAC** for the bot's ServiceAccount in its namespace: `sandboxclaims` (create, get, list, watch, patch,
+   delete), `sandboxes` (get, list, watch), and for public links `services` and Traefik `ingressroutes` (create,
+   get, list, delete).
+5. **Public links (optional):** a wildcard DNS record `*.<domain>` to your ingress, a matching certificate, and
+   `YGG_SANDBOX_LINK_DOMAIN=<domain>`. Use a domain that hosts nothing else: pages served from sandboxes are
+   untrusted.
+6. Enable the `sandbox` tool for chat in the dashboard (tool settings).
 
-SnowLuma only serves group history once it has seen a message in that group,
-so the reconnect backfill after a fresh start finds nothing: trigger
-「回填」 on the Groups page once each group has new messages.
-
-### 6. Seed providers and routes
-
-Open https://ygg.example.com (login as `admin@example.com`, bootstrap admin). In the
-dashboard:
-
-1. Providers: add the LLM endpoint(s) and the in-cluster inference services:
-   - kami (new-api) `https://kami.example.com/v1` with format **anthropic**: its
-     OpenAI endpoint rejects tool calls for Claude models.
-   - local-embed `http://yggdrasil-embed.yggdrasil.svc:8080/v1` (`qwen3-embedding-0.6b-q8`)
-   - local-guard `http://yggdrasil-guard.yggdrasil.svc:8080/v1` (`qwen3guard-gen-0.6b`)
-
-   There is no rerank server: on CPU, reranking 40 candidates took 74 s (past
-   the 60 s timeout). Leave the `rerank` route unset; history search then keeps
-   the RRF-fused order.
-2. Routes: map every task to a provider/model; activate the embed space.
-3. Groups: enable the target QQ groups; adjust settings/triggers.
-
-## Build & release
-
-`.github/workflows/ci.yaml` runs ruff, basedpyright and pytest (ParadeDB and
-Redis service containers) on every push and PR. Pushes to `main` also push
-`sha-<short>` and `main` images; tags `vX.Y.Z` push `vX.Y.Z`.
-`ghcr-cleanup.yaml` prunes old `sha-*` images weekly (keeps 5).
-
-Release:
-
-1. Merge to `main`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Do not bump
-   `version` in `pyproject.toml`: it stays `0.0.0` so `uv.lock` (and the cached
-   dependency layer) only change with dependencies; the tag reaches the image as
-   `YGG_VERSION` (telemetry `service.version`).
-2. argocd-image-updater (polls every 30s) picks the highest `^v\d+\.\d+\.\d+$` tag
-   and writes it onto the `apps-yggdrasil` Application; the sync runs
-   migrations first, then recreates the bot.
-
-Test builds: every `main` push produces `sha-<short>`; pin it manually (see
-Rollback) to try it without a release.
-
-## Rollback
-
-- **Image**: `argocd app set apps-yggdrasil --kustomize-image ghcr.io/fywinds/yggdrasil-bot:vX.Y.(Z-1)`
-  pins an older tag, but the updater moves forward again on its next run.
-  For a lasting rollback, delete the bad release tag in GHCR
-  (Packages → yggdrasil-bot), or ship a fixed `vX.Y.(Z+1)`.
-- **Schema**: migrations run forward only in the hook. If the older image
-  cannot run against the new schema, downgrade while the new image is still
-  running, then roll back the image:
-  `kubectl -n yggdrasil exec deploy/yggdrasil-bot -- alembic downgrade <revision>`.
-- **Data**: CNPG takes a daily volume snapshot (`yggdrasil-pg-daily`, 03:15).
-  Restore by creating a new Cluster with `bootstrap.recovery.volumeSnapshots`
-  pointing at the chosen `Backup`'s snapshot, then switch the app to it.
-
-## Alerts
-
-`apps/yggdrasil/prometheusrule.yaml`: QQ endpoint disconnected (5m), QQ account
-logged out (3m), heartbeat stale (>120s), invocation failure ratio (>20% over
-15m), memory lag of the chunk/topic pipelines (>1000 for 1h), pending reviews
-(90m), partition runway (<1 month).
+The dashboard's Sandbox page lists live workspaces and can destroy them; `tools.sandbox_enabled` in the global
+settings switches the whole feature off.

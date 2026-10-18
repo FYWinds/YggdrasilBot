@@ -1,4 +1,5 @@
-# local planning docs
+# local planning docs and the private prod runbook
+/docs/DEPLOY.md
 /docs/DESIGN.md
 /docs/SANDBOX.md
 /docs/SEARCH_APIS.md
