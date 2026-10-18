@@ -18,6 +18,7 @@ from yggdrasil.config import REDIS_CONFIG
 from yggdrasil.core.log import LOGGER, setup_logging
 from yggdrasil.core.telemetry import setup_telemetry, shutdown_telemetry
 from yggdrasil.db.session import dispose_engine
+from yggdrasil.readiness import wait_for_dependencies
 from yggdrasil.worker.tracing import TracingMiddleware
 
 TIMEZONE = "Asia/Shanghai"
@@ -33,6 +34,7 @@ scheduler = TaskiqScheduler(broker, sources=[LabelScheduleSource(broker)])
 async def _startup(state: TaskiqState) -> None:
     setup_logging()
     setup_telemetry("yggdrasil-worker")
+    await wait_for_dependencies()
     await runtime.load()
     state.config_listener = asyncio.create_task(runtime.listen_forever(), name="config-listener")
     LOGGER.info("worker started")

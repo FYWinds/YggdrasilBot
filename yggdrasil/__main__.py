@@ -157,9 +157,11 @@ def main() -> None:
         from yggdrasil.db.session import init_engine
         from yggdrasil.ingest.writer import WRITER
         from yggdrasil.moderation.review import expire_loop
+        from yggdrasil.readiness import wait_for_dependencies
         from yggdrasil.seed import seed_defaults
 
         init_engine()
+        await wait_for_dependencies()
         await seed_defaults()
         snap = await runtime.load()
         Agent.instrument_all(
