@@ -483,12 +483,20 @@ class WorkspaceManager:
             return None
 
     async def reserve(
-        self, group_id: int, name: str, description: str, cfg: ToolSettings, *, mine: str | None = None
+        self,
+        group_id: int,
+        name: str,
+        description: str,
+        cfg: ToolSettings,
+        *,
+        mine: tuple[str, str] | None = None,
     ) -> list[WorkspaceInfo]:
         """Add the pending record of a new workspace, evicting the group's least recently used ones that no
         invocation uses and no background job runs in while the group is at its cap (``mine``: the caller's own
-        attached workspace, which only the caller uses). Returns the evicted workspaces. Runs under the per-group
-        lock: the cap holds across invocations and bot replicas."""
+        attached workspace as (name, claim), which only the caller uses; a newer pod under the same name is not
+        the caller's). A workspace whose lock is held (its pod being created, attached or released) is never
+        evicted. Returns the evicted workspaces. Runs under the per-group lock: the cap holds across invocations
+        and bot replicas."""
         if (why := name_error(name)) is not None:
             raise SandboxError(why)
         if not description:
@@ -509,17 +517,21 @@ class WorkspaceManager:
             for w in sorted(current, key=lambda w: w.last_used):
                 if excess <= 0:
                     break
-                allowed = 1 if w.name == mine else 0
-                if w.jobs or w.active > allowed:
+                if w.jobs or w.active > (1 if mine is not None and w.name == mine[0] else 0):
                     continue
-                m = await self._load(group_id, w.name)
-                if m is None:
-                    excess -= 1
-                    continue
-                reason = f"evicted (group LRU) for {name}"
-                if await self._destroy_if_idle(m, reason=reason, max_active=allowed, check_jobs=True) == 1:
-                    evicted.append(w)
-                    excess -= 1
+                # Holding the workspace's lock keeps a create / attach / release from running while it goes.
+                async with self._ws_lock(group_id, w.name, wait=0) as got:
+                    if not got:
+                        continue
+                    m = await self._load(group_id, w.name)
+                    if m is None:
+                        excess -= 1
+                        continue
+                    allowed = 1 if mine == (m.name, m.claim) and not m.pending else 0
+                    reason = f"evicted (group LRU) for {name}"
+                    if await self._destroy_if_idle(m, reason=reason, max_active=allowed, check_jobs=True) == 1:
+                        evicted.append(w)
+                        excess -= 1
             if excess > 0:
                 left = [w for w in current if w not in evicted]
                 listing = format_workspaces(
@@ -951,7 +963,8 @@ class WorkspaceManager:
             )
 
     async def _create(self, m: Mapping, cfg: ToolSettings) -> Mapping:
-        """Create the pod of pending record ``m`` (under its workspace lock) and record it."""
+        """Create the pod of pending record ``m`` (under its workspace lock) and record it, already counting the
+        caller in ``active`` (atomically with the claim, so no eviction sees it unused in between)."""
         await self._evict_for(m, cfg)
         key = ws_key(m.group_id, m.name)
         now = time.time()
@@ -990,6 +1003,7 @@ class WorkspaceManager:
                 last_used=now,
                 expires_at=expires,
                 max_until=max_until,
+                active=1,
             )
             data = new.to_hash()
             flat = [x for k, v in data.items() if k not in ("name", "description") for x in (k, v)]
@@ -1061,9 +1075,6 @@ class WorkspaceManager:
                     raise WorkspaceMissing(f"工作区「{name}」已经不存在了（过期、被回收或被删除），里面的文件都没了。")
                 if m.pending:
                     m = await self._create(m, cfg)
-                    if await self._incr_active(m, 1) < 0:
-                        continue  # evicted or destroyed right after creation: look again
-                    m.active = 1
                     return m, notice
                 usable, why = await self._usable(m, cfg)
                 if usable is None:
@@ -1268,10 +1279,10 @@ class Session:
         evicted: list[WorkspaceInfo] = []
         updated = False
         if new:
-            mine = self._mapping.name if self._counted and self._mapping is not None else None
+            mine = (self._mapping.name, self._mapping.claim) if self._counted and self._mapping is not None else None
             evicted = await self._mgr.reserve(self._group_id, name, description, self._cfg, mine=mine)
             self._reserved.add(name)
-            if mine is not None and any(w.name == mine for w in evicted):
+            if mine is not None and any((w.name, w.claim) == mine for w in evicted):
                 # This invocation's own workspace made room: there is nothing left to release or reap.
                 self._counted, self._mapping = False, None
                 await self.backend.detach()

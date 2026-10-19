@@ -659,3 +659,56 @@ def test_selecting_tools_run_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     tools = {t.name: t for t in sandbox_tools.bot_tools()}
     assert next(iter(tools)) == "open_workspace"
     assert {name for name, t in tools.items() if t.sequential} == {"open_workspace", "reset_workspace", "delegate"}
+
+
+async def test_eviction_skips_a_workspace_whose_pod_is_being_created(
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+) -> None:
+    """A pending workspace another invocation is creating holds its lock: it is not evicted. And a created one is
+    counted in ``active`` together with its claim, never seen unused in between."""
+    cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
+    await _reserve(mgr, cfg=cfg)
+    creating = _session(mgr, "creating", cfg=cfg)
+    kube.claim_gate = asyncio.Event()
+    attaching = asyncio.create_task(creating.backend.working_dir())
+    await kube.claim_get_entered.wait()  # holds the workspace lock, claim not recorded yet
+    late = _session(mgr, "late", workspace=None, cfg=cfg)
+    with pytest.raises(SandboxError, match="都在使用中"):
+        await late.open("other", new=True, description="别的话题")
+    kube.claim_gate.set()
+    await attaching
+    assert await _active(fake_redis) == 1
+    await creating.close()
+    await late.close()
+
+    m = await mgr._load(GROUP, WS)  # pyright: ignore[reportPrivateUsage]
+    assert m is not None
+    await mgr._retire(m, reason="test")  # pyright: ignore[reportPrivateUsage]
+    pending = await mgr._load(GROUP, WS)  # pyright: ignore[reportPrivateUsage]
+    assert pending is not None
+    created = await mgr._create(pending, cfg)  # pyright: ignore[reportPrivateUsage]
+    assert created.active == 1
+    assert await _active(fake_redis) == 1  # set with the claim, no separate increment
+
+
+async def test_own_allowance_only_covers_the_callers_own_pod(
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+) -> None:
+    """The caller attached to a pod that was then replaced under the same name by another invocation: that newer
+    pod is in use by someone else and must not be evicted on the caller's allowance."""
+    cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
+    await _reserve(mgr, cfg=cfg)
+    a = _session(mgr, "a", cfg=cfg)
+    await a.backend.working_dir()
+    old = await _claim(fake_redis)
+    assert await mgr.destroy(GROUP, WS, reason="admin")
+    await _reserve(mgr, cfg=cfg)
+    b = _session(mgr, "b", cfg=cfg)
+    await b.backend.working_dir()
+    new = await _claim(fake_redis)
+    assert new not in (None, old)
+    with pytest.raises(SandboxError, match="都在使用中"):
+        await a.open("other", new=True, description="别的话题")
+    assert kube.claim_names() == [new]
+    await a.close()
+    await b.close()
