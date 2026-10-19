@@ -5,8 +5,8 @@ import fakeredis
 import httpx
 import pytest
 
-from tests.sandbox.helpers import SANDBOXD_GRPC, SANDBOXD_REST, FakeKube
-from yggdrasil.sandbox.backend import Endpoint
+from tests.sandbox.helpers import SANDBOXD_GRPC, SANDBOXD_REST, SANDBOXD_TOKEN, FakeKube
+from yggdrasil.sandbox.backend import Endpoint, SandboxdWorkspace, StaticResolver
 from yggdrasil.sandbox.k8s import KubeClient
 
 _sandboxd_down: list[str] = []
@@ -31,6 +31,15 @@ async def sandboxd() -> Endpoint:
         _sandboxd_down.append(f"sandboxd at {SANDBOXD_REST} is not answering /v1/health ({why})")
         pytest.fail(_sandboxd_down[0])
     return Endpoint(rest_url=SANDBOXD_REST, grpc_target=SANDBOXD_GRPC)
+
+
+@pytest.fixture
+async def sandbox_ws(sandboxd: Endpoint) -> AsyncIterator[SandboxdWorkspace]:
+    """A backend on the local sandboxd for running the in-sandbox helpers (/opt/ygg/*) directly."""
+    assert SANDBOXD_TOKEN
+    ws = SandboxdWorkspace(resolver=StaticResolver(sandboxd, "helpers"), token=SANDBOXD_TOKEN)
+    yield ws
+    await ws.aclose()
 
 
 @pytest.fixture

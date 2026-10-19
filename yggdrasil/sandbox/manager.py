@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 import shlex
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
@@ -36,6 +38,7 @@ from yggdrasil.sandbox.state import (
     Mapping,
     WorkspaceInfo,
     claim_name,
+    keep_key,
     link_id,
     link_name,
     links_json,
@@ -46,7 +49,7 @@ from yggdrasil.sandbox.state import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Iterable
 
     from redis.asyncio import Redis
 
@@ -65,18 +68,21 @@ _ATTACH_LOCK_WAIT = 120.0
 _RELEASE_LOCK_WAIT = 20.0
 """How long the last release waits for the lock before it gives up reaping (it still decrements)."""
 _LOCK_POLL = 0.2
-_SERVE_WAIT_STEPS = 60  # x 0.5s
 _REAP = "/opt/ygg/reap"
-_SERVE_DIR = f"{DEFAULT_ROOT}/.ygg/serve"
+_YGG = "/opt/ygg/ygg"
+_PUBLIC_ADDRS = frozenset({"0.0.0.0", "::"})
+"""Listener addresses a public link can reach (all interfaces)."""
 
 _GONE_NOTICE = "[工作区] 之前的工作区已过期或出故障被回收，里面的文件都没了；这是新建的空工作区。"
 _AGED_NOTICE = "[工作区] 之前的工作区到了最长存活时间，已回收，里面的文件都没了；这是新建的空工作区。"
 _RESET_NOTICE = "[工作区] 工作区已按要求重置；这是新建的空工作区。"
 _RESTARTED_NOTICE = "[工作区] 工作区的沙箱重启过，之前的文件都没了。"
 
-# Remove the mapping only if it still names this claim (a newer workspace may have replaced it).
+# Remove the mapping (and its keep hash, KEYS[2]) only if it still names this claim (a newer workspace may have
+# replaced it).
 _DROP_IF_CLAIM = (
-    "if redis.call('HGET', KEYS[1], 'claim') == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
+    "if redis.call('HGET', KEYS[1], 'claim') == ARGV[1] then "
+    "redis.call('DEL', KEYS[2]) return redis.call('DEL', KEYS[1]) end return 0"
 )
 # Change `active` only while the mapping still names this claim; returns the new value or -1.
 _INCR_IF_CLAIM = (
@@ -84,14 +90,18 @@ _INCR_IF_CLAIM = (
     "return redis.call('HINCRBY', KEYS[1], 'active', ARGV[2]) end return -1"
 )
 _UNLOCK = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
-# Destroy the mapping only if it still names this claim and at most ARGV[2] invocations use it: 1 = deleted,
-# 0 = busy (and `recreate` marked when ARGV[3] is 1), -1 = the mapping names another claim or is gone.
+# Destroy the mapping (and its keep hash, KEYS[2]) only if it still names this claim and at most ARGV[2]
+# invocations use it: 1 = deleted, 0 = busy (and `recreate` marked when ARGV[3] is 1), 2 = background jobs run
+# in it (checked only when ARGV[4] is 1; nothing marked), -1 = the mapping names another claim or is gone.
 _DESTROY_IF_IDLE = (
     "if redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return -1 end "
+    "if ARGV[4] == '1' then for _, f in ipairs(redis.call('HKEYS', KEYS[2])) do "
+    "if string.sub(f, 1, 4) == 'job:' then return 2 end end end "
     "if tonumber(redis.call('HGET', KEYS[1], 'active') or '0') <= tonumber(ARGV[2]) then "
-    "redis.call('DEL', KEYS[1]) return 1 end "
+    "redis.call('DEL', KEYS[1]) redis.call('DEL', KEYS[2]) return 1 end "
     "if ARGV[3] == '1' then redis.call('HSET', KEYS[1], 'recreate', '1') end return 0"
 )
+_BUSY_JOBS = 2
 
 _TREE_SKIP = (
     ".local",
@@ -180,6 +190,61 @@ def format_tree(raw: str, *, limit: int = _TREE_LINES) -> str:
     if len(rows) > limit:
         lines.append(f"…（还有 {len(rows) - limit} 项没列出）")
     return "\n".join(lines)
+
+
+def reap_argv(keep: dict[str, str], links: Iterable[LinkRecord]) -> list[str]:
+    """The end-of-invocation reap: spare every process tree in the keep hash (the kernel, background jobs) and
+    each link's listener (its process group and its tree)."""
+    argv = [_REAP]
+    for _, pid in sorted(keep.items()):
+        if pid.isdigit():
+            argv += ["--keep-tree", pid]
+    for link in links:
+        if link.pgid is not None:
+            argv += ["--keep-pgid", str(link.pgid)]
+        if link.pid is not None:
+            argv += ["--keep-tree", str(link.pid)]
+    return argv
+
+
+@dataclass(frozen=True)
+class Listener:
+    """What ``ygg port`` found listening on a port."""
+
+    pid: int | None
+    pgid: int | None
+    addr: str
+    cmdline: str
+
+
+def parse_listener(port: int, exit_code: int, stdout: bytes, stderr: bytes) -> Listener:
+    """Decode ``ygg port`` output; ``SandboxError`` (Chinese, for the model) when the port cannot be published."""
+    lines = stdout.decode("utf-8", "replace").strip().splitlines()
+    try:
+        if exit_code != 0 or not lines:
+            raise ValueError(stderr.decode("utf-8", "replace").strip()[:300] or f"exit code {exit_code}")
+        data = json.loads(lines[-1])
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+    except ValueError as e:
+        raise SandboxError(f"查不到端口 {port} 的监听进程：{e}") from e
+    if not data.get("listening"):
+        raise SandboxError(
+            f"端口 {port} 上没有程序在监听。先把服务起起来（监听 0.0.0.0:{port}，例如 start(...) 后 "
+            f"wait_port({port})），再 publish。"
+        )
+    addr = str(data.get("addr") or "")
+    if addr not in _PUBLIC_ADDRS:
+        raise SandboxError(
+            f"端口 {port} 上的服务只监听了 {addr or '本机地址'}，外面访问不到；改成监听 0.0.0.0:{port} 再 publish。"
+        )
+    pid, pgid = data.get("pid"), data.get("pgid")
+    return Listener(
+        pid=pid if type(pid) is int else None,
+        pgid=pgid if type(pgid) is int else None,
+        addr=addr,
+        cmdline=str(data.get("cmdline") or ""),
+    )
 
 
 class WorkspaceManager:
@@ -294,7 +359,7 @@ class WorkspaceManager:
             except Exception:
                 LOGGER.exception("deleting sandbox claim {} failed", name)
         for m in mappings:
-            await self._r().delete(ws_key(m.group_id))
+            await self._r().delete(ws_key(m.group_id), keep_key(m.group_id))
         self._audit(None, "destroy_all", reason=reason, destroyed=destroyed)
         return destroyed
 
@@ -309,6 +374,113 @@ class WorkspaceManager:
                     await self._drop(m, reason="claim gone (reconcile)")
         except Exception:
             LOGGER.exception("sandbox reconcile failed")
+
+    async def backend_for(self, group_id: int) -> tuple[SandboxdWorkspace, str] | None:
+        """A backend bound to the group's current pod plus its claim name, for work outside an invocation
+        (background jobs): no ``active`` counting, never creates a workspace. ``None`` when the group has no
+        live workspace. The caller closes it with ``aclose()``."""
+        m = await self._load(group_id)
+        if m is None:
+            return None
+        claim = await self._kube().get(self._claim_path(m.claim))
+        if claim is None:
+            await self._drop(m, reason="claim gone")
+            return None
+        _, ip, _, failure = _claim_ready(claim)
+        if failure:
+            return None
+        name = m.claim
+
+        async def alive() -> bool:
+            return await self._kube().get(self._claim_path(name)) is not None
+
+        backend = SandboxdWorkspace(
+            resolver=StaticResolver(self._endpoint(ip or m.pod_ip), name, alive=alive),
+            token=self.token,
+            ref=WorkspaceRef(provider=PROVIDER, id=name),
+            audit={"group": group_id},
+        )
+        return backend, name
+
+    async def renew(self, group_id: int, cfg: ToolSettings) -> bool:
+        """Renew the group's current claim (as an invocation's use would); False when there is none or it is gone."""
+        m = await self._load(group_id)
+        if m is None:
+            return False
+        if await self._renew(m, cfg):
+            return True
+        await self._drop(m, reason="claim gone")
+        return False
+
+    async def publish(self, group_id: int, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link:
+        """Give ``port`` of the group's workspace a public link. The listener must already run on all interfaces;
+        it and its process tree are spared by the reap while the link lives, and the workspace then lives to its
+        max age. Publishing a port that already has a link returns that link."""
+        domain = self._link_domain
+        if not domain:
+            raise SandboxError("没有配置公开链接域名，不能公开端口")
+        if (reason := validate_port(port)) is not None:
+            raise SandboxError(reason)
+        async with self._group_locks[group_id], _errors("公开端口"):
+            m = await self._load(group_id)
+            if m is None:
+                raise SandboxError("工作区已经被重置或回收，没法公开端口。")
+            if existing := next((x for x in m.links if x.port == port), None):
+                return existing.public()
+            if len(m.links) >= cfg.sandbox_max_links:
+                raise SandboxError(f"每个工作区最多 {cfg.sandbox_max_links} 个公开链接，先 unpublish 一个")
+            listener = await self._listener(group_id, port)
+            rid = link_id()
+            await self._create_link_objects(m, rid, port, domain)
+            link = LinkRecord(
+                id=rid,
+                port=port,
+                url=f"https://{link_name(rid)}.{domain}",
+                command=listener.cmdline,
+                created_at=time.time(),
+                pgid=listener.pgid,
+                pid=listener.pid,
+            )
+            m.links.append(link)
+            await self._r().hset(ws_key(group_id), "links", links_json(m.links))  # pyright: ignore[reportGeneralTypeIssues]
+            await self._renew(m, cfg)
+        self._audit(
+            group_id,
+            "publish",
+            claim=m.claim,
+            port=port,
+            url=link.url,
+            pid=link.pid,
+            pgid=link.pgid,
+            command=link.command[:500],
+            **audit,
+        )
+        return link.public()
+
+    async def unpublish(self, group_id: int, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> bool:
+        """Remove the public link of ``port`` (the process keeps running); False when it has none."""
+        async with self._group_locks[group_id], _errors("撤销链接"):
+            m = await self._load(group_id)
+            link = next((x for x in m.links if x.port == port), None) if m else None
+            if m is None or link is None:
+                return False
+            await self._delete_link_objects(link.id)
+            m.links = [x for x in m.links if x.port != port]
+            await self._r().hset(ws_key(group_id), "links", links_json(m.links))  # pyright: ignore[reportGeneralTypeIssues]
+            await self._renew(m, cfg)
+        self._audit(group_id, "unpublish", claim=m.claim, port=port, url=link.url, **audit)
+        return True
+
+    async def _listener(self, group_id: int, port: int) -> Listener:
+        found = await self.backend_for(group_id)
+        if found is None:
+            raise SandboxError("工作区已经被回收，没法公开端口。")
+        backend, _ = found
+        try:
+            result = await backend.exec([_YGG, "port", str(port)], seconds=20)
+        finally:
+            await backend.aclose()
+        return parse_listener(port, result.exit_code, result.stdout, result.stderr)
 
     # --- redis ----------------------------------------------------------------------------------------------
 
@@ -341,7 +513,7 @@ class WorkspaceManager:
         return int(cast(int, value))
 
     async def _drop(self, m: Mapping, *, reason: str) -> None:
-        await self._r().eval(_DROP_IF_CLAIM, 1, ws_key(m.group_id), m.claim)  # pyright: ignore[reportGeneralTypeIssues]
+        await self._r().eval(_DROP_IF_CLAIM, 2, ws_key(m.group_id), keep_key(m.group_id), m.claim)  # pyright: ignore[reportGeneralTypeIssues]
         self._audit(m.group_id, "drop_mapping", claim=m.claim, reason=reason)
 
     @asynccontextmanager
@@ -378,16 +550,29 @@ class WorkspaceManager:
         self._audit(m.group_id, "destroy", claim=m.claim, reason=reason)
 
     async def _destroy_if_idle(
-        self, m: Mapping, *, reason: str, max_active: int = 0, mark_recreate: bool = False
+        self,
+        m: Mapping,
+        *,
+        reason: str,
+        max_active: int = 0,
+        mark_recreate: bool = False,
+        check_jobs: bool = False,
     ) -> int:
         """Atomically drop the mapping if it still names ``m.claim`` and at most ``max_active`` invocations use
-        it, then delete the claim. Returns 1 (destroyed), 0 (in use; ``recreate`` marked if asked) or -1 (the
-        mapping already names another claim or is gone)."""
+        it, then delete the claim. Returns 1 (destroyed), 0 (in use; ``recreate`` marked if asked), 2 (background
+        jobs run in it, with ``check_jobs``) or -1 (the mapping already names another claim or is gone)."""
         result = int(
             cast(
                 int,
                 await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
-                    _DESTROY_IF_IDLE, 1, ws_key(m.group_id), m.claim, str(max_active), "1" if mark_recreate else "0"
+                    _DESTROY_IF_IDLE,
+                    2,
+                    ws_key(m.group_id),
+                    keep_key(m.group_id),
+                    m.claim,
+                    str(max_active),
+                    "1" if mark_recreate else "0",
+                    "1" if check_jobs else "0",
                 ),
             )
         )
@@ -446,11 +631,11 @@ class WorkspaceManager:
         for m in sorted((m for m in others if m.active <= 0), key=lambda m: m.last_used):
             if excess <= 0:
                 break
-            if await self._destroy_if_idle(m, reason=f"evicted (LRU) for group {group_id}") == 1:
+            if await self._destroy_if_idle(m, reason=f"evicted (LRU) for group {group_id}", check_jobs=True) == 1:
                 excess -= 1
         if excess > 0:
             raise SandboxToolError(
-                f"同时存在的工作区已达上限（{cfg.sandbox_max_workspaces} 个），而且都在使用中，稍后再试。"
+                f"同时存在的工作区已达上限（{cfg.sandbox_max_workspaces} 个），而且都在使用中或有后台任务，稍后再试。"
             )
 
     async def _create(self, group_id: int, cfg: ToolSettings) -> Mapping:
@@ -498,7 +683,7 @@ class WorkspaceManager:
             expires_at=expires,
             active=0,
         )
-        await self._r().delete(ws_key(group_id))
+        await self._r().delete(ws_key(group_id), keep_key(group_id))
         await self._r().hset(ws_key(group_id), mapping=m.to_hash())  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
         self._audit(group_id, "create", claim=name, pod_ip=ip, ready_s=round(time.monotonic() - started, 2))
         return m
@@ -516,7 +701,7 @@ class WorkspaceManager:
             # failing every invocation until the claim expires.
             await self._destroy_mapping(m, reason=f"pod failed ({failure})")
             return None, _GONE_NOTICE
-        if m.recreate and await self._destroy_if_idle(m, reason="pending recreate") == 1:
+        if m.recreate and await self._destroy_if_idle(m, reason="pending recreate", check_jobs=True) == 1:
             return None, _RESET_NOTICE
         if m.created_at + cfg.sandbox_max_age_min * 60 - time.time() < cfg.sandbox_invocation_s:
             # Too close to its hard max age for a whole invocation. If others still use it, only retire the
@@ -613,12 +798,13 @@ class WorkspaceManager:
             text = notes.stdout.decode("utf-8", "replace")[:_NOTES_CHARS]
             parts.append(f"NOTES.md 开头：\n{text.rstrip()}")
         now = time.time()
-        if m.links:
-            minutes = max(0, int((m.expires_at - now) / 60))
-            lines = [f"{x.url}（端口 {x.port}，约 {minutes} 分钟后随工作区回收）" for x in m.links]
-            parts.append("公开链接：\n" + "\n".join(lines))
         remaining = max(0, int((m.expires_at - now) / 60))
-        parts.append(f"工作区闲置约 {remaining} 分钟后回收（每次使用会续期）。")
+        if m.links:
+            lines = [f"{x.url}（端口 {x.port}）" for x in m.links]
+            parts.append("公开链接：\n" + "\n".join(lines))
+            parts.append(f"有公开链接，工作区会保留到约 {remaining} 分钟后（最长存活时间）再回收，链接随之失效。")
+        else:
+            parts.append(f"工作区闲置约 {remaining} 分钟后回收（每次使用会续期）。")
         return "\n\n".join(parts)
 
     # --- links ----------------------------------------------------------------------------------------------
@@ -782,120 +968,20 @@ class Session:
             raise SandboxError(f"文件太大（上限 {_fmt_size(max_bytes)}）：{path}")
         return data
 
-    async def _current(self) -> Mapping:
-        await self.backend.working_dir()  # attach / create
-        m = await self._mgr._load(self._group_id)
-        if m is None or self._mapping is None or m.claim != self._mapping.claim:
-            raise SandboxError("工作区已经被重置或回收，这次请求里没法再操作它。")
-        return m
+    async def publish(self, port: int) -> Link:
+        return await self._mgr.publish(self._group_id, port, self._cfg, audit={"invocation": self._invocation_id})
 
-    async def serve(self, command: str, port: int) -> Link:
-        domain = self._mgr._link_domain
-        if not domain:
-            raise SandboxError("没有配置公开链接域名，不能公开服务")
-        if (reason := validate_port(port)) is not None:
-            raise SandboxError(reason)
-        if not command.strip():
-            raise SandboxError("命令不能为空")
-        async with self._mgr._group_locks[self._group_id]:
-            async with _errors("暴露服务"):
-                m = await self._current()
-                if existing := next((x for x in m.links if x.port == port), None):
-                    raise SandboxError(f"端口 {port} 已经公开了：{existing.url}；要换命令先 unserve 它")
-                if len(m.links) >= self._cfg.sandbox_max_links:
-                    raise SandboxError(f"每个工作区最多 {self._cfg.sandbox_max_links} 个公开链接，先 unserve 一个")
-                log = f"{_SERVE_DIR}/{port}.log"
-                # Only `setsid` is backgrounded (not an `a && b &` list, which bash runs in a subshell that keeps
-                # the command's stdout open); its pid is the new session's and process group's id.
-                launch = (
-                    f"mkdir -p {_SERVE_DIR} || exit 1\n"
-                    f"setsid sh -c {shlex.quote(command)} >{log} 2>&1 </dev/null & echo $!"
-                )
-                started = await self.backend.run(launch, shell=True, timeout=20)
-                pid = started.stdout.strip()
-                if started.exit_code != 0 or not pid.isdigit():
-                    raise SandboxError(f"服务没启动起来：{(started.stderr or started.stdout).strip()[:500]}")
-                pgid = int(pid)
-                await self._wait_listening(m.pod_ip, port, pgid, log)
-                rid = link_id()
-                try:
-                    await self._mgr._create_link_objects(m, rid, port, domain)
-                except BaseException:
-                    await asyncio.shield(self._kill_group(pgid))
-                    raise
-                link = LinkRecord(
-                    id=rid,
-                    port=port,
-                    url=f"https://{link_name(rid)}.{domain}",
-                    command=command,
-                    created_at=time.time(),
-                    pgid=pgid,
-                )
-                m.links.append(link)
-                await self._mgr._r().hset(ws_key(m.group_id), "links", links_json(m.links))  # pyright: ignore[reportGeneralTypeIssues]
-                await self._mgr._renew(m, self._cfg)
-        self._mgr._audit(
-            self._group_id,
-            "serve",
-            invocation=self._invocation_id,
-            claim=m.claim,
-            port=port,
-            url=link.url,
-            pgid=pgid,
-            command=command[:500],
-        )
-        return link.public()
+    async def unpublish(self, port: int) -> bool:
+        return await self._mgr.unpublish(self._group_id, port, self._cfg, audit={"invocation": self._invocation_id})
 
-    async def _wait_listening(self, ip: str, port: int, pgid: int, log: str) -> None:
-        script = (
-            f"i=0; while [ $i -lt {_SERVE_WAIT_STEPS} ]; do "
-            '(exec 3<>"/dev/tcp/$1/$2") 2>/dev/null && exit 0; '
-            'kill -0 -- "-$3" 2>/dev/null || exit 3; sleep 0.5; i=$((i+1)); done; exit 4'
-        )
-        result = await self.backend.exec(
-            ["/bin/bash", "--norc", "--noprofile", "-c", script, "bash", ip, str(port), str(pgid)],
-            seconds=_SERVE_WAIT_STEPS * 0.5 + 15,
-        )
-        if result.exit_code == 0:
-            return
-        tail = await self.backend.exec(["tail", "-c", "2000", log], seconds=10)
-        await self._kill_group(pgid)
-        why = "进程已经退出" if result.exit_code == 3 else f"{_SERVE_WAIT_STEPS // 2} 秒内没有监听"
-        output = tail.stdout.decode("utf-8", "replace").strip() or "（没有输出）"
-        raise SandboxError(f"服务没起来（{why}）。要监听 0.0.0.0:{port}。日志末尾：\n{output}")
-
-    async def _kill_group(self, pgid: int) -> None:
-        try:
-            await self.backend.exec(
-                [
-                    "/bin/sh",
-                    "-c",
-                    # dash's kill takes no `--`; a negative operand after the signal names the process group.
-                    'kill -TERM "-$1" 2>/dev/null; sleep 1; kill -KILL "-$1" 2>/dev/null; true',
-                    "sh",
-                    str(pgid),
-                ],
-                seconds=15,
-            )
-        except Exception:
-            LOGGER.exception("killing served process group {} failed", pgid)
-
-    async def unserve(self, port: int) -> bool:
-        async with self._mgr._group_locks[self._group_id]:
-            async with _errors("撤销链接"):
-                m = await self._mgr._load(self._group_id)
-                link = next((x for x in m.links if x.port == port), None) if m else None
-                if m is None or link is None:
-                    return False
-                await self._mgr._delete_link_objects(link.id)
-                m.links = [x for x in m.links if x.port != port]
-                await self._mgr._r().hset(ws_key(m.group_id), "links", links_json(m.links))  # pyright: ignore[reportGeneralTypeIssues]
-                if link.pgid is not None:
-                    await self.backend.working_dir()
-                    await self._kill_group(link.pgid)
-                await self._mgr._renew(m, self._cfg)
-        self._mgr._audit(self._group_id, "unserve", invocation=self._invocation_id, claim=m.claim, port=port)
-        return True
+    async def keep_kernel(self, pid: int | None) -> None:
+        """Record the group's IPython kernel from a ``py`` result so the end-of-invocation reap spares it;
+        ``None`` (the kernel died) forgets it."""
+        key = keep_key(self._group_id)
+        if pid is None:
+            await self._mgr._r().hdel(key, "kernel")  # pyright: ignore[reportGeneralTypeIssues]
+        else:
+            await self._mgr._r().hset(key, "kernel", str(pid))  # pyright: ignore[reportGeneralTypeIssues]
 
     async def reset(self) -> str:
         async with self._mgr._group_locks[self._group_id]:
@@ -906,7 +992,12 @@ class Session:
                 return "当前没有工作区，不用重置；下次用到时会新建一个空工作区。"
             mine = self._counted and self._mapping is not None and self._mapping.claim == m.claim
             reason = f"reset_workspace ({self._invocation_id})"
-            if await self._mgr._destroy_if_idle(m, reason=reason, max_active=int(mine), mark_recreate=True) == 0:
+            destroyed = await self._mgr._destroy_if_idle(
+                m, reason=reason, max_active=int(mine), mark_recreate=True, check_jobs=True
+            )
+            if destroyed == _BUSY_JOBS:
+                raise SandboxError("有后台任务在运行，先用 cancel_job 取消")
+            if destroyed == 0:
                 self._mgr._audit(self._group_id, "reset_deferred", invocation=self._invocation_id, claim=m.claim)
                 return "有其他请求正在使用这个工作区，等它们结束后会重建；这次请求里文件还在。"
             await self.backend.detach()
@@ -943,17 +1034,14 @@ class Session:
                 LOGGER.warning("sandbox group {} lock busy; skipping reap on release", self._group_id)
             elif remaining == 0:
                 await self._reap(m)
-                if m.recreate and await self._mgr._destroy_if_idle(m, reason="pending recreate") == 1:
+                if m.recreate and await self._mgr._destroy_if_idle(m, reason="pending recreate", check_jobs=True) == 1:
                     return
             await self._mgr._renew(m, self._cfg)
 
     async def _reap(self, m: Mapping) -> None:
-        argv = [_REAP]
-        for link in m.links:
-            if link.pgid is not None:
-                argv += ["--keep-pgid", str(link.pgid)]
+        keep = cast(dict[str, str], await self._mgr._r().hgetall(keep_key(self._group_id)))  # pyright: ignore[reportGeneralTypeIssues]
         try:
-            result = await self.backend.exec(argv, seconds=30)
+            result = await self.backend.exec(reap_argv(keep, m.links), seconds=30)
             if result.exit_code != 0:
                 LOGGER.warning("sandbox reap exited {}: {}", result.exit_code, result.stderr[:300])
         except WorkspaceUnavailableError:

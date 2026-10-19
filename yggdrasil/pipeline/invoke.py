@@ -24,13 +24,14 @@ from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, tool_names, tools_for
 from yggdrasil.bot.state import identity, should_quote
+from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import Meta, react, send_forward, send_text
-from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage, sees_images
+from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage, sees_images
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
@@ -89,8 +90,31 @@ class Invocator:
         group_id: int | None,
         role: Role = "member",
     ) -> None:
-        self.bot, self.api, self.event, self.resolved = bot, api, event, resolved
-        self.handler, self.request_text, self.settings, self.group_id = handler, request_text, settings, group_id
+        self._setup(
+            bot, api, handler, settings, group_id, user_id=event.user_id, trigger_message_id=event.message_id, role=role
+        )
+        self.event, self.resolved, self.request_text = event, resolved, request_text
+        self.rule_id = resolved.rule_id
+
+    def _setup(
+        self,
+        bot: Bot,
+        api: NapCatAPI,
+        handler: Handler,
+        settings: Settings,
+        group_id: int | None,
+        *,
+        user_id: int,
+        trigger_message_id: int,
+        role: Role,
+        record_handler: str | None = None,
+    ) -> None:
+        """State shared by every kind of run; ``record_handler`` names it in records and metrics when it differs
+        from the route ``handler`` (a job report runs on the chat route)."""
+        self.bot, self.api, self.handler, self.settings, self.group_id = bot, api, handler, settings, group_id
+        self.user_id, self.trigger_message_id = user_id, trigger_message_id
+        self.record_handler: str = record_handler or handler
+        self.rule_id: int | None = None
         self.role: Role = role
         self.reply_qq_message_id: int | None = None
         self.started = time.perf_counter()
@@ -106,9 +130,13 @@ class Invocator:
         return time.perf_counter() - self.started
 
     async def run(self) -> None:
-        attrs = {"ygg.handler": self.handler, "ygg.group_id": self.group_id or 0, "ygg.rule_id": self.resolved.rule_id}
+        attrs = {
+            "ygg.handler": self.record_handler,
+            "ygg.group_id": self.group_id or 0,
+            "ygg.rule_id": self.rule_id or 0,
+        }
         with TRACER.start_as_current_span(
-            f"ygg.invocation {self.handler}", kind=trace.SpanKind.SERVER, attributes=attrs
+            f"ygg.invocation {self.record_handler}", kind=trace.SpanKind.SERVER, attributes=attrs
         ) as span:
             self.meta.trace_id = current_trace_id()
             status, error = "failed", None
@@ -118,15 +146,15 @@ class Invocator:
                 status = await self._run()
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"[:1000]
-                LOGGER.exception("invocation {} failed", self.handler)
+                LOGGER.exception("invocation {} failed", self.record_handler)
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
                 await self._status(self.settings.interaction.failure_emoji)
             finally:
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
-                INVOCATIONS.add(1, {"handler": self.handler, "outcome": status})
-                INVOCATION_DURATION.record(self.meta.total_s, {"handler": self.handler})
+                INVOCATIONS.add(1, {"handler": self.record_handler, "outcome": status})
+                INVOCATION_DURATION.record(self.meta.total_s, {"handler": self.record_handler})
                 if not self._finished:
                     await self._finish(status, error)
                 if self.sandbox is not None:
@@ -156,14 +184,14 @@ class Invocator:
         return prompt
 
     # --- bookkeeping -------------------------------------------------------
-    async def _start_row(self, ctx: BuiltContext) -> None:
+    async def _start_row(self, request_text: str) -> None:
         async with get_session() as session:
             row = Invocation(
                 group_id=self.group_id,
-                user_id=self.event.user_id,
-                handler=self.handler,
-                trigger_qq_message_id=self.event.message_id,
-                request_text=(self.request_text or ctx.trigger.text)[:2000],
+                user_id=self.user_id,
+                handler=self.record_handler,
+                trigger_qq_message_id=self.trigger_message_id,
+                request_text=request_text[:2000],
                 status="running",
                 trace_id=self.meta.trace_id,
             )
@@ -191,7 +219,7 @@ class Invocator:
     async def _finish(self, status: str, error: str | None, **extra: object) -> None:
         self._finished = True
         self.meta.total_s = self.elapsed()
-        await ratelimit.add_tokens(self.group_id, self.meta.tokens_in + self.meta.tokens_out)
+        await ratelimit.add_tokens(self.group_id, self._billable_tokens())
         if self.invocation_id is None:
             return
         with contextlib.suppress(Exception):
@@ -214,6 +242,10 @@ class Invocator:
                     )
                 )
 
+    def _billable_tokens(self) -> int:
+        """Tokens this run adds to the group's daily budget."""
+        return self.meta.tokens_in + self.meta.tokens_out
+
     # --- main flow ---------------------------------------------------------
     async def _run(self) -> str:
         ident = await identity(self.bot)
@@ -234,12 +266,12 @@ class Invocator:
             request_text=self.request_text,
             workspace=sandbox_on,
         )
-        await self._start_row(ctx)
+        await self._start_row(self.request_text or ctx.trigger.text)
         try:
             resolved_model = chat_model(self.handler)
         except TaskNotConfigured:
             LOGGER.warning("task {} has no model route; configure it in the dashboard", self.handler)
-            await react(self.api, self.event.message_id, self.settings.interaction.failure_emoji)
+            await react(self.api, self.trigger_message_id, self.settings.interaction.failure_emoji)
             return "failed"
 
         mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
@@ -248,19 +280,22 @@ class Invocator:
             replied_bot_msg
             if replied_bot_msg is not None
             and self.group_id is not None
-            and await may_recall(self.role, self.event.user_id, self.group_id, replied_bot_msg)
+            and await may_recall(self.role, self.user_id, self.group_id, replied_bot_msg)
             else None
         )
         deps = Deps(
             self.api,
             self.group_id,
-            self.event.user_id,
+            self.user_id,
             self.settings,
             ctx.handles,
             self.handler,
             recall_target=recall_target,
             self_id=ident.self_id,
             on_slow_tool=self._mark_slow,
+            trigger_message_id=self.trigger_message_id,
+            invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
+            request_text=ctx.request_text or ctx.trigger.text,
         )
         actions = action_tools(deps)
         tools_cfg = self.settings.tools
@@ -276,12 +311,37 @@ class Invocator:
             )
             extra_tools = sandbox_tools.bot_tools()
             prompt_tools += [*sandbox_tools.HARNESS_TOOL_NAMES, *(t.name for t in extra_tools)]
-            capabilities = sandbox_tools.capabilities(tools_cfg)
+            capabilities = sandbox_tools.capabilities()
+        agent = self._agent(
+            resolved_model,
+            tools=tools_for(tool_list) + actions + extra_tools,
+            capabilities=capabilities,
+            prompt_tools=prompt_tools,
+            actions=[t.name for t in actions],
+            recall_denied=replied_bot_msg is not None and recall_target is None,
+            nonce=ctx.nonce,
+        )
+        prompt = await self._prompt_with_images(ctx)
+        return await self._execute(agent, prompt, deps, resolved_model, mod_text)
+
+    def _agent(
+        self,
+        resolved_model: ResolvedModel,
+        *,
+        tools: list[Tool[Deps]],
+        capabilities: list[AbstractCapability[Deps]],
+        prompt_tools: list[str],
+        actions: list[str],
+        recall_denied: bool,
+        nonce: str,
+        report: bool = False,
+    ) -> Agent[Deps, BotReply]:
         group_name = ""
         if self.group_id is not None:
             info = snapshot().groups.get(self.group_id)
             group_name = info.name if info else ""
-        agent: Agent[Deps, BotReply] = Agent(
+        tools_cfg = self.settings.tools
+        return Agent(
             resolved_model.model,
             output_type=BotReply,
             deps_type=Deps,
@@ -292,22 +352,34 @@ class Invocator:
                 now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
                 tools=prompt_tools,
                 sandbox=tools_cfg if self.sandbox is not None else None,
-                actions=[t.name for t in actions],
-                recall_denied=replied_bot_msg is not None and recall_target is None,
+                sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
+                actions=actions,
+                recall_denied=recall_denied,
+                report=report,
                 style=render("style_rules"),
                 data_rules=render(
                     "data_rules",
-                    nonce=ctx.nonce,
+                    nonce=nonce,
                     me=self_label(self.settings.persona.name),
                     sandbox=self.sandbox is not None,
                 ),
             ),
-            tools=tools_for(tool_list) + actions + extra_tools,
+            tools=tools,
             capabilities=capabilities,
             name=self.handler,
             retries=2,
         )
-        prompt = await self._prompt_with_images(ctx)
+
+    async def _execute(
+        self,
+        agent: Agent[Deps, BotReply],
+        prompt: str | list[UserContent],
+        deps: Deps,
+        resolved_model: ResolvedModel,
+        mod_text: str,
+    ) -> str:
+        """Run the agent next to input moderation, then moderate, deliver and record the reply."""
+        tools_cfg = self.settings.tools
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         run_stats = RunStats()
         stats_token = RUN_STATS.set(run_stats)  # the task copies the context, sub-agents included
@@ -380,8 +452,8 @@ class Invocator:
                 self.bot,
                 invocation_id=self.invocation_id,
                 group_id=self.group_id,
-                user_id=self.event.user_id,
-                trigger_qq_message_id=self.event.message_id,
+                user_id=self.user_id,
+                trigger_qq_message_id=self.trigger_message_id,
                 request_text=mod_text,
                 reply=reply,
                 verdict=v_out,
@@ -402,13 +474,13 @@ class Invocator:
     async def _send_text(self, text: str, *, allow_quote: bool = True) -> None:
         ident = await identity(self.bot)
         quote = allow_quote and should_quote(
-            self.group_id, self.event.message_id, self.settings.interaction.quote_reply
+            self.group_id, self.trigger_message_id, self.settings.interaction.quote_reply
         )
         await send_text(
             self.api,
             group_id=self.group_id,
-            user_id=self.event.user_id,
-            reply_to=self.event.message_id if quote else None,
+            user_id=self.user_id,
+            reply_to=self.trigger_message_id if quote else None,
             text=text,
             self_id=ident.self_id,
             nickname=ident.nickname,
@@ -419,14 +491,14 @@ class Invocator:
         self.ack_kind = kind
         if self.meta.ack_s is None:
             self.meta.ack_s = self.elapsed()
-            INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.handler, "kind": kind})
+            INVOCATION_ACK_LATENCY.record(self.meta.ack_s, {"handler": self.record_handler, "kind": kind})
 
     async def _status(self, emoji: str) -> bool:
         """Add a status reaction to the trigger message. Reactions are never removed: frequent
         add/remove pairs look automated to QQ's risk control."""
         if not emoji:
             return False
-        await react(self.api, self.event.message_id, emoji)
+        await react(self.api, self.trigger_message_id, emoji)
         return True
 
     async def _mark_slow(self) -> None:
@@ -488,7 +560,7 @@ class Invocator:
         self.reply_qq_message_id = await send_forward(
             self.api,
             group_id=self.group_id,
-            user_id=self.event.user_id,
+            user_id=self.user_id,
             reply=reply,
             meta_text=meta_text,
             cfg=cfg,

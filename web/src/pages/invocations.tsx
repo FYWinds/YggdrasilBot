@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { fmtTime } from "@/lib/format";
 
 const STATUSES = ["running", "ok", "silent", "blocked_input", "review", "rejected", "failed", "ratelimited", "cancelled"];
-const HANDLERS = ["chat", "tldr", "privacy.optout", "privacy.optin", "privacy.forget", "admin.review", "admin.status"];
+const HANDLERS = ["chat", "tldr", "report", "privacy.optout", "privacy.optin", "privacy.forget", "admin.review", "admin.status"];
 const LIMIT = 50;
 
 function statusVariant(status: string): "default" | "destructive" | "outline" | "secondary" {

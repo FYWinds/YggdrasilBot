@@ -3324,6 +3324,71 @@
           }
         }
       }
+    },
+    "/sandbox/jobs": {
+      "get": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "List Jobs",
+        "description": "Background jobs of every group (running and finished within the retention), newest first.",
+        "operationId": "list_jobs",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_JobOut_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandbox/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "Cancel Job",
+        "description": "Stop a running job; the poller ends it within seconds and the group still gets its report.",
+        "operationId": "cancel_job",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4423,6 +4488,216 @@
         ],
         "title": "InvocationSummary"
       },
+      "JobEventOut": {
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "at",
+          "text"
+        ],
+        "title": "JobEventOut"
+      },
+      "JobLinkOut": {
+        "properties": {
+          "port": {
+            "type": "integer",
+            "title": "Port"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "port",
+          "url"
+        ],
+        "title": "JobLinkOut"
+      },
+      "JobOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "spec": {
+            "type": "string",
+            "title": "Spec"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Deadline"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "progress": {
+            "type": "string",
+            "title": "Progress"
+          },
+          "result": {
+            "type": "string",
+            "title": "Result"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobUsageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/JobLinkOut"
+            },
+            "type": "array",
+            "title": "Links"
+          },
+          "images": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Images"
+          },
+          "cancel": {
+            "type": "string",
+            "title": "Cancel"
+          },
+          "report": {
+            "type": "string",
+            "title": "Report"
+          },
+          "report_invocation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Invocation"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/JobEventOut"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "group_id",
+          "user_id",
+          "title",
+          "spec",
+          "status",
+          "created_at",
+          "deadline",
+          "ended_at",
+          "progress",
+          "result",
+          "error",
+          "model",
+          "usage",
+          "links",
+          "images",
+          "cancel",
+          "report",
+          "report_invocation",
+          "events"
+        ],
+        "title": "JobOut"
+      },
+      "JobUsageOut": {
+        "properties": {
+          "requests": {
+            "type": "integer",
+            "title": "Requests"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "cached_tokens": {
+            "type": "integer",
+            "title": "Cached Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "requests",
+          "input_tokens",
+          "cached_tokens",
+          "output_tokens"
+        ],
+        "title": "JobUsageOut"
+      },
       "LinkOut": {
         "properties": {
           "port": {
@@ -4437,6 +4712,17 @@
             "type": "string",
             "title": "Command"
           },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pid"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4448,6 +4734,7 @@
           "port",
           "url",
           "command",
+          "pid",
           "created_at"
         ],
         "title": "LinkOut"
@@ -4689,6 +4976,27 @@
           "total"
         ],
         "title": "Page[InvocationSummary]"
+      },
+      "Page_JobOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "Page[JobOut]"
       },
       "Page_ProfileOut_": {
         "properties": {

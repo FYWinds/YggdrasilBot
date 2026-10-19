@@ -15,7 +15,8 @@ from tests.sandbox.helpers import FakeKube
 from yggdrasil.sandbox import SandboxError, Session, WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint, _Exec
 from yggdrasil.sandbox.k8s import KubeClient
-from yggdrasil.sandbox.state import ws_key
+from yggdrasil.sandbox.manager import Listener
+from yggdrasil.sandbox.state import keep_key, ws_key
 from yggdrasil.settings import ToolSettings
 
 GROUP = 10001
@@ -261,3 +262,119 @@ async def test_touch_renews_from_the_current_mapping_when_due(
     expires = float(await fake_redis.hget(ws_key(GROUP), "expires_at") or 0)  # pyright: ignore[reportGeneralTypeIssues]
     assert expires > time.time() + CFG.sandbox_max_age_min * 60 - 120
     await a.close()
+
+
+async def test_keep_hash_is_spared_by_reap_and_cleared_with_the_workspace(
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+) -> None:
+    await fake_redis.hset(keep_key(GROUP), "kernel", "999")  # pyright: ignore[reportGeneralTypeIssues]  # a stale one
+    reaper = Reaper()
+    a = _session(mgr, "a", reaper)
+    await a.backend.working_dir()
+    assert not await fake_redis.exists(keep_key(GROUP))  # a new workspace starts without kept processes
+    await a.keep_kernel(12)
+    await fake_redis.hset(keep_key(GROUP), "job:abc", "30")  # pyright: ignore[reportGeneralTypeIssues]
+    await a.close()
+    assert reaper.calls == [["/opt/ygg/reap", "--keep-tree", "30", "--keep-tree", "12"]]
+    await a.keep_kernel(None)
+    assert await fake_redis.hgetall(keep_key(GROUP)) == {"job:abc": "30"}  # pyright: ignore[reportGeneralTypeIssues]
+    assert await mgr.destroy(GROUP, reason="admin", force=True)  # admin destroy ignores jobs
+    assert not await fake_redis.exists(keep_key(GROUP))
+    assert kube.claim_names() == []
+
+
+async def test_background_jobs_keep_a_workspace_from_reset_and_eviction(
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+) -> None:
+    cfg = ToolSettings(sandbox_max_workspaces=1)
+    a = mgr.session(GROUP, invocation_id="a", cfg=cfg)
+    a.backend.exec = Reaper()  # pyright: ignore[reportAttributeAccessIssue]
+    await a.backend.working_dir()
+    claim = await _claim(fake_redis)
+    await fake_redis.hset(keep_key(GROUP), "job:abc", "30")  # pyright: ignore[reportGeneralTypeIssues]
+    with pytest.raises(SandboxError, match="cancel_job"):
+        await a.reset()
+    assert await fake_redis.hget(ws_key(GROUP), "recreate") == "0"  # pyright: ignore[reportGeneralTypeIssues]
+    await a.close()
+    other = mgr.session(GROUP + 1, invocation_id="other", cfg=cfg)
+    other.backend.exec = Reaper()  # pyright: ignore[reportAttributeAccessIssue]
+    with pytest.raises(SandboxError, match="上限"):
+        await other.backend.working_dir()  # idle, but its job keeps it
+    assert kube.claim_names() == [claim]
+    await fake_redis.hdel(keep_key(GROUP), "job:abc")  # pyright: ignore[reportGeneralTypeIssues]
+    await other.backend.working_dir()
+    assert claim not in kube.claim_names()
+    await other.close()
+
+
+async def test_backend_for_and_renew_never_create(mgr: WorkspaceManager, kube: FakeKube) -> None:
+    assert await mgr.backend_for(GROUP) is None
+    assert not await mgr.renew(GROUP, CFG)
+    assert kube.claims() == []
+    a = _session(mgr, "a")
+    await a.backend.working_dir()
+    found = await mgr.backend_for(GROUP)
+    assert found is not None
+    backend, claim = found
+    assert backend.ref == WorkspaceRef(provider="sandboxd", id=claim)
+    await backend.aclose()
+    assert (await mgr.get(GROUP)).active == 1  # pyright: ignore[reportOptionalMemberAccess]  # not counted
+    patches = kube.patches
+    assert await mgr.renew(GROUP, CFG)
+    assert kube.patches == patches + 1
+    await a.close()
+    for key in [k for k in kube.objects if "/sandboxclaims/" in k]:
+        del kube.objects[key]
+    assert not await mgr.renew(GROUP, CFG)
+    assert await mgr.get(GROUP) is None
+
+
+async def test_publish_links_the_listener_and_unpublish_removes_it(
+    kube_client: KubeClient, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = WorkspaceManager(
+        token="test",
+        namespace="ns",
+        warmpool="pool",
+        link_domain="links.example.com",
+        kube=kube_client,
+        redis=lambda: fake_redis,
+        endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
+    )
+
+    async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
+        return True
+
+    async def listener(_gid: int, port: int) -> Listener:
+        return Listener(pid=41, pgid=40, addr="0.0.0.0", cmdline=f"python3 -m http.server {port}")
+
+    monkeypatch.setattr(mgr, "_healthy", healthy)
+    monkeypatch.setattr(mgr, "_listener", listener)
+    cfg = ToolSettings(sandbox_max_links=1)
+    with pytest.raises(SandboxError, match="回收"):
+        await mgr.publish(GROUP, 8000, cfg, audit={})
+    a = mgr.session(GROUP, invocation_id="a", cfg=cfg)
+    reaper = Reaper()
+    a.backend.exec = reaper  # pyright: ignore[reportAttributeAccessIssue]
+    await a.backend.working_dir()
+    with pytest.raises(SandboxError, match="8080"):
+        await a.publish(8080)
+    link = await a.publish(8000)
+    assert link.pid == 41
+    assert link.command == "python3 -m http.server 8000"
+    assert link.url.startswith("https://sbx-")
+    assert link.url.endswith(".links.example.com")
+    assert await a.publish(8000) == link  # already public: the same link
+    with pytest.raises(SandboxError, match="最多 1 个"):
+        await a.publish(8001)
+    info = await mgr.get(GROUP)
+    assert info is not None
+    assert info.expires_at > time.time() + CFG.sandbox_max_age_min * 60 - 120  # links keep it to max age
+    rid = link.url.removeprefix("https://sbx-").split(".", 1)[0]
+    assert f"/api/v1/namespaces/ns/services/sbx-{rid}" in kube.objects
+    await a.close()
+    assert reaper.calls == [["/opt/ygg/reap", "--keep-pgid", "40", "--keep-tree", "41"]]
+    assert await mgr.unpublish(GROUP, 8000, cfg, audit={"job": "x"})
+    assert not await mgr.unpublish(GROUP, 8000, cfg, audit={})
+    assert f"/api/v1/namespaces/ns/services/sbx-{rid}" not in kube.objects
+    assert (await mgr.get(GROUP)).links == ()  # pyright: ignore[reportOptionalMemberAccess]

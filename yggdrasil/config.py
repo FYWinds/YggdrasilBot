@@ -88,6 +88,10 @@ class AppConfig(BaseSettings):
     sandbox_warmpool: str = Field(default="yggdrasil-sandbox", alias="YGG_SANDBOX_WARMPOOL")
     # Public links to services served from a workspace are https://<random id>.<this domain>; unset disables them.
     sandbox_link_domain: str | None = Field(default=None, alias="YGG_SANDBOX_LINK_DOMAIN")
+    # LLM relay for agents inside workspaces (yggdrasil.relay): the base URL sandboxes reach it at; unset disables
+    # it. The bot process serves it on its own port so only that port has to be opened to sandbox pods.
+    relay_url: str | None = Field(default=None, alias="YGG_RELAY_URL")
+    relay_port: int = Field(default=8090, alias="YGG_RELAY_PORT")
 
 
 DB_CONFIG = DbConfig()

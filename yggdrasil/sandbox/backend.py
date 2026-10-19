@@ -270,6 +270,11 @@ class _Transient(Exception):
     """sandboxd did not answer; the operation never reached it (safe to retry)."""
 
 
+_READY_WAIT = 5.0
+"""How long a run-once command waits for the gRPC connection to be ready before each (re)try."""
+UNKNOWN_OUTCOME = "命令发出后沙箱服务断开了，结果未知（可能已经执行）；先检查一下再决定要不要重试。"
+
+
 def shell_argv(command: WorkspaceCommand, shell: bool) -> list[str]:
     """The argv sandboxd runs: string commands under ``bash --norc --noprofile -c``, argv as given, both wrapped
     so stdin is ``/dev/null``. Applies the protocol's ``shell`` rules (mismatch is a ``TypeError``)."""
@@ -379,9 +384,17 @@ class SandboxdWorkspace:
         """Whether the first operation has reached a sandbox (no I/O)."""
         return self._conn is not None
 
-    @property
-    def commands_run(self) -> int:
-        return self._budget.commands
+    async def admit(self, timeout: float | None) -> tuple[float | None, str | None]:  # noqa: ASYNC109 - a budget
+        """Attach, then count one model-issued command (``sh`` / ``py``) against the invocation budget: its
+        effective timeout and the note to show when that was cut short. Run it with ``exec(..., audit=...)``."""
+        await self._ensure()
+        await self._touch()
+        return self._budget.admit(timeout)
+
+    def take_notice(self) -> str | None:
+        """The one-off attach notice (e.g. the previous workspace expired), handed out once."""
+        notice, self._notice = self._notice, None
+        return notice
 
     async def working_dir(self) -> str:
         await self._ensure()
@@ -541,8 +554,7 @@ class SandboxdWorkspace:
                     raise SandboxToolError("工作区暂时连不上（沙箱服务可能在重启），稍后再试。") from e
                 await anyio.sleep(delay)
                 continue
-            if notice := self._notice:
-                self._notice = None
+            if notice := self.take_notice():
                 result = CommandResult(
                     exit_code=result.exit_code, stdout=result.stdout, stderr=f"{notice}\n{result.stderr}"
                 )
@@ -629,18 +641,38 @@ class SandboxdWorkspace:
             **self._audit,
         ).info("sandbox run exit={} in {:.1f}s: {}", outcome, elapsed, text[:200])
 
-    async def exec(self, argv: Sequence[str], *, seconds: float = _INTERNAL_TIMEOUT, retry: bool = True) -> _Exec:
-        """Run a helper command (not audited, not charged to the budget) and return raw bytes. ``retry=False``
-        fails fast while sandboxd is unreachable instead of backing off."""
+    async def exec(
+        self,
+        argv: Sequence[str],
+        *,
+        seconds: float = _INTERNAL_TIMEOUT,
+        retry: bool = True,
+        once: bool = False,
+        audit: str | None = None,
+    ) -> _Exec:
+        """Run a helper command and return raw bytes. ``retry=False`` fails fast while sandboxd is unreachable
+        instead of backing off. ``once``: the command is not idempotent (starts a process, writes into a pipe), so
+        it is only retried while the connection is not even established; once sent, a lost connection raises
+        ``SandboxToolError`` (``UNKNOWN_OUTCOME``) instead of running it again. Not audited or charged to the
+        budget unless ``audit`` (the command text to log) is given: model-issued commands admitted with
+        ``admit`` pass it."""
         args = list(argv)
 
         async def op(conn: _Conn) -> _Exec:
             request = process_pb2.ExecuteRequest(config=process_pb2.ProcessConfig(command=args))
+            if once:
+                try:
+                    await asyncio.wait_for(conn.channel.channel_ready(), _READY_WAIT)
+                except TimeoutError as e:
+                    raise _Transient("sandboxd not reachable") from e
             try:
                 response = await conn.stub.Execute(request, metadata=self._metadata, timeout=seconds)
             except grpc.aio.AioRpcError as e:
                 code = e.code()
                 if code == grpc.StatusCode.UNAVAILABLE:
+                    if once:
+                        await self._recover(conn, e)  # WorkspaceUnavailableError when the sandbox is gone
+                        raise SandboxToolError(UNKNOWN_OUTCOME) from e
                     raise _Transient(e.details() or "unavailable") from e
                 if code == grpc.StatusCode.DEADLINE_EXCEEDED:
                     raise WorkspaceTimeoutError(f"workspace helper command timed out after {seconds:g}s") from e
@@ -651,7 +683,24 @@ class SandboxdWorkspace:
                 raise self._rpc_error(e) from e
             return _Exec(response.exit_code, response.stdout, response.stderr)
 
-        return await self._with_retry(op, retry=retry)
+        if audit is None:
+            return await self._with_retry(op, retry=retry)
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            result = await self._with_retry(op, retry=retry)
+            outcome = str(result.exit_code)
+            return result
+        except WorkspaceTimeoutError:
+            outcome = "timeout"
+            raise
+        except BaseException as e:
+            outcome = type(e).__name__
+            raise
+        finally:
+            elapsed = time.monotonic() - started
+            self._budget.seconds += elapsed
+            self._log_command(audit, outcome, elapsed)
 
     async def _script(self, script: str, *args: str) -> _Exec:
         return await self.exec(["/bin/sh", "-c", script, "sh", *args])

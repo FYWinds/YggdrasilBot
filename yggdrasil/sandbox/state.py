@@ -10,6 +10,7 @@ from typing import Any
 
 WS_KEY_PREFIX = "ygg:sandbox:ws:"
 LOCK_KEY_PREFIX = "ygg:sandbox:lock:"
+KEEP_KEY_PREFIX = "ygg:sandbox:keep:"
 RESERVED_PORTS = frozenset({8080, 9090})
 """sandboxd's REST and gRPC ports, never exposed."""
 
@@ -22,6 +23,11 @@ def ws_key(group_id: int) -> str:
 
 def lock_key(group_id: int) -> str:
     return f"{LOCK_KEY_PREFIX}{group_id}"
+
+
+def keep_key(group_id: int) -> str:
+    """Hash of processes the end-of-invocation reap must spare: ``kernel`` -> pid, ``job:<id>`` -> pid."""
+    return f"{KEEP_KEY_PREFIX}{group_id}"
 
 
 def random_id(n: int) -> str:
@@ -62,6 +68,7 @@ class Link:
     url: str
     command: str
     created_at: float
+    pid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +87,8 @@ class WorkspaceInfo:
 
 @dataclass(frozen=True)
 class LinkRecord:
-    """A link as stored: the public fields plus its Kubernetes object id and the served process group."""
+    """A link as stored: the public fields plus its Kubernetes object id and the listener's process (pid and
+    process group, both spared by the end-of-invocation reap)."""
 
     id: str
     port: int
@@ -88,9 +96,10 @@ class LinkRecord:
     command: str
     created_at: float
     pgid: int | None
+    pid: int | None = None
 
     def public(self) -> Link:
-        return Link(port=self.port, url=self.url, command=self.command, created_at=self.created_at)
+        return Link(port=self.port, url=self.url, command=self.command, created_at=self.created_at, pid=self.pid)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -100,11 +109,12 @@ class LinkRecord:
             "command": self.command,
             "created_at": self.created_at,
             "pgid": self.pgid,
+            "pid": self.pid,
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> LinkRecord:
-        pgid = data.get("pgid")
+        pgid, pid = data.get("pgid"), data.get("pid")
         return cls(
             id=str(data["id"]),
             port=int(data["port"]),
@@ -112,6 +122,7 @@ class LinkRecord:
             command=str(data.get("command", "")),
             created_at=float(data.get("created_at", 0.0)),
             pgid=int(pgid) if pgid is not None else None,
+            pid=int(pid) if pid is not None else None,
         )
 
 

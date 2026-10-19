@@ -179,6 +179,9 @@ def main() -> None:
         from yggdrasil.ingest.writer import WRITER
         from yggdrasil.moderation.review import expire_loop
         from yggdrasil.readiness import wait_for_dependencies
+        from yggdrasil.relay.server import start_relay
+        from yggdrasil.sandbox import manager
+        from yggdrasil.sandbox.jobs import runner
         from yggdrasil.seed import seed_defaults
 
         init_engine()
@@ -199,18 +202,26 @@ def main() -> None:
                 ("gauges", _gauge_loop()),
             )
         )
+        if manager().configured:
+            # Background jobs: resumes whatever was running before this process started.
+            _tasks.append(asyncio.create_task(runner().run_forever(), name="sandbox-jobs"))
+        await start_relay()  # after runtime.load: it routes by the snapshot's chat route
         LOGGER.info("yggdrasil bot started on {}:{}", APP_CONFIG.host, APP_CONFIG.port)
 
     @driver.on_shutdown
     async def _shutdown() -> None:
         from yggdrasil.db.session import dispose_engine
         from yggdrasil.ingest.writer import WRITER
+        from yggdrasil.relay.server import stop_relay
+        from yggdrasil.sandbox.jobs import runner
 
+        await stop_relay()
         for task in _tasks:
             task.cancel()
         for task in _tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        await runner().aclose()  # in-flight job visits; the jobs keep running and are resumed on restart
         with contextlib.suppress(Exception):
             await WRITER.flush()
         await dispose_engine()

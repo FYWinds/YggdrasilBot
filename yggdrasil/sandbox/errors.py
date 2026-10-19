@@ -1,9 +1,9 @@
 """Sandbox error types.
 
-How they reach the model: harness ``Shell``/``FileSystem`` tools turn any ``WorkspaceError`` (other than
-``WorkspaceUnavailableError``) into ``ToolFailed`` with the exception text, which the model reads as a
-failed tool call and the run continues; any other exception ends the run. So every failure the model
-should read and work around (limits, a workspace that cannot be created right now) is a
+How they reach the model: harness ``FileSystem`` tools (``ws_read_file`` / ``ws_edit_file``) turn any
+``WorkspaceError`` (other than ``WorkspaceUnavailableError``) into ``ToolFailed`` with the exception text,
+which the model reads as a failed tool call and the run continues; any other exception ends the run. So every
+failure the model should read and work around (limits, a workspace that cannot be created right now) is a
 ``SandboxToolError``: a ``WorkspaceError`` for the harness tools and a ``SandboxError`` for the bot's
 own sandbox tools. ``WorkspaceUnavailableError`` is kept for an environment that is really gone mid-run,
 which pydantic-ai defines as run-ending.

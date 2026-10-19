@@ -1,0 +1,26 @@
+# /etc/ygg/omp.yml: read-only settings overlay for omp inside the workspace (`omp --config /etc/ygg/omp.yml`).
+# Headless background agent: no update checks, marketplace updates, cache warming, telemetry export,
+# autolearn, advisor, memory backend, web search, browser relays or LSP.
+startup:
+  checkUpdate: false
+marketplace:
+  autoUpdate: "off"
+providers:
+  cacheWarming: "off"
+telemetry:
+  otlpExportEnabled: false
+autolearn:
+  enabled: false
+  autoContinue: false
+advisor:
+  enabled: false
+memory:
+  backend: "off"
+web_search:
+  enabled: false
+browser:
+  relay: false
+  tern: false
+  cmux: false
+lsp:
+  enabled: false

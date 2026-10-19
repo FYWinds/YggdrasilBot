@@ -37,24 +37,25 @@ jobs:
       - run: uv sync --locked
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      # Minimal sandboxd (target `sandboxd` of sandbox/Dockerfile) for the sandbox conformance tests.
-      - name: Build sandboxd test image
+      # Test sandbox (target `sandboxd-test` of sandbox/Dockerfile: sandboxd, Python + ipykernel and the /opt/ygg
+      # helpers) for the sandbox conformance and in-sandbox helper tests.
+      - name: Build sandbox test image
         uses: docker/build-push-action@v6
         with:
           context: sandbox
           file: sandbox/Dockerfile
-          target: sandboxd
+          target: sandboxd-test
           load: true
-          tags: ygg-sandboxd-test:ci
-          cache-from: type=gha,scope=sandboxd
-          cache-to: type=gha,mode=max,scope=sandboxd
+          tags: ygg-sbx-test:ci
+          cache-from: type=gha,scope=sandboxd-test
+          cache-to: type=gha,mode=max,scope=sandboxd-test
       - name: Start sandboxd
         run: |
           token="$(openssl rand -hex 32)"
           echo "::add-mask::$token"
           digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
-          docker run -d --name ygg-sandboxd-test -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 \
-            ygg-sandboxd-test:ci --root-dir=/workspace "--auth-token-sha256=$digest"
+          docker run -d --name ygg-sbx-test -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 \
+            ygg-sbx-test:ci --root-dir=/workspace "--auth-token-sha256=$digest"
           for _ in $(seq 1 30); do
             curl -fsS http://127.0.0.1:18080/v1/health && break
             sleep 1

@@ -13,9 +13,15 @@ _tasks: set[asyncio.Task[Any]] = set()
 
 
 def spawn(coro: Coroutine[Any, Any, Any]) -> None:
+    track(coro)
+
+
+def track[T](coro: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+    """Run ``coro`` as a task that ``drain`` waits for; returns the task."""
     task = asyncio.create_task(coro)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+    return task
 
 
 async def drain(max_wait: float) -> int:

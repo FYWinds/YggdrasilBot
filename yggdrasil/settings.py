@@ -126,7 +126,7 @@ class ToolSettings(BaseModel):
             "render_html",
             "sandbox",
         ],
-        description="启用的工具；sandbox 表示整套工作区工具（命令行、文件、send_image、serve 等，只在群聊 chat 生效）",
+        description="启用的工具；sandbox 表示整套工作区工具（sh、py、文件读改、后台任务等，只在群聊 chat 生效）",
     )
     slow_tools: list[str] = Field(
         default_factory=lambda: [
@@ -138,10 +138,9 @@ class ToolSettings(BaseModel):
             "render_mermaid",
             "render_markdown",
             "render_html",
-            "run_command",
+            "sh",
+            "py",
             "sandbox_put",
-            "send_image",
-            "serve",
             "reset_workspace",
         ],
         description="耗时工具：第一次调用时贴 interaction.slow_tool_emoji",
@@ -157,14 +156,16 @@ class ToolSettings(BaseModel):
     sandbox_enabled: bool = Field(
         default=True, description="工作区总开关（只看全局设置，群设置里改它无效）；关掉后所有群都没有工作区工具"
     )
-    sandbox_command_timeout_s: int = Field(default=60, ge=1, le=300, description="工作区单条命令的默认超时（秒）")
+    sandbox_command_timeout_s: int = Field(
+        default=60, ge=1, le=300, description="工作区 sh / py 单次调用的默认超时（秒）"
+    )
     sandbox_command_max_s: int = Field(
-        default=300, ge=1, le=1800, description="工作区单条命令最长允许的超时（秒），模型指定更长的会被截到这里"
+        default=300, ge=1, le=1800, description="工作区 sh / py 单次调用最长允许的超时（秒），模型指定更长的会被截短"
     )
     sandbox_invocation_s: int = Field(
-        default=600, ge=30, le=3600, description="一次请求里工作区命令累计最多运行多久（秒）"
+        default=600, ge=30, le=3600, description="一次请求里工作区 sh / py 累计最多运行多久（秒）"
     )
-    sandbox_max_commands: int = Field(default=40, ge=1, le=200, description="一次请求里最多执行多少条工作区命令")
+    sandbox_max_commands: int = Field(default=40, ge=1, le=200, description="一次请求里最多调用多少次 sh / py")
     sandbox_idle_min: int = Field(
         default=30, ge=5, le=1440, description="工作区闲置多久（分钟）后回收，回收后文件全部丢失"
     )
@@ -172,12 +173,28 @@ class ToolSettings(BaseModel):
         default=240, ge=10, le=10080, description="工作区最长存活时间（分钟），到期后下次使用会重建"
     )
     sandbox_max_workspaces: int = Field(default=4, ge=1, le=50, description="全局同时存在的工作区上限")
-    sandbox_max_links: int = Field(default=3, ge=0, le=20, description="每个工作区同时公开的链接（serve）上限")
+    sandbox_max_links: int = Field(default=3, ge=0, le=20, description="每个工作区同时公开的链接（publish）上限")
     sandbox_request_limit: int = Field(
         default=40, ge=1, le=200, description="有工作区工具的请求的模型调用次数上限（取代 request_limit）"
     )
     sandbox_tool_calls_limit: int = Field(
         default=60, ge=1, le=400, description="有工作区工具的请求的工具调用次数上限（取代 tool_calls_limit）"
+    )
+    sandbox_max_jobs: int = Field(
+        default=2, ge=0, le=10, description="每群同时运行的后台任务上限（其中后台大任务最多 1 个）；0 关闭后台任务"
+    )
+    sandbox_job_command_min: int = Field(default=30, ge=1, le=600, description="后台命令最长运行时间（分钟）")
+    sandbox_job_agent_min: int = Field(
+        default=20, ge=1, le=240, description="后台大任务（delegate）最长运行时间（分钟）"
+    )
+    sandbox_job_model: str = Field(
+        default="", description="后台大任务用的模型 id（须在 chat 路由里）；留空用 chat 路由的主模型"
+    )
+    sandbox_job_max_input_tokens: int = Field(
+        default=3_000_000, ge=10_000, description="每个后台大任务经中转最多消耗的输入 token"
+    )
+    sandbox_job_max_output_tokens: int = Field(
+        default=100_000, ge=1_000, description="每个后台大任务经中转最多消耗的输出 token"
     )
 
     @model_validator(mode="after")

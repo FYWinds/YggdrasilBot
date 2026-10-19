@@ -1,0 +1,10 @@
+#!/usr/local/bin/python3 -IS
+# /opt/ygg/ygg: workspace helper CLI run by the bot through sandboxd Execute (see ygg/_cli.py for commands).
+# -I -S: isolated from the workspace (no user site, cwd or PYTHON* env) and no site import, for a fast start;
+# `py` adds the system site-packages itself when it needs pyzmq.
+import sys
+
+sys.path.insert(0, "/opt/ygg/lib")
+from ygg._cli import main
+
+sys.exit(main(sys.argv))

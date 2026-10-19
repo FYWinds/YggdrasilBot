@@ -1,4 +1,4 @@
-"""Image moderation for pictures the bot sends from its sandbox workspace (send_image).
+"""Image moderation for pictures the bot sends from its sandbox workspace (``show()`` in the ``py`` kernel).
 
 There is no dedicated image guard model: the ``vision`` route classifies the image with a strict prompt.
 Fails closed: any error or unparsable answer counts as unsafe.

@@ -662,6 +662,143 @@ export type InvocationSummary = {
 };
 
 /**
+ * JobEventOut
+ */
+export type JobEventOut = {
+    /**
+     * At
+     */
+    at: string;
+    /**
+     * Text
+     */
+    text: string;
+};
+
+/**
+ * JobLinkOut
+ */
+export type JobLinkOut = {
+    /**
+     * Port
+     */
+    port: number;
+    /**
+     * Url
+     */
+    url: string;
+};
+
+/**
+ * JobOut
+ */
+export type JobOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: string;
+    /**
+     * Group Id
+     */
+    group_id: number;
+    /**
+     * User Id
+     */
+    user_id: number;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Spec
+     */
+    spec: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Deadline
+     */
+    deadline: string;
+    /**
+     * Ended At
+     */
+    ended_at: string | null;
+    /**
+     * Progress
+     */
+    progress: string;
+    /**
+     * Result
+     */
+    result: string;
+    /**
+     * Error
+     */
+    error: string;
+    /**
+     * Model
+     */
+    model: string;
+    usage: JobUsageOut | null;
+    /**
+     * Links
+     */
+    links: Array<JobLinkOut>;
+    /**
+     * Images
+     */
+    images: Array<string>;
+    /**
+     * Cancel
+     */
+    cancel: string;
+    /**
+     * Report
+     */
+    report: string;
+    /**
+     * Report Invocation
+     */
+    report_invocation: string | null;
+    /**
+     * Events
+     */
+    events: Array<JobEventOut>;
+};
+
+/**
+ * JobUsageOut
+ */
+export type JobUsageOut = {
+    /**
+     * Requests
+     */
+    requests: number;
+    /**
+     * Input Tokens
+     */
+    input_tokens: number;
+    /**
+     * Cached Tokens
+     */
+    cached_tokens: number;
+    /**
+     * Output Tokens
+     */
+    output_tokens: number;
+};
+
+/**
  * LinkOut
  */
 export type LinkOut = {
@@ -677,6 +814,10 @@ export type LinkOut = {
      * Command
      */
     command: string;
+    /**
+     * Pid
+     */
+    pid: number | null;
     /**
      * Created At
      */
@@ -843,6 +984,20 @@ export type PageInvocationSummary = {
      * Items
      */
     items: Array<InvocationSummary>;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+/**
+ * Page[JobOut]
+ */
+export type PageJobOut = {
+    /**
+     * Items
+     */
+    items: Array<JobOut>;
     /**
      * Total
      */
@@ -4038,3 +4193,49 @@ export type DestroyAllWorkspacesResponses = {
 };
 
 export type DestroyAllWorkspacesResponse = DestroyAllWorkspacesResponses[keyof DestroyAllWorkspacesResponses];
+
+export type ListJobsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sandbox/jobs';
+};
+
+export type ListJobsResponses = {
+    /**
+     * Successful Response
+     */
+    200: PageJobOut;
+};
+
+export type ListJobsResponse = ListJobsResponses[keyof ListJobsResponses];
+
+export type CancelJobData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/sandbox/jobs/{job_id}/cancel';
+};
+
+export type CancelJobErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CancelJobError = CancelJobErrors[keyof CancelJobErrors];
+
+export type CancelJobResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobOut;
+};
+
+export type CancelJobResponse = CancelJobResponses[keyof CancelJobResponses];

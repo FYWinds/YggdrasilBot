@@ -53,7 +53,9 @@ Environment variables (see `yggdrasil/config.py` and `.env.example` for the full
 | `LOG_JSON` | no | `true` for JSON logs |
 | `YGG_SANDBOX_TOKEN` | sandbox | shared sandboxd bearer token; the sandbox is off when unset |
 | `YGG_SANDBOX_NAMESPACE`, `YGG_SANDBOX_WARMPOOL` | sandbox | defaults `yggdrasil`, `yggdrasil-sandbox` |
-| `YGG_SANDBOX_LINK_DOMAIN` | sandbox | wildcard domain for public links (`https://sbx-<id>.<domain>`); `serve` is off when unset |
+| `YGG_SANDBOX_LINK_DOMAIN` | sandbox | wildcard domain for public links (`https://sbx-<id>.<domain>`); `publish()` is off when unset |
+| `YGG_RELAY_URL` | sandbox agents | base URL sandbox pods reach the bot's LLM relay at (e.g. `http://<relay Service ClusterIP>:8090`); the relay is off when unset |
+| `YGG_RELAY_PORT` | no | port the bot process serves the relay on, default `8090` |
 
 Everything else (providers, model routes, groups, triggers, prompts, moderation, tool settings) lives in the
 database and is edited in the dashboard.
@@ -140,7 +142,18 @@ It needs:
 5. **Public links (optional):** a wildcard DNS record `*.<domain>` to your ingress, a matching certificate, and
    `YGG_SANDBOX_LINK_DOMAIN=<domain>`. Use a domain that hosts nothing else: pages served from sandboxes are
    untrusted.
-6. Enable the `sandbox` tool for chat in the dashboard (tool settings).
+6. **LLM relay (background agent jobs):** agents running inside a workspace call models through the bot with a
+   per-job token, never a provider key. Add a `ClusterIP` Service selecting the bot pod on port 8090 (pin its
+   `clusterIP`: sandboxes have no cluster DNS), set `YGG_RELAY_URL=http://<that IP>:8090`, allow sandbox egress
+   to it and bot ingress from sandbox pods on 8090. The relay serves the chat route's Anthropic-format models.
+7. Enable the `sandbox` tool for chat in the dashboard (tool settings).
 
 The dashboard's Sandbox page lists live workspaces and can destroy them; `tools.sandbox_enabled` in the global
 settings switches the whole feature off.
+
+**Background jobs.** The chat model can start long shell commands (`background`) and, with the relay configured,
+hand multi-step tasks to an `omp` agent inside the workspace (`delegate`). Their state lives in Redis and in files
+under `/workspace/.ygg/jobs/`, so the bot process polls them and carries on across restarts; a finished job
+triggers a `report` invocation that replies to the requester. Limits (`tools.sandbox_max_jobs`, run times,
+relay token budgets) are tool settings; the Sandbox page lists recent jobs, their events and usage, and can
+cancel them.

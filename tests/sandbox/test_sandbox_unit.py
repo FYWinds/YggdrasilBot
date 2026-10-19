@@ -1,5 +1,7 @@
 """Pure sandbox rules: argv building, path mapping, listings, limits, renewal math, links, mapping encoding."""
 
+import json
+
 import pytest
 from pydantic_ai.workspaces import FileEntry
 
@@ -12,8 +14,8 @@ from yggdrasil.sandbox.backend import (
     rest_path,
     shell_argv,
 )
-from yggdrasil.sandbox.errors import SandboxToolError
-from yggdrasil.sandbox.manager import _claim_ready, format_tree
+from yggdrasil.sandbox.errors import SandboxError, SandboxToolError
+from yggdrasil.sandbox.manager import _claim_ready, format_tree, parse_listener, reap_argv
 from yggdrasil.sandbox.state import LinkRecord, Mapping, claim_name, link_id, shutdown_at, validate_port
 
 WRAP = ["/bin/sh", "-c", 'exec "$@" </dev/null', "sh"]
@@ -157,6 +159,7 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
         command="python -m http.server 8000",
         created_at=1.5,
         pgid=42,
+        pid=43,
     )
     m = Mapping(
         group_id=10001,
@@ -178,6 +181,7 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
     info = back.info()
     assert info.links[0].url == link.url
     assert info.links[0].port == 8000
+    assert info.links[0].pid == 43
     assert info.active == 2
     assert info.recreate
 
@@ -195,6 +199,51 @@ def test_mapping_tolerates_missing_optional_fields_and_negative_active() -> None
     assert m.active == 0
     assert m.sandbox is None
     assert m.links == []
+
+
+def test_links_stored_without_pid_still_decode() -> None:
+    link = LinkRecord.from_json({"id": "x", "port": 8000, "url": "u", "pgid": 7})
+    assert (link.pgid, link.pid) == (7, None)
+
+
+def test_reap_spares_kept_trees_and_link_listeners() -> None:
+    links = [
+        LinkRecord(id="a", port=8000, url="u", command="", created_at=0, pgid=40, pid=41),
+        LinkRecord(id="b", port=8001, url="u", command="", created_at=0, pgid=None, pid=None),
+    ]
+    keep = {"kernel": "12", "job:abc": "30", "junk": "x"}
+    assert reap_argv(keep, links) == [
+        "/opt/ygg/reap",
+        "--keep-tree",
+        "30",
+        "--keep-tree",
+        "12",
+        "--keep-pgid",
+        "40",
+        "--keep-tree",
+        "41",
+    ]
+    assert reap_argv({}, []) == ["/opt/ygg/reap"]
+
+
+def _port(**data: object) -> bytes:
+    return (json.dumps(data) + "\n").encode()
+
+
+def test_listener_must_listen_on_all_interfaces() -> None:
+    ok = parse_listener(
+        8000, 0, _port(listening=True, pid=5, pgid=4, addr="0.0.0.0", cmdline="python3 -m http.server"), b""
+    )
+    assert (ok.pid, ok.pgid, ok.cmdline) == (5, 4, "python3 -m http.server")
+    assert parse_listener(8000, 0, _port(listening=True, pid=None, pgid=None, addr="::", cmdline=""), b"").pid is None
+    with pytest.raises(SandboxError, match="没有程序在监听"):
+        parse_listener(8000, 0, _port(listening=False, pid=None, pgid=None, addr=None, cmdline=""), b"")
+    with pytest.raises(SandboxError, match=r"0\.0\.0\.0:8000"):
+        parse_listener(8000, 0, _port(listening=True, pid=5, pgid=5, addr="127.0.0.1", cmdline="x"), b"")
+    with pytest.raises(SandboxError, match="usage"):
+        parse_listener(8000, 2, b"", b"usage: ygg port PORT")
+    with pytest.raises(SandboxError, match="查不到"):
+        parse_listener(8000, 0, b"not json", b"")
 
 
 def test_claim_readiness() -> None:

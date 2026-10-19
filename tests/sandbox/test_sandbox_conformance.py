@@ -2,7 +2,7 @@
 
 Point it at one with YGG_TEST_SANDBOXD_REST (e.g. http://127.0.0.1:18080), YGG_TEST_SANDBOXD_GRPC
 (127.0.0.1:19090) and YGG_TEST_SANDBOXD_TOKEN (the raw token whose sha256 sandboxd was started with);
-skipped when unset. CI starts the `sandboxd` target of sandbox/Dockerfile for this.
+skipped when unset. CI starts the `sandboxd-test` target of sandbox/Dockerfile for this.
 
 The suite marks its tests `anyio`. With this repo's pytest-asyncio auto mode, pytest-asyncio claims every
 coroutine test first and runs it on the shared session loop, so the anyio marker is inert here (no double run);

@@ -44,12 +44,18 @@ async def check(group_id: int | None, user_id: int, cfg: RateLimitSettings, *, s
         if limit > 0 and not await _hit(key, window, limit):
             RATELIMIT_REJECTED.add(1, {"scope": scope})
             return scope
-    if group_id is not None and cfg.group_daily_tokens > 0:
-        used = await redis_client().get(f"ygg:tok:g:{g}:{_day()}")
-        if used and int(used) >= cfg.group_daily_tokens:
-            RATELIMIT_REJECTED.add(1, {"scope": "group_tokens"})
-            return "group_tokens"
+    if await tokens_exhausted(group_id, cfg):
+        RATELIMIT_REJECTED.add(1, {"scope": "group_tokens"})
+        return "group_tokens"
     return None
+
+
+async def tokens_exhausted(group_id: int | None, cfg: RateLimitSettings) -> bool:
+    """Whether the group has used up today's token budget."""
+    if group_id is None or cfg.group_daily_tokens <= 0:
+        return False
+    used = await redis_client().get(f"ygg:tok:g:{group_id}:{_day()}")
+    return bool(used) and int(used) >= cfg.group_daily_tokens
 
 
 async def add_tokens(group_id: int | None, tokens: int) -> None:

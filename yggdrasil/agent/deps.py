@@ -67,3 +67,7 @@ class Deps:
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams
     on_slow_tool: Callable[[], Awaitable[None]] | None = None  # called before each tools.slow_tools call
     sandbox: "Session | None" = None  # this run's workspace session (chat with the sandbox suite only)
+    # Where this run came from, for background jobs whose report replies to the trigger message later.
+    trigger_message_id: int | None = None
+    invocation_id: str | None = None
+    request_text: str = ""

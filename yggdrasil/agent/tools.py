@@ -312,7 +312,7 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     return f"{who}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
 
 
-MAX_IMAGES = 4  # images per reply, shared by render_* and send_image
+MAX_IMAGES = 4  # images per reply, shared by render_* and the workspace's show()
 
 
 async def _attach_render(ctx: RunContext[Deps], kind: str, source: str, caption: str) -> str:
