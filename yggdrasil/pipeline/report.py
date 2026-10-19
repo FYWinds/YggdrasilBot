@@ -137,8 +137,9 @@ class ReportInvocator(Invocator):
         extra_tools: list[Tool[Deps]] = [Tool(jobs, takes_ctx=True)]
         capabilities: list[AbstractCapability[Deps]] = []
         if sandbox_on and self.group_id is not None:
+            # The job's workspace is pre-selected so the model can look at what the job left there.
             self.sandbox = deps.sandbox = manager().session(
-                self.group_id, invocation_id=deps.invocation_id, cfg=tools_cfg
+                self.group_id, invocation_id=deps.invocation_id, cfg=tools_cfg, workspace=job.workspace
             )
             extra_tools = [t for t in sandbox_tools.bot_tools() if t.name not in JOB_CONTROL_TOOLS]
             prompt_tools += list(sandbox_tools.HARNESS_TOOL_NAMES)
@@ -166,7 +167,7 @@ class ReportInvocator(Invocator):
         if not self.job.images:
             return []
         notes: list[str] = []
-        found = await manager().backend_for(self.job.group_id) if manager().configured else None
+        found = await manager().backend_for(self.job.group_id, self.job.workspace) if manager().configured else None
         if found is None or found[1] != self.job.claim:
             if found is not None:
                 await found[0].aclose()
@@ -234,6 +235,7 @@ def build_prompt(job: Job, *, nonce: str, requester: str, image_notes: list[str]
         f"标题：{job.title}",
         f"状态：{STATUS_TEXT[job.status]}（用时 {took}）",
         f"请求者：{requester}",
+        f"工作区：{job.workspace}（这次回复已经选中它，工作区工具直接作用在它上面）",
     ]
     if job.error:
         facts.append(f"说明：{job.error}")
@@ -263,5 +265,5 @@ def build_prompt(job: Job, *, nonce: str, requester: str, image_notes: list[str]
         "说清做成了什么、在哪里（路径、链接）、没完成什么；失败、超时或取消时说明原因和下一步建议。"
     )
     if job.kind == "command":
-        notes.append(f"完整输出在工作区的 {job.dir}/out，需要细看时可以读它。")
+        notes.append(f"完整输出在工作区「{job.workspace}」的 {job.dir}/out，需要细看时可以读它。")
     return "\n\n".join([*parts, *notes])

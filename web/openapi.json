@@ -3246,6 +3246,7 @@
           "sandbox"
         ],
         "summary": "List Workspaces",
+        "description": "Every group's workspaces, grouped by group (most recently used group first), each group's most recently\nused first.",
         "operationId": "list_workspaces",
         "responses": {
           "200": {
@@ -3261,13 +3262,13 @@
         }
       }
     },
-    "/sandbox/workspaces/{group_id}": {
+    "/sandbox/workspaces/{group_id}/{name}": {
       "delete": {
         "tags": [
           "sandbox"
         ],
         "summary": "Destroy Workspace",
-        "description": "Destroy one group's workspace now, even while an invocation is using it.",
+        "description": "Destroy one workspace now (its files, links and record), even while an invocation or job is using it.",
         "operationId": "destroy_workspace",
         "parameters": [
           {
@@ -3277,6 +3278,15 @@
             "schema": {
               "type": "integer",
               "title": "Group Id"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
             }
           }
         ],
@@ -4539,6 +4549,10 @@
             "type": "integer",
             "title": "Group Id"
           },
+          "workspace": {
+            "type": "string",
+            "title": "Workspace"
+          },
           "user_id": {
             "type": "integer",
             "title": "User Id"
@@ -4649,6 +4663,7 @@
           "id",
           "kind",
           "group_id",
+          "workspace",
           "user_id",
           "title",
           "spec",
@@ -6815,8 +6830,27 @@
             "type": "integer",
             "title": "Group Id"
           },
-          "claim": {
+          "name": {
             "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "pending": {
+            "type": "boolean",
+            "title": "Pending"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Claim"
           },
           "sandbox": {
@@ -6845,9 +6879,28 @@
             "title": "Last Used"
           },
           "expires_at": {
-            "type": "string",
-            "format": "date-time",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Expires At"
+          },
+          "max_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Until"
           },
           "active": {
             "type": "integer",
@@ -6863,20 +6916,32 @@
             },
             "type": "array",
             "title": "Links"
+          },
+          "jobs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Jobs"
           }
         },
         "type": "object",
         "required": [
           "group_id",
+          "name",
+          "description",
+          "pending",
           "claim",
           "sandbox",
           "pod_ip",
           "created_at",
           "last_used",
           "expires_at",
+          "max_until",
           "active",
           "recreate",
-          "links"
+          "links",
+          "jobs"
         ],
         "title": "WorkspaceOut"
       }

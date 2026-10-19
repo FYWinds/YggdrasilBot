@@ -706,6 +706,10 @@ export type JobOut = {
      */
     group_id: number;
     /**
+     * Workspace
+     */
+    workspace: string;
+    /**
      * User Id
      */
     user_id: number;
@@ -2174,9 +2178,21 @@ export type WorkspaceOut = {
      */
     group_id: number;
     /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description: string;
+    /**
+     * Pending
+     */
+    pending: boolean;
+    /**
      * Claim
      */
-    claim: string;
+    claim: string | null;
     /**
      * Sandbox
      */
@@ -2196,7 +2212,11 @@ export type WorkspaceOut = {
     /**
      * Expires At
      */
-    expires_at: string;
+    expires_at: string | null;
+    /**
+     * Max Until
+     */
+    max_until: string | null;
     /**
      * Active
      */
@@ -2209,6 +2229,10 @@ export type WorkspaceOut = {
      * Links
      */
     links: Array<LinkOut>;
+    /**
+     * Jobs
+     */
+    jobs: Array<string>;
 };
 
 export type GetMeData = {
@@ -4155,9 +4179,13 @@ export type DestroyWorkspaceData = {
          * Group Id
          */
         group_id: number;
+        /**
+         * Name
+         */
+        name: string;
     };
     query?: never;
-    url: '/sandbox/workspaces/{group_id}';
+    url: '/sandbox/workspaces/{group_id}/{name}';
 };
 
 export type DestroyWorkspaceErrors = {

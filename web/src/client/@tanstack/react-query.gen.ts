@@ -1474,6 +1474,9 @@ export const listWorkspacesQueryKey = (options?: Options<ListWorkspacesData>) =>
 
 /**
  * List Workspaces
+ *
+ * Every group's workspaces, grouped by group (most recently used group first), each group's most recently
+ * used first.
  */
 export const listWorkspacesOptions = (options?: Options<ListWorkspacesData>) => queryOptions<ListWorkspacesResponse, DefaultError, ListWorkspacesResponse, ReturnType<typeof listWorkspacesQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
@@ -1491,7 +1494,7 @@ export const listWorkspacesOptions = (options?: Options<ListWorkspacesData>) => 
 /**
  * Destroy Workspace
  *
- * Destroy one group's workspace now, even while an invocation is using it.
+ * Destroy one workspace now (its files, links and record), even while an invocation or job is using it.
  */
 export const destroyWorkspaceMutation = (options?: Partial<Options<DestroyWorkspaceData>>): UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> => {
     const mutationOptions: UseMutationOptions<DestroyWorkspaceResponse, DestroyWorkspaceError, Options<DestroyWorkspaceData>> = {

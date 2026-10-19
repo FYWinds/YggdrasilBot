@@ -63,7 +63,7 @@ async def _sandbox_gauges() -> None:
         return
     try:
         await mgr.reconcile()
-        infos = await mgr.list()
+        infos = [i for i in await mgr.list() if not i.pending]
         _gauges["sandbox_workspaces"] = [(float(len(infos)), {})]
         _gauges["sandbox_links"] = [(float(sum(len(i.links) for i in infos)), {})]
     except asyncio.CancelledError:

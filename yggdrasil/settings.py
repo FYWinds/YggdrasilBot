@@ -170,9 +170,18 @@ class ToolSettings(BaseModel):
         default=30, ge=5, le=1440, description="工作区闲置多久（分钟）后回收，回收后文件全部丢失"
     )
     sandbox_max_age_min: int = Field(
-        default=240, ge=10, le=10080, description="工作区最长存活时间（分钟），到期后下次使用会重建"
+        default=240,
+        ge=10,
+        le=10080,
+        description="工作区最长存活时间（分钟），到期后下次使用会重建；在里面开后台任务时会延长到够任务跑完",
     )
-    sandbox_max_workspaces: int = Field(default=4, ge=1, le=50, description="全局同时存在的工作区上限")
+    sandbox_max_workspaces: int = Field(default=8, ge=1, le=50, description="全局同时存在的工作区（沙箱）上限")
+    sandbox_max_workspaces_per_group: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="每群最多同时有几个工作区（一个话题一个）；满了再新建时回收最久没用、没有后台任务的那个",
+    )
     sandbox_max_links: int = Field(default=3, ge=0, le=20, description="每个工作区同时公开的链接（publish）上限")
     sandbox_request_limit: int = Field(
         default=40, ge=1, le=200, description="有工作区工具的请求的模型调用次数上限（取代 request_limit）"

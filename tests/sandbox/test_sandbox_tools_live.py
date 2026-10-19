@@ -19,7 +19,7 @@ from pydantic_ai.usage import RunUsage
 from tests.sandbox.helpers import HAVE_SANDBOXD, NO_SANDBOXD, SANDBOXD_TOKEN
 from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.deps import Deps, Handles
-from yggdrasil.agent.sandbox_tools import py, sh
+from yggdrasil.agent.sandbox_tools import open_workspace, py, sh
 from yggdrasil.sandbox import Session, WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint
 from yggdrasil.sandbox.k8s import KubeClient
@@ -29,6 +29,7 @@ from yggdrasil.settings import Settings
 pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
 
 GROUP = 10001
+WS = "live"
 
 
 @pytest.fixture
@@ -54,15 +55,16 @@ def _ctx(session: Session) -> RunContext[Deps]:
 @pytest.fixture
 async def session(mgr: WorkspaceManager) -> AsyncIterator[Session]:
     s = mgr.session(GROUP, invocation_id="live", cfg=Settings().tools)
+    await s.open(WS, new=True, description="测试工作区")
     # A clean kernel: the local sandboxd outlives tests (and earlier runs).
     await s.backend.exec(["/opt/ygg/ygg", "py", "restart"], seconds=30)
     yield s
-    found = await mgr.backend_for(GROUP)
+    found = await mgr.backend_for(GROUP, WS)
     if found is not None:
         await found[0].exec(["/opt/ygg/ygg", "py", "restart"], seconds=30)
         await found[0].aclose()
     await s.close()
-    await mgr.destroy(GROUP, reason="test", force=True)
+    await mgr.destroy_all(reason="test")
 
 
 def _png_b64() -> str:
@@ -98,7 +100,7 @@ async def test_py_kernel_images_effects_and_reap(
     assert isinstance(first, str)
     assert "hi" in first
     assert "结果：42" in first
-    kernel = await fake_redis.hget(keep_key(GROUP), "kernel")  # pyright: ignore[reportGeneralTypeIssues]
+    kernel = await fake_redis.hget(keep_key(GROUP, WS), "kernel")  # pyright: ignore[reportGeneralTypeIssues]
     assert str(kernel).isdigit()
     assert "结果：21" in str(await py(ctx, "x"))
 
@@ -129,7 +131,7 @@ async def test_py_kernel_images_effects_and_reap(
     assert isinstance(served, str)
     assert "https://sbx-" in served, served
     assert "只监听了 127.0.0.1" in served
-    info = await mgr.get(GROUP)
+    info = await mgr.get(GROUP, WS)
     assert info is not None
     [link] = info.links
     assert link.port == 8000
@@ -141,7 +143,7 @@ async def test_py_kernel_images_effects_and_reap(
 
     # The end-of-invocation reap spares the kernel and the published server (a child of the kernel).
     await session.close()
-    probe = mgr.session(GROUP, invocation_id="probe", cfg=Settings().tools)
+    probe = mgr.session(GROUP, invocation_id="probe", cfg=Settings().tools, workspace=WS)
     try:
         alive = str(await sh(_ctx(probe), "exec 3<>/dev/tcp/127.0.0.1/8000 && echo up"))
         assert "up" in alive
@@ -152,3 +154,33 @@ async def test_py_kernel_images_effects_and_reap(
         assert "NameError" in str(restarted)
     finally:
         await probe.close()
+
+
+async def test_open_workspace_tool_selects_lists_and_switches(mgr: WorkspaceManager) -> None:
+    s = mgr.session(GROUP, invocation_id="picker", cfg=Settings().tools)
+    ctx = _ctx(s)
+    try:
+        refused = str(await sh(ctx, "true"))
+        assert refused.startswith("[工具错误] 还没有选工作区，本群也还没有工作区。"), refused
+        created = str(await open_workspace(ctx, name="Site-A", new=True, description="网站 A 的代码"))
+        assert created.startswith("已新建工作区「site-a」：网站 A 的代码"), created
+        await sh(
+            ctx,
+            "mkdir -p /workspace/site && echo hi > /workspace/site/index.html && echo '- 网站 A' > /workspace/NOTES.md",
+        )
+        listed = str(await open_workspace(ctx))
+        assert "- site-a（当前选中）：网站 A 的代码" in listed, listed
+        other = str(await open_workspace(ctx, name="data-b", new=True, description="数据分析 B"))
+        assert "已离开工作区「site-a」" in other
+        back = str(await open_workspace(ctx, name="site-a", description="网站 A，首页在 /workspace/site"))
+        assert "已选中工作区「site-a」，说明已更新" in back, back
+        assert "site/index.html" in back  # its files
+        assert "NOTES.md 开头：\n- 网站 A" in back
+        missing = str(await open_workspace(ctx, name="nope"))
+        assert missing.startswith("[工具错误] 本群没有叫「nope」的工作区"), missing
+        assert "- data-b：数据分析 B" in missing
+        assert s.name == "site-a"
+        await sh(ctx, "rm -rf /workspace/site /workspace/NOTES.md")
+    finally:
+        await s.close()
+        await mgr.destroy_all(reason="test")

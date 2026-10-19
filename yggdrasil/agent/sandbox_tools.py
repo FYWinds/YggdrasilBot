@@ -1,11 +1,13 @@
-"""The sandbox workspace suite for chat: ``sh`` / ``py`` (big actions run by the in-sandbox ``/opt/ygg/ygg``
-helper), the harness ``ws_read_file`` / ``ws_edit_file``, and the bot's own workspace tools.
+"""The sandbox workspace suite for chat: ``open_workspace`` (choose the group's per-topic workspace), ``sh`` /
+``py`` (big actions run by the in-sandbox ``/opt/ygg/ygg`` helper), the harness ``ws_read_file`` /
+``ws_edit_file``, and the bot's own workspace tools.
 
-The group's persistent workspace (``yggdrasil.sandbox``) is attached lazily by the backend on the first
-command or file operation, so a run that never touches it costs nothing. The suite is switched on per
-group by the pseudo tool name ``sandbox`` in ``tools.enabled`` and globally by ``tools.sandbox_enabled``
-(global settings only). Harness file tools get the ``ws_`` prefix: the bot's own ``read_file`` reads QQ
-attachments.
+A group has a few named workspaces, one per topic (``yggdrasil.sandbox``). The model selects one with
+``open_workspace`` (reuse or create); the selected one is attached lazily by the backend on the first command or
+file operation, so a run that never touches it costs nothing, and using a workspace tool before selecting one
+fails with the group's list. The suite is switched on per group by the pseudo tool name ``sandbox`` in
+``tools.enabled`` and globally by ``tools.sandbox_enabled`` (global settings only). Harness file tools get the
+``ws_`` prefix: the bot's own ``read_file`` reads QQ attachments.
 
 ``sh`` / ``py`` write their input into ``/workspace/.ygg/`` over REST and run one ``Execute`` of the helper,
 which prints a single JSON line. ``py`` side effects (``show`` / ``publish`` / ``unpublish`` in the kernel) are
@@ -216,7 +218,7 @@ def format_sh(result: dict[str, Any], seconds: float) -> str:
 
 @_tool("sh")
 async def sh(ctx: RunContext[Deps], script: str, timeout: int | None = None) -> str:  # noqa: ASYNC109 - model-facing
-    """在工作区里用 bash 运行一整段脚本（工作目录 /workspace），返回退出码和输出（stdout、stderr 合在一起，
+    """在当前选中的工作区里用 bash 运行一整段脚本（工作目录 /workspace），返回退出码和输出（stdout、stderr 合在一起，
     太长时保留头尾）。
     一次调用把事情做完：用 heredoc 写文件、运行、检查结果都写进同一段脚本，不要一步一调。
     timeout 是秒数，不填用默认值；更久的命令改用 background。脚本里用 & 放到后台的进程在这次回复结束时会被清理，
@@ -329,7 +331,7 @@ async def py(
     timeout: int | None = None,  # noqa: ASYNC109 - model-facing argument
     restart: bool = False,
 ) -> ToolResult:
-    """在本群工作区的常驻 Python kernel（IPython，工作目录 /workspace）里执行代码；变量、导入、打开的浏览器
+    """在当前工作区的常驻 Python kernel（IPython，工作目录 /workspace）里执行代码；变量、导入、打开的浏览器
     在多次调用之间保留，支持顶层 await。返回输出、最后一个表达式的值和报错 traceback；display() 的图、
     matplotlib 图和 shot() 截图会作为图片直接返回给你看。
     已预置：show(图/路径, caption) 把图发到群里；publish(port)/unpublish(port) 开关公开链接；
@@ -393,6 +395,8 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     """把聊天里的文件或图片（file#N / img#N 句柄）放进工作区的 /workspace/in/，返回路径。
     要在工作区里处理群文件或图片时先调用它；不会自动上传附件。"""
     session = _session(ctx)
+    with _sandbox_errors():
+        await session.require()
     h = _handle(ctx, handle, "file", "image")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
@@ -437,18 +441,47 @@ async def attach_image(deps: Deps, blob: bytes, caption: str, *, check: Any = ch
     )
 
 
+@_tool("open_workspace")
+async def open_workspace(
+    ctx: RunContext[Deps], name: str | None = None, new: bool = False, description: str = ""
+) -> str:
+    """选择这次要用的工作区。每个话题一个工作区（各自独立的 Linux 环境），sh、py、ws_read_file、ws_edit_file、
+    sandbox_put、background 都作用在选中的那个上，用它们之前先选。
+    - 不传 name：列出本群的工作区（名字、说明、存在多久、闲置多久、还能保留多久、公开链接、后台任务）。
+    - name=现有的名字：继续用它（同一话题的后续请求用原来的那个）。同时传 description 会更新它的说明。
+    - name=新名字, new=True, description=说明：为新话题新建一个空工作区。名字用小写字母、数字和 -（如
+      pelican-game）；description 一行（≤200 字），写清放了什么、属于哪个话题。本群工作区满了时，会回收最久没用、
+      没有后台任务的那个（文件和公开链接一起没了）。
+    一次回复里可以切换：切走时之前那个里面用 & 起的临时进程会被清理，文件、kernel 和公开链接保留。"""
+    session = _session(ctx)
+    if name is None or not name.strip():
+        if new:
+            raise ToolError("new=True 时要用 name 写新工作区的名字")
+        with _sandbox_errors():
+            return await session.listing()
+    with _sandbox_errors():
+        opened = await session.open(name.strip().lower(), new=new, description=description)
+        return await session.summary(opened)
+
+
 @_tool("reset_workspace")
 async def reset_workspace(ctx: RunContext[Deps]) -> str:
-    """销毁本群的工作区（文件、装好的依赖、kernel、公开链接全部清掉），下次使用时从空白的新工作区开始。
-    只在群友明确要求重置、或工作区已经坏掉时用。"""
+    """清空当前选中的工作区（文件、装好的依赖、kernel、公开链接全部清掉），名字和说明不变，下次使用时从空白的
+    新环境开始。只在群友明确要求重置、或工作区已经坏掉时用。"""
     session = _session(ctx)
     with _sandbox_errors():
         return await session.reset()
 
 
 def bot_tools() -> list[Tool[Deps]]:
-    """``sh`` / ``py``, the bot's own workspace tools and the background-job tools."""
+    """``open_workspace``, ``sh`` / ``py``, the bot's own workspace tools and the background-job tools. Tools that
+    switch or empty the selected workspace run alone, never overlapping another call in the same turn."""
     from yggdrasil.agent.job_tools import job_tools
 
-    fns: list[Callable[..., Awaitable[ToolResult]]] = [sh, py, sandbox_put, reset_workspace]
-    return [*(Tool(fn, takes_ctx=True) for fn in fns), *job_tools()]
+    fns: list[Callable[..., Awaitable[ToolResult]]] = [sh, py, sandbox_put]
+    return [
+        Tool(open_workspace, takes_ctx=True, sequential=True),
+        *(Tool(fn, takes_ctx=True) for fn in fns),
+        Tool(reset_workspace, takes_ctx=True, sequential=True),
+        *job_tools(),
+    ]

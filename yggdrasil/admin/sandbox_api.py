@@ -1,4 +1,5 @@
-"""Sandbox workspaces (one per QQ group): list them, destroy one or all; background jobs: list and cancel."""
+"""Sandbox workspaces (a few per QQ group, one per topic): list them, destroy one or all; background jobs: list and
+cancel."""
 
 from datetime import UTC, datetime
 
@@ -23,15 +24,20 @@ class LinkOut(BaseModel):
 
 class WorkspaceOut(BaseModel):
     group_id: int
-    claim: str
+    name: str
+    description: str
+    pending: bool  # reserved or reset: no pod yet, created on first use
+    claim: str | None
     sandbox: str | None
     pod_ip: str
     created_at: datetime
     last_used: datetime
-    expires_at: datetime
+    expires_at: datetime | None
+    max_until: datetime | None
     active: int
     recreate: bool
     links: list[LinkOut]
+    jobs: list[str]  # ids of the background jobs running in it
 
 
 class DestroyedOut(BaseModel):
@@ -59,6 +65,7 @@ class JobOut(BaseModel):
     id: str
     kind: str
     group_id: int
+    workspace: str
     user_id: int
     title: str
     spec: str
@@ -86,17 +93,22 @@ def _ts(epoch: float) -> datetime:
 def _out(w: WorkspaceInfo) -> WorkspaceOut:
     return WorkspaceOut(
         group_id=w.group_id,
-        claim=w.claim,
+        name=w.name,
+        description=w.description,
+        pending=w.pending,
+        claim=w.claim or None,
         sandbox=w.sandbox,
         pod_ip=w.pod_ip,
         created_at=_ts(w.created_at),
         last_used=_ts(w.last_used),
-        expires_at=_ts(w.expires_at),
+        expires_at=None if w.pending else _ts(w.expires_at),
+        max_until=None if w.pending else _ts(w.max_until),
         active=w.active,
         recreate=w.recreate,
         links=[
             LinkOut(port=x.port, url=x.url, command=x.command, pid=x.pid, created_at=_ts(x.created_at)) for x in w.links
         ],
+        jobs=list(w.jobs),
     )
 
 
@@ -106,6 +118,7 @@ def _job_out(job: Job, events: list[JobEvent]) -> JobOut:
         id=job.id,
         kind=job.kind,
         group_id=job.group_id,
+        workspace=job.workspace,
         user_id=job.user_id,
         title=job.title,
         spec=job.spec[:4000],
@@ -143,16 +156,23 @@ def _manager() -> WorkspaceManager:
 
 @router.get("/workspaces")
 async def list_workspaces() -> Page[WorkspaceOut]:
-    items = sorted(await _manager().list(), key=lambda w: w.last_used, reverse=True)
+    """Every group's workspaces, grouped by group (most recently used group first), each group's most recently
+    used first."""
+    items = await _manager().list()
+    latest: dict[int, float] = {}
+    for w in items:
+        latest[w.group_id] = max(latest.get(w.group_id, 0.0), w.last_used)
+    items.sort(key=lambda w: (-latest[w.group_id], w.group_id, -w.last_used))
     return Page[WorkspaceOut](items=[_out(w) for w in items], total=len(items))
 
 
-@router.delete("/workspaces/{group_id}")
-async def destroy_workspace(group_id: int, actor: Actor) -> Ok:
-    """Destroy one group's workspace now, even while an invocation is using it."""
+@router.delete("/workspaces/{group_id}/{name}")
+async def destroy_workspace(group_id: int, name: str, actor: Actor) -> Ok:
+    """Destroy one workspace now (its files, links and record), even while an invocation or job is using it."""
     mgr = _manager()
-    async with change(actor, "sandbox", "destroy", group_id):
-        await mgr.destroy(group_id, reason=f"admin {actor}", force=True)
+    async with change(actor, "sandbox", "destroy", f"{group_id}/{name}"):
+        if not await mgr.destroy(group_id, name, reason=f"admin {actor}"):
+            raise not_found("工作区")
     return Ok()
 
 

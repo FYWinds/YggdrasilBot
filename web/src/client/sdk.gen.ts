@@ -546,15 +546,18 @@ export const setStickerEnabled = <ThrowOnError extends boolean = false>(options:
 
 /**
  * List Workspaces
+ *
+ * Every group's workspaces, grouped by group (most recently used group first), each group's most recently
+ * used first.
  */
 export const listWorkspaces = <ThrowOnError extends boolean = false>(options?: Options<ListWorkspacesData, ThrowOnError>): RequestResult<ListWorkspacesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListWorkspacesResponses, unknown, ThrowOnError>({ url: '/sandbox/workspaces', ...options });
 
 /**
  * Destroy Workspace
  *
- * Destroy one group's workspace now, even while an invocation is using it.
+ * Destroy one workspace now (its files, links and record), even while an invocation or job is using it.
  */
-export const destroyWorkspace = <ThrowOnError extends boolean = false>(options: Options<DestroyWorkspaceData, ThrowOnError>): RequestResult<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError> => (options.client ?? client).delete<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError>({ url: '/sandbox/workspaces/{group_id}', ...options });
+export const destroyWorkspace = <ThrowOnError extends boolean = false>(options: Options<DestroyWorkspaceData, ThrowOnError>): RequestResult<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError> => (options.client ?? client).delete<DestroyWorkspaceResponses, DestroyWorkspaceErrors, ThrowOnError>({ url: '/sandbox/workspaces/{group_id}/{name}', ...options });
 
 /**
  * Destroy All Workspaces

@@ -16,12 +16,13 @@ from tests.sandbox.helpers import HAVE_SANDBOXD, NO_SANDBOXD, SANDBOXD_TOKEN, Fa
 from yggdrasil.sandbox import SandboxError, WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint
 from yggdrasil.sandbox.k8s import KubeClient
-from yggdrasil.sandbox.state import WS_KEY_PREFIX
+from yggdrasil.sandbox.state import ws_key
 from yggdrasil.settings import ToolSettings
 
 pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
 
 GROUP = 10001
+WS = "notes"
 
 
 @pytest.fixture
@@ -41,8 +42,16 @@ def _cfg(**kw: Any) -> ToolSettings:
     return ToolSettings(**kw)
 
 
+async def _reserve(
+    mgr: WorkspaceManager, name: str = WS, *, group: int = GROUP, cfg: ToolSettings | None = None
+) -> None:
+    await mgr.reserve(group, name, "测试用", cfg or _cfg())
+
+
 async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, kube: FakeKube) -> None:
     session = mgr.session(GROUP, invocation_id="inv-1", cfg=_cfg())
+    opened = await session.open(WS, new=True, description="测试用")
+    assert opened.created
     assert not session.used
     assert kube.claims() == []
     result = await session.backend.run("echo hi > in-ws.txt && pwd", shell=True)
@@ -50,11 +59,12 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
     assert session.used
     [claim] = kube.claims()
     name = claim["metadata"]["name"]
-    assert re.fullmatch(rf"ygg-sbx-{GROUP}-[a-z0-9]{{6}}", name)
+    assert re.fullmatch(rf"ygg-sbx-{GROUP}-{WS}-[a-z0-9]{{6}}", name)
     assert claim["metadata"]["labels"]["yggdrasil/group"] == str(GROUP)
+    assert claim["metadata"]["labels"]["yggdrasil/workspace"] == WS
     assert claim["spec"]["additionalPodMetadata"]["labels"] == {"sandbox.users.io/workspace": name}
     assert claim["spec"]["lifecycle"]["shutdownPolicy"] == "Delete"
-    info = await mgr.get(GROUP)
+    info = await mgr.get(GROUP, WS)
     assert info is not None
     assert info.claim == name
     assert info.active == 1
@@ -66,87 +76,97 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
     assert kube.patches == patches + 1
     await session.backend.run("true", shell=True)
     assert kube.patches == patches + 1
-    # A second invocation attaches to the same workspace and sees the file.
+    # A second invocation selects the same workspace and sees the file.
     other = mgr.session(GROUP, invocation_id="inv-2", cfg=_cfg())
+    reused = await other.open(WS)
+    summary = await other.summary(reused)
+    assert "已选中工作区「notes」" in summary
+    assert "in-ws.txt" in summary  # the file listing comes with the selection
     assert (await other.backend.read_bytes("/workspace/in-ws.txt")) == b"hi\n"
-    assert (await mgr.get(GROUP)).active == 2  # pyright: ignore[reportOptionalMemberAccess]
+    assert (await mgr.get(GROUP, WS)).active == 2  # pyright: ignore[reportOptionalMemberAccess]
     await other.close()
     await session.close()
-    info = await mgr.get(GROUP)
+    info = await mgr.get(GROUP, WS)
     assert info is not None
     assert info.active == 0
     assert [w.claim for w in await mgr.list()] == [name]
-    described = await mgr.describe(GROUP)
-    assert described is not None
-    assert "in-ws.txt" in described
     await session.backend.aclose()
-    assert await mgr.destroy(GROUP, reason="test")
-    assert await mgr.get(GROUP) is None
+    assert await mgr.destroy(GROUP, WS, reason="test")
+    assert await mgr.get(GROUP, WS) is None
     assert kube.claims() == []
 
 
-async def test_expired_claim_is_reported_and_replaced(
+async def test_expired_claim_is_dropped_or_replaced(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    redis_conn = fake_redis
-    first = mgr.session(GROUP, invocation_id="a", cfg=_cfg())
+    await _reserve(mgr)
+    first = mgr.session(GROUP, invocation_id="a", cfg=_cfg(), workspace=WS)
     await first.backend.working_dir()
     await first.close()
     for key in [k for k in kube.objects if "/sandboxclaims/" in k]:
         del kube.objects[key]  # expired: the controller deleted it
-    assert await redis_conn.exists(f"{WS_KEY_PREFIX}{GROUP}")
-    described = await mgr.describe(GROUP)
-    assert described is not None
-    assert "过期" in described
-    assert not await redis_conn.exists(f"{WS_KEY_PREFIX}{GROUP}")
+    assert await fake_redis.exists(ws_key(GROUP, WS))
+    assert await mgr.workspaces(GROUP) == []  # listing it drops the record: the model no longer sees it
+    assert not await fake_redis.exists(ws_key(GROUP, WS))
+    late = mgr.session(GROUP, invocation_id="late", cfg=_cfg(), workspace=WS)
+    with pytest.raises(SandboxError, match="不存在"):
+        await late.backend.working_dir()  # a report pre-selecting it: told to choose again
+    assert late.name is None
+    await late.close()
 
-    second = mgr.session(GROUP, invocation_id="b", cfg=_cfg())
+    await _reserve(mgr)
+    second = mgr.session(GROUP, invocation_id="b", cfg=_cfg(), workspace=WS)
     await second.backend.working_dir()
     for key in [k for k in kube.objects if "/sandboxclaims/" in k]:
         del kube.objects[key]
-    third = mgr.session(GROUP, invocation_id="c", cfg=_cfg())
-    # second still counts as active on the vanished claim; the new session gets a new workspace and a notice.
+    third = mgr.session(GROUP, invocation_id="c", cfg=_cfg(), workspace=WS)
+    # second still counts as active on the vanished claim; the attaching session gets a fresh pod under the same
+    # name and a notice.
     result = await third.backend.run("true", shell=True)
     assert "过期" in result.stderr
     await second.close()
     await third.close()
     assert len(kube.claims()) == 1
+    assert (await mgr.get(GROUP, WS)) is not None
 
 
-async def test_destroy_defers_while_active_and_reset(mgr: WorkspaceManager, kube: FakeKube) -> None:
-    a = mgr.session(GROUP, invocation_id="a", cfg=_cfg())
-    b = mgr.session(GROUP, invocation_id="b", cfg=_cfg())
+async def test_reset_defers_while_others_use_it(mgr: WorkspaceManager, kube: FakeKube) -> None:
+    await _reserve(mgr)
+    a = mgr.session(GROUP, invocation_id="a", cfg=_cfg(), workspace=WS)
+    b = mgr.session(GROUP, invocation_id="b", cfg=_cfg(), workspace=WS)
     await a.backend.working_dir()
     await b.backend.working_dir()
-    assert not await mgr.destroy(GROUP, reason="admin")
-    info = await mgr.get(GROUP)
+    info = await mgr.get(GROUP, WS)
     assert info is not None
-    assert info.recreate
     text = await a.reset()
     assert "其他请求" in text
+    assert (await mgr.get(GROUP, WS)).recreate  # pyright: ignore[reportOptionalMemberAccess]
     await b.close()
     old = info.claim
     await a.close()  # last one out applies the pending recreate
-    assert await mgr.get(GROUP) is None
+    after = await mgr.get(GROUP, WS)
+    assert after is not None
+    assert after.pending  # same name and description, no pod until next use
     assert all(c["metadata"]["name"] != old for c in kube.claims())
 
-    c = mgr.session(GROUP, invocation_id="c", cfg=_cfg())
+    c = mgr.session(GROUP, invocation_id="c", cfg=_cfg(), workspace=WS)
     await c.put_bytes("data/x.txt", b"x")
-    assert "清空" in await c.reset()
+    assert "已清空" in await c.reset()
     assert kube.claims() == []
-    # The session goes on with a fresh workspace (the local sandboxd is shared, so only the claim is new).
+    # The session goes on with a fresh pod (the local sandboxd is shared, so only the claim is new).
     await c.backend.working_dir()
     [fresh] = kube.claims()
-    info = await mgr.get(GROUP)
+    info = await mgr.get(GROUP, WS)
     assert info is not None
     assert info.claim == fresh["metadata"]["name"]
     assert info.active == 1
     await c.close()
-    assert await mgr.destroy(GROUP, reason="test")
+    assert await mgr.destroy(GROUP, WS, reason="test")
 
 
 async def test_bot_file_helpers(mgr: WorkspaceManager) -> None:
-    s = mgr.session(GROUP, invocation_id="f", cfg=_cfg())
+    await _reserve(mgr)
+    s = mgr.session(GROUP, invocation_id="f", cfg=_cfg(), workspace=WS)
     path = await s.put_bytes("in/report.csv", b"a,b\n1,2\n")
     assert path == "/workspace/in/report.csv"
     assert await s.get_bytes("in/report.csv", max_bytes=100) == b"a,b\n1,2\n"
@@ -157,28 +177,34 @@ async def test_bot_file_helpers(mgr: WorkspaceManager) -> None:
     with pytest.raises(SandboxError):
         await s.get_bytes("in", max_bytes=100)
     await s.close()
-    await mgr.destroy(GROUP, reason="test")
+    await mgr.destroy(GROUP, WS, reason="test")
 
 
-async def test_eviction_skips_active_workspaces(mgr: WorkspaceManager, kube: FakeKube) -> None:
+async def test_eviction_skips_active_workspaces(
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+) -> None:
     cfg = _cfg(sandbox_max_workspaces=1)
-    busy = mgr.session(GROUP, invocation_id="busy", cfg=cfg)
+    await _reserve(mgr, cfg=cfg)
+    busy = mgr.session(GROUP, invocation_id="busy", cfg=cfg, workspace=WS)
     await busy.backend.working_dir()
-    other = mgr.session(GROUP + 1, invocation_id="other", cfg=cfg)
+    await _reserve(mgr, "other", group=GROUP + 1, cfg=cfg)
+    other = mgr.session(GROUP + 1, invocation_id="other", cfg=cfg, workspace="other")
     with pytest.raises(SandboxError, match="上限"):
         await other.backend.working_dir()
     await busy.close()
     await other.backend.working_dir()  # now the idle one is evicted
-    assert await mgr.get(GROUP) is None
+    assert await mgr.get(GROUP, WS) is None
     assert len(kube.claims()) == 1
     await other.close()
     assert await mgr.destroy_all(reason="test") == 1
+    assert [k async for k in fake_redis.scan_iter(match="ygg:sandbox:*")] == []
 
 
 async def test_command_limits_surface_as_tool_errors(mgr: WorkspaceManager) -> None:
-    s = mgr.session(GROUP, invocation_id="lim", cfg=_cfg(sandbox_max_commands=1))
+    await _reserve(mgr)
+    s = mgr.session(GROUP, invocation_id="lim", cfg=_cfg(sandbox_max_commands=1), workspace=WS)
     await s.backend.run("true", shell=True)
     with pytest.raises(SandboxError, match="上限"):
         await s.backend.run("true", shell=True)
     await s.close()
-    await mgr.destroy(GROUP, reason="test")
+    await mgr.destroy(GROUP, WS, reason="test")

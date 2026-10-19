@@ -9,7 +9,7 @@ import {
   listJobsOptions,
   listWorkspacesOptions,
 } from "@/client/@tanstack/react-query.gen";
-import type { JobOut } from "@/client/types.gen";
+import type { JobOut, WorkspaceOut } from "@/client/types.gen";
 import { ConfirmButton, Disclosure, Empty, PageHeader, QueryState } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -18,16 +18,33 @@ import { fmtTime } from "@/lib/format";
 export function SandboxPage() {
   const workspaces = useQuery({ ...listWorkspacesOptions(), refetchInterval: 30_000 });
   const groups = useQuery(listGroupsOptions());
-  const destroy = useMutation({ ...destroyWorkspaceMutation(), onSuccess: () => toast.success("已销毁") });
+  const destroy = useMutation({
+    ...destroyWorkspaceMutation(),
+    onSuccess: () => {
+      toast.success("已销毁");
+      void workspaces.refetch();
+    },
+  });
   const destroyAll = useMutation({
     ...destroyAllWorkspacesMutation(),
-    onSuccess: (r) => toast.success(`已销毁 ${r.destroyed} 个工作区`),
+    onSuccess: (r) => {
+      toast.success(`已销毁 ${r.destroyed} 个工作区`);
+      void workspaces.refetch();
+    },
   });
+  const groupName = (id: number) => groups.data?.find((g) => g.group_id === id)?.name;
+  // The API lists each group's workspaces together; one row per workspace, the group cell spanning them.
+  const byGroup: [number, WorkspaceOut[]][] = [];
+  for (const w of workspaces.data?.items ?? []) {
+    const last = byGroup[byGroup.length - 1];
+    if (last && last[0] === w.group_id) last[1].push(w);
+    else byGroup.push([w.group_id, [w]]);
+  }
   return (
     <div>
       <PageHeader
         title="工作区"
-        description="每个群一个沙箱工作区，闲置或到期后自动回收。销毁会删掉里面的全部文件和公开链接，正在进行的调用也会被打断。"
+        description="每个群可以有几个沙箱工作区（一个话题一个，带名字和说明），闲置或到期后自动回收。销毁会删掉里面的全部文件和公开链接，正在进行的调用和后台任务也会被打断。"
         actions={
           !!workspaces.data?.items.length && (
             <ConfirmButton
@@ -44,75 +61,98 @@ export function SandboxPage() {
       />
       <QueryState isLoading={workspaces.isLoading} error={workspaces.error} />
       {workspaces.data?.items.length === 0 && <Empty>当前没有工作区</Empty>}
-      {!!workspaces.data?.items.length && (
+      {byGroup.length > 0 && (
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>群</TableHead>
+              <TableHead>工作区</TableHead>
               <TableHead>Claim</TableHead>
               <TableHead>创建</TableHead>
               <TableHead>最近使用</TableHead>
               <TableHead>到期</TableHead>
               <TableHead>进行中</TableHead>
               <TableHead>公开链接</TableHead>
+              <TableHead>后台任务</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {workspaces.data.items.map((w) => (
-              <TableRow key={w.group_id}>
-                <TableCell>
-                  <div>{groups.data?.find((g) => g.group_id === w.group_id)?.name || "—"}</div>
-                  <div className="font-mono text-xs text-muted-foreground">{w.group_id}</div>
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  <div>{w.claim}</div>
-                  <div className="text-muted-foreground">{w.pod_ip || "—"}</div>
-                </TableCell>
-                <TableCell className="text-xs">{fmtTime(w.created_at)}</TableCell>
-                <TableCell className="text-xs">{fmtTime(w.last_used)}</TableCell>
-                <TableCell className="text-xs">{fmtTime(w.expires_at)}</TableCell>
-                <TableCell>
-                  {w.active}
-                  {w.recreate && (
-                    <Badge variant="outline" className="ml-2">
-                      待重建
-                    </Badge>
+            {byGroup.map(([groupId, items]) =>
+              items.map((w, i) => (
+                <TableRow key={`${groupId}/${w.name}`} className="align-top">
+                  {i === 0 && (
+                    <TableCell rowSpan={items.length} className="border-r">
+                      <div>{groupName(groupId) || "—"}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{groupId}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{items.length} 个工作区</div>
+                    </TableCell>
                   )}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {w.links.length === 0
-                    ? "—"
-                    : w.links.map((l) => (
-                        <div key={l.port}>
-                          <span className="font-mono">:{l.port}</span>{" "}
-                          <a className="underline" href={l.url} target="_blank" rel="noreferrer noopener">
-                            {l.url}
-                          </a>
-                          {(l.pid != null || l.command) && (
-                            <div className="font-mono text-muted-foreground truncate max-w-80" title={l.command}>
-                              {l.pid != null && `pid ${l.pid} `}
-                              {l.command}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                </TableCell>
-                <TableCell>
-                  <ConfirmButton
-                    title={`销毁群 ${w.group_id} 的工作区？`}
-                    description="文件和公开链接都会被删除；正在使用它的调用会失败。"
-                    onConfirm={() => destroy.mutate({ path: { group_id: w.group_id } })}
-                  >
-                    销毁
-                  </ConfirmButton>
-                </TableCell>
-              </TableRow>
-            ))}
+                  <TableCell className="max-w-72">
+                    <div className="font-mono font-medium">{w.name}</div>
+                    <div className="text-xs whitespace-normal text-muted-foreground">{w.description || "—"}</div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {w.pending ? (
+                      <Badge variant="outline">未启动</Badge>
+                    ) : (
+                      <>
+                        <div>{w.claim}</div>
+                        <div className="text-muted-foreground">{w.pod_ip || "—"}</div>
+                      </>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">{fmtTime(w.created_at)}</TableCell>
+                  <TableCell className="text-xs">{fmtTime(w.last_used)}</TableCell>
+                  <TableCell className="text-xs">
+                    <div>{w.expires_at ? fmtTime(w.expires_at) : "—"}</div>
+                    {w.max_until && <div className="text-muted-foreground">最晚 {fmtTime(w.max_until)}</div>}
+                  </TableCell>
+                  <TableCell>
+                    {w.active}
+                    {w.recreate && (
+                      <Badge variant="outline" className="ml-2">
+                        待重建
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {w.links.length === 0
+                      ? "—"
+                      : w.links.map((l) => (
+                          <div key={l.port}>
+                            <span className="font-mono">:{l.port}</span>{" "}
+                            <a className="underline" href={l.url} target="_blank" rel="noreferrer noopener">
+                              {l.url}
+                            </a>
+                            {(l.pid != null || l.command) && (
+                              <div className="font-mono text-muted-foreground truncate max-w-80" title={l.command}>
+                                {l.pid != null && `pid ${l.pid} `}
+                                {l.command}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {w.jobs.length === 0 ? "—" : w.jobs.map((id) => <div key={id}>{id}</div>)}
+                  </TableCell>
+                  <TableCell>
+                    <ConfirmButton
+                      title={`销毁群 ${groupId} 的工作区 ${w.name}？`}
+                      description="文件和公开链接都会被删除；正在使用它的调用和后台任务会失败。"
+                      onConfirm={() => destroy.mutate({ path: { group_id: groupId, name: w.name } })}
+                    >
+                      销毁
+                    </ConfirmButton>
+                  </TableCell>
+                </TableRow>
+              )),
+            )}
           </TableBody>
         </Table>
       )}
-      <JobsSection groupName={(id) => groups.data?.find((g) => g.group_id === id)?.name} />
+      <JobsSection groupName={groupName} />
     </div>
   );
 }
@@ -203,7 +243,8 @@ function JobRow({ job: j, groupName, onCancel }: { job: JobOut; groupName?: stri
       <TableCell className="max-w-72">
         <div className="font-medium">{j.title}</div>
         <div className="text-xs text-muted-foreground">
-          <span className="font-mono">{j.id}</span> · {JOB_KIND[j.kind] ?? j.kind}
+          <span className="font-mono">{j.id}</span> · {JOB_KIND[j.kind] ?? j.kind} · 工作区{" "}
+          <span className="font-mono">{j.workspace}</span>
           {j.model && ` · ${j.model}`} · 请求者 <span className="font-mono">{j.user_id}</span>
         </div>
         {j.links.map((l) => (

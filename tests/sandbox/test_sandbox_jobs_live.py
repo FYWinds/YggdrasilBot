@@ -10,6 +10,7 @@ Needs the YGG_TEST_SANDBOXD_* variables (see ``helpers.py``); skipped otherwise.
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -35,9 +36,9 @@ from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import invoke, report
 from yggdrasil.sandbox import WorkspaceManager, omp
 from yggdrasil.sandbox.backend import Endpoint
-from yggdrasil.sandbox.jobs import Job, JobRunner
+from yggdrasil.sandbox.jobs import START_MARGIN_S, Job, JobRunner
 from yggdrasil.sandbox.k8s import KubeClient
-from yggdrasil.sandbox.state import keep_key
+from yggdrasil.sandbox.state import keep_key, ws_key
 from yggdrasil.settings import Settings
 
 pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
@@ -104,7 +105,7 @@ async def runner(
         await s.execute(delete(Invocation).where(Invocation.group_id == GROUP))
     yield r
     await r.aclose()
-    await mgr.destroy(GROUP, reason="test", force=True)
+    await mgr.destroy_all(reason="test")
 
 
 def _ctx(deps: Deps) -> RunContext[Deps]:
@@ -152,6 +153,7 @@ async def test_background_command_reports_back(
 
     settings = Settings.model_validate(SETTINGS_DOC)
     session = mgr.session(GROUP, invocation_id="inv-chat", cfg=settings.tools)
+    await session.open("train", new=True, description="训练模型")
     slow: list[bool] = []
 
     async def on_slow() -> None:
@@ -172,11 +174,12 @@ async def test_background_command_reports_back(
     deps.sandbox = session
     script = "echo start\nsleep 3\nprintf '\\033[31mred\\033[0m\\n'\necho 训练完成\nexit 4\n"
     text = str(await job_tools.background(_ctx(deps), script, "训练模型"))
-    assert "已在后台开始后台命令" in text, text
+    assert "已在工作区「train」后台开始后台命令" in text, text
     assert slow == [True]
     job = (await runner.for_group(GROUP))[0]
     assert job.status == "running"
-    assert await fake_redis.hget(keep_key(GROUP), f"job:{job.id}") == str(job.pid)  # pyright: ignore[reportGeneralTypeIssues]
+    assert job.workspace == "train"
+    assert await fake_redis.hget(keep_key(GROUP, "train"), f"job:{job.id}") == str(job.pid)  # pyright: ignore[reportGeneralTypeIssues]
 
     # The chat invocation ends: its reap must spare the job.
     await session.close()
@@ -194,11 +197,12 @@ async def test_background_command_reports_back(
     assert "\x1b" not in done.result
     assert "red" in done.result
     assert done.report == "done", done
-    assert await fake_redis.hget(keep_key(GROUP), f"job:{job.id}") is None  # pyright: ignore[reportGeneralTypeIssues]
+    assert await fake_redis.hget(keep_key(GROUP, "train"), f"job:{job.id}") is None  # pyright: ignore[reportGeneralTypeIssues]
 
     assert seen
     assert "退出码 4" in seen[0]
     assert "帮我跑一下训练" in seen[0]
+    assert "工作区：train（这次回复已经选中它" in seen[0]  # the report runs with the job's workspace selected
     quoted = [d for a, d in bot.calls if a == "send_group_msg"]
     assert quoted
     assert quoted[0]["message"][0] == {"type": "reply", "data": {"id": str(TRIGGER)}}
@@ -219,6 +223,7 @@ async def test_background_command_reports_back(
 async def test_cancel_job_tool_stops_a_command(runner: JobRunner, mgr: WorkspaceManager) -> None:
     settings = Settings.model_validate(SETTINGS_DOC)
     session = mgr.session(GROUP, invocation_id="inv-cancel", cfg=settings.tools)
+    await session.open("sleepy", new=True, description="睡觉")
     deps = Deps(None, GROUP, USER, settings, Handles(), "chat", trigger_message_id=TRIGGER)  # pyright: ignore[reportArgumentType]
     deps.sandbox = session
     await job_tools.background(_ctx(deps), "sleep 600", "睡觉")
@@ -234,7 +239,7 @@ async def test_cancel_job_tool_stops_a_command(runner: JobRunner, mgr: Workspace
     assert done is not None
     assert done.status == "cancelled"
     assert done.report == "skipped"
-    found = await mgr.backend_for(GROUP)
+    found = await mgr.backend_for(GROUP, "sleepy")
     assert found is not None
     try:
         alive = await found[0].exec(["/bin/sh", "-c", f'kill -0 "$(cat {job.dir}/pid)"'], seconds=10)
@@ -276,23 +281,37 @@ def delegate_env(runner: JobRunner, monkeypatch: pytest.MonkeyPatch) -> dict[str
 
 
 async def test_delegate_drives_omp_through_ygg_rpc(
-    runner: JobRunner, mgr: WorkspaceManager, delegate_env: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch
+    runner: JobRunner,
+    mgr: WorkspaceManager,
+    fake_redis: fakeredis.FakeAsyncRedis,
+    delegate_env: dict[str, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The real ``ygg rpc`` host with the fake omp standing in for the binary (the test image has no omp)."""
+    """The real ``ygg rpc`` host with the fake omp standing in for the binary (the test image has no omp). The
+    delegate reuses an existing workspace that is 17 minutes from its hard cap: the start extends it."""
     settings = Settings.model_validate(SETTINGS_DOC)
-    session = mgr.session(GROUP, invocation_id="inv-delegate", cfg=settings.tools)
+    earlier = mgr.session(GROUP, invocation_id="inv-earlier", cfg=settings.tools)
+    await earlier.open("site", new=True, description="鹈鹕网站")
     peer = "/workspace/.ygg/fake-omp"
-    await session.backend.write_bytes(peer, b"#!/usr/bin/env python3\n" + FAKE_OMP.read_bytes())
-    await session.backend.write_bytes("/workspace/site/shot.png", b"\x89PNG fake")
-    await session.backend.exec(["chmod", "+x", peer])
+    await earlier.backend.write_bytes(peer, b"#!/usr/bin/env python3\n" + FAKE_OMP.read_bytes())
+    await earlier.backend.write_bytes("/workspace/site/shot.png", b"\x89PNG fake")
+    await earlier.backend.exec(["chmod", "+x", peer])
+    await earlier.close()
     monkeypatch.setattr(omp, "OMP_BIN", peer)
+    near = time.time() + 17 * 60
+    await fake_redis.hset(ws_key(GROUP, "site"), "max_until", repr(near))  # pyright: ignore[reportGeneralTypeIssues]
 
+    session = mgr.session(GROUP, invocation_id="inv-delegate", cfg=settings.tools)
     deps = Deps(None, GROUP, USER, settings, Handles(), "chat", trigger_message_id=TRIGGER)  # pyright: ignore[reportArgumentType]
     deps.sandbox = session
-    text = str(await job_tools.delegate(_ctx(deps), "搭个网站并截图", "网站"))
-    assert "已在后台开始后台大任务" in text, text
-    await session.close()
+    text = str(await job_tools.delegate(_ctx(deps), "搭个网站并截图", "网站", workspace="site"))
+    assert "已选中工作区「site」" in text, text
+    assert "已在工作区「site」后台开始后台大任务" in text, text
     job = (await runner.for_group(GROUP))[0]
+    info = await mgr.get(GROUP, "site")
+    assert info is not None
+    assert info.max_until >= job.deadline + settings.tools.sandbox_invocation_s + START_MARGIN_S - 1
+    await session.close()
 
     done = await _until_reported(runner, job.id)
     assert done.status == "succeeded", done.error
@@ -301,7 +320,7 @@ async def test_delegate_drives_omp_through_ygg_rpc(
     assert done.progress == "做到一半"
     assert delegate_env["revoked"] == [job.id]
     assert [j.id for j in delegate_env["reports"]] == [job.id]
-    found = await mgr.backend_for(GROUP)
+    found = await mgr.backend_for(GROUP, "site")
     assert found is not None
     try:
         models_yml = await found[0].read_bytes(omp.MODELS_PATH)
@@ -323,15 +342,16 @@ async def test_delegate_with_real_omp(
     scripted Anthropic endpoint inside the sandbox (tests/sandbox/fake_anthropic.py) that calls ``show``."""
     settings = Settings.model_validate(SETTINGS_DOC)
     session = mgr.session(GROUP, invocation_id="inv-omp", cfg=settings.tools)
+    await session.open("shots", new=True, description="截图")
     log = "/workspace/.ygg/fake-anthropic.log"
     await session.backend.write_bytes("/workspace/.ygg/fake_anthropic.py", FAKE_ANTHROPIC.read_bytes())
     await session.backend.write_bytes("/workspace/site/shot.png", b"\x89PNG fake")
     deps = Deps(None, GROUP, USER, settings, Handles(), "chat", trigger_message_id=TRIGGER)  # pyright: ignore[reportArgumentType]
     deps.sandbox = session
     text = str(await job_tools.delegate(_ctx(deps), "给首页截个图，用 show 发出来", "截图"))
-    assert "已在后台开始后台大任务" in text, text
+    assert "已在工作区「shots」后台开始后台大任务" in text, text
     await session.close()  # the invocation's reap; the model server starts after it so it is not reaped
-    found = await mgr.backend_for(GROUP)
+    found = await mgr.backend_for(GROUP, "shots")
     assert found is not None
     backend = found[0]
     try:

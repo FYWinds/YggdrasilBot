@@ -45,7 +45,12 @@ class FakeKube:
             self.objects[f"{path}/{name}"] = obj
             return httpx.Response(201, json=obj)
         if request.method == "GET" and path.endswith(("/sandboxclaims", "/services", "/ingressroutes")):
-            items = [v for k, v in self.objects.items() if k.rsplit("/", 1)[0] == path]
+            wanted = dict(x.split("=", 1) for x in request.url.params.get("labelSelector", "").split(",") if x)
+            items = [
+                v
+                for k, v in self.objects.items()
+                if k.rsplit("/", 1)[0] == path and wanted.items() <= (v.get("metadata", {}).get("labels") or {}).items()
+            ]
             return httpx.Response(200, json={"items": items})
         if request.method == "GET" and "/sandboxclaims/" in path and self.claim_gate is not None:
             self.claim_get_entered.set()

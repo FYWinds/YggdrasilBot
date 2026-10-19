@@ -176,7 +176,7 @@ async def build_context(
     request_text: str,
     workspace: bool = False,
 ) -> BuiltContext:
-    """``workspace``: this run has the sandbox suite, so describe the group's live workspace (if any)."""
+    """``workspace``: this run has the sandbox suite, so list the group's workspaces (the model picks one)."""
     from yggdrasil.memory import search
 
     handles = Handles()
@@ -269,12 +269,12 @@ async def build_context(
             from yggdrasil.sandbox import manager
 
             try:
-                described = await manager().describe(group_id)
+                listing = await manager().listing(group_id)
             except Exception:
-                LOGGER.exception("workspace describe failed")
-                described = None
-            if described:
-                blocks.add("工作区", described)
+                LOGGER.exception("workspace listing failed")
+                listing = None
+            if listing is not None:
+                blocks.add("工作区", listing or "本群还没有工作区。")
 
     available = ", ".join(f"{k}({v.kind})" for k, v in handles.items.items())
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'

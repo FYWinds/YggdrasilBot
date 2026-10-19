@@ -1,6 +1,8 @@
-"""Pure sandbox rules: argv building, path mapping, listings, limits, renewal math, links, mapping encoding."""
+"""Pure sandbox rules: argv building, path mapping, listings, limits, renewal math, links, workspace names, record
+encoding and the model-facing workspace list."""
 
 import json
+from dataclasses import replace
 
 import pytest
 from pydantic_ai.workspaces import FileEntry
@@ -15,8 +17,21 @@ from yggdrasil.sandbox.backend import (
     shell_argv,
 )
 from yggdrasil.sandbox.errors import SandboxError, SandboxToolError
-from yggdrasil.sandbox.manager import _claim_ready, format_tree, parse_listener, reap_argv
-from yggdrasil.sandbox.state import LinkRecord, Mapping, claim_name, link_id, shutdown_at, validate_port
+from yggdrasil.sandbox.manager import _claim_ready, format_tree, format_workspaces, parse_listener, reap_argv
+from yggdrasil.sandbox.state import (
+    Link,
+    LinkRecord,
+    Mapping,
+    claim_name,
+    clean_description,
+    link_id,
+    name_error,
+    parse_ws_key,
+    shutdown_at,
+    valid_name,
+    validate_port,
+    ws_key,
+)
 
 WRAP = ["/bin/sh", "-c", 'exec "$@" </dev/null', "sh"]
 
@@ -121,12 +136,14 @@ def test_unlimited_budget_passes_timeout_through() -> None:
     assert _Budget(None).admit(7) == (7, None)
 
 
-def test_shutdown_time_idle_links_and_max_age() -> None:
-    created, idle, age = 1000.0, 1800.0, 14400.0
-    assert shutdown_at(now=2000, created_at=created, idle_s=idle, max_age_s=age, has_links=False) == 3800
-    # Links keep the workspace up to its hard max age, never beyond.
-    assert shutdown_at(now=2000, created_at=created, idle_s=idle, max_age_s=age, has_links=True) == 15400
-    assert shutdown_at(now=14000, created_at=created, idle_s=idle, max_age_s=age, has_links=False) == 15400
+def test_shutdown_time_idle_links_and_hard_cap() -> None:
+    cap, idle = 15400.0, 1800.0
+    assert shutdown_at(now=2000, max_until=cap, idle_s=idle, has_links=False) == 3800
+    # Links keep the workspace up to its hard cap, never beyond.
+    assert shutdown_at(now=2000, max_until=cap, idle_s=idle, has_links=True) == 15400
+    assert shutdown_at(now=14000, max_until=cap, idle_s=idle, has_links=False) == 15400
+    # A background job pushed the cap out: idle renewals follow it.
+    assert shutdown_at(now=15000, max_until=20000.0, idle_s=idle, has_links=False) == 16800
 
 
 @pytest.mark.parametrize(("port", "ok"), [(1024, True), (8000, True), (65535, True), (80, False), (1023, False)])
@@ -140,12 +157,17 @@ def test_validate_port_rejects_reserved_and_invalid(port: int) -> None:
 
 
 def test_generated_names() -> None:
-    name = claim_name(10001)
-    assert name.startswith("ygg-sbx-10001-")
-    suffix = name.removeprefix("ygg-sbx-10001-")
+    name = claim_name(10001, "pelican-game")
+    assert name.startswith("ygg-sbx-10001-pelican-game-")
+    suffix = name.removeprefix("ygg-sbx-10001-pelican-game-")
     assert len(suffix) == 6
     assert suffix.isalnum()
     assert suffix.lower() == suffix
+    # A long group id and a 32-character name still fit an object name, without a dangling '-'.
+    long = claim_name(1234567890123, "a" * 30 + "-b")
+    assert len(long) <= 63
+    assert "--" not in long
+    assert long.startswith("ygg-sbx-1234567890123-aaaa")
     rid = link_id()
     assert len(rid) == 10
     assert rid.isalnum()
@@ -163,12 +185,15 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
     )
     m = Mapping(
         group_id=10001,
-        claim="ygg-sbx-10001-abc123",
-        sandbox="ygg-sbx-10001-abc123",
+        name="pelican-game",
+        description="鹈鹕小游戏",
+        claim="ygg-sbx-10001-pelican-game-abc123",
+        sandbox="ygg-sbx-10001-pelican-game-abc123",
         pod_ip="10.42.0.7",
         created_at=1000.25,
         last_used=1100.5,
         expires_at=2900.75,
+        max_until=15400.5,
         active=2,
         recreate=True,
         links=[link],
@@ -178,27 +203,125 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
     back = Mapping.from_hash(10001, data)
     assert back == m
     assert back is not None
-    info = back.info()
+    info = back.info(("job1",))
+    assert (info.name, info.description, info.max_until, info.jobs) == (
+        "pelican-game",
+        "鹈鹕小游戏",
+        15400.5,
+        ("job1",),
+    )
     assert info.links[0].url == link.url
     assert info.links[0].port == 8000
     assert info.links[0].pid == 43
     assert info.active == 2
     assert info.recreate
+    assert not info.pending
 
 
 @pytest.mark.parametrize(
-    "data", [{}, {"active": "1"}, {"claim": "c", "created_at": "x"}, {"claim": "c", "links": "not json"}]
+    "data",
+    [
+        {},
+        {"active": "1"},
+        {"claim": "c"},  # no name
+        {"name": "Bad Name", "claim": "c"},
+        {"name": "w"},  # no claim field at all
+        {"name": "w", "claim": "c", "created_at": "x"},
+        {"name": "w", "claim": "c", "links": "not json"},
+    ],
 )
 def test_unusable_hashes_decode_to_none(data: dict[str, str]) -> None:
     assert Mapping.from_hash(1, data) is None
 
 
 def test_mapping_tolerates_missing_optional_fields_and_negative_active() -> None:
-    m = Mapping.from_hash(7, {"claim": "c", "active": "-1"})
+    m = Mapping.from_hash(7, {"name": "w", "claim": "c", "active": "-1"})
     assert m is not None
     assert m.active == 0
     assert m.sandbox is None
     assert m.links == []
+    assert m.description == ""
+    pending = Mapping.from_hash(7, {"name": "w", "claim": "", "description": "空的"})
+    assert pending is not None
+    assert pending.pending
+    assert pending.info().pending
+
+
+@pytest.mark.parametrize("name", ["a", "pelican-game", "x2", "a-b-c", "a" * 32, "9lives"])
+def test_valid_workspace_names(name: str) -> None:
+    assert valid_name(name)
+    assert name_error(name) is None
+
+
+@pytest.mark.parametrize("name", ["", "-a", "a-", "Pelican", "a_b", "a b", "中文", "a" * 33, "a:b"])
+def test_invalid_workspace_names(name: str) -> None:
+    assert not valid_name(name)
+    assert "小写字母" in (name_error(name) or "")
+
+
+def test_workspace_keys_round_trip() -> None:
+    assert parse_ws_key(ws_key(10001, "pelican-game")) == (10001, "pelican-game")
+    assert parse_ws_key("ygg:sandbox:ws:10001") is None  # the old one-per-group key
+    assert parse_ws_key("ygg:sandbox:ws:x:name") is None
+    assert parse_ws_key("ygg:sandbox:ws:10001:Bad") is None
+
+
+def test_descriptions_are_one_short_line() -> None:
+    assert clean_description("  做网站\n  第二行 ") == "做网站 第二行"
+    assert len(clean_description("字" * 500)) == 200
+
+
+def test_workspace_list_for_the_model() -> None:
+    now = 100_000.0
+    base = Mapping(
+        group_id=1,
+        name="pelican-game",
+        description="鹈鹕小游戏，代码在 /workspace/game",
+        claim="c1",
+        sandbox=None,
+        pod_ip="10.0.0.1",
+        created_at=now - 3900,
+        last_used=now - 180,
+        expires_at=now + 1620,
+        max_until=now + 10000,
+    ).info()
+    busy = Mapping(
+        group_id=1,
+        name="site",
+        description="",
+        claim="c2",
+        sandbox=None,
+        pod_ip="10.0.0.2",
+        created_at=now - 60,
+        last_used=now,
+        expires_at=now + 1800,
+        max_until=now + 7200,
+        active=1,
+    ).info(("job1",))
+    busy = replace(busy, links=(Link(port=8000, url="https://sbx-a.example.com", command="", created_at=0),))
+    pending = Mapping(
+        group_id=1,
+        name="new-one",
+        description="还没用",
+        claim="",
+        sandbox=None,
+        pod_ip="",
+        created_at=now,
+        last_used=now,
+        expires_at=0,
+        max_until=0,
+    ).info()
+    text = format_workspaces([base, busy, pending], now=now, titles={"job1": "训练模型"}, current="site")
+    assert text.splitlines() == [
+        "- pelican-game：鹈鹕小游戏，代码在 /workspace/game",
+        "  已存在 1 小时 5 分钟；闲置 3 分钟；约 27 分钟后闲置回收",
+        "- site（当前选中）：（没有说明）",
+        "  已存在 1 分钟；正在使用；最多还能保留 2 小时；公开链接 https://sbx-a.example.com（端口 8000）；"
+        "后台任务 job1「训练模型」",
+        "- new-one：还没用",
+        "  空的，还没启动（第一次用时创建）",
+    ]
+    assert format_workspaces([], now=now, titles={}) == ""
 
 
 def test_links_stored_without_pid_still_decode() -> None:

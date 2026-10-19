@@ -123,8 +123,9 @@ Pod hardening that the images support: run as non-root, `readOnlyRootFilesystem:
 
 ## Sandbox
 
-The sandbox gives the chat model a persistent, per-group Linux workspace (shell, files, optional public links).
-It needs:
+The sandbox gives the chat model persistent Linux workspaces (shell, files, optional public links), one per topic:
+each group has up to `sandbox_max_workspaces_per_group` (default 3) named workspaces, each its own pod, and the
+deployment at most `sandbox_max_workspaces` (default 8) pods; size the warm pool accordingly. It needs:
 
 1. **gVisor** on the nodes: install `runsc` + `containerd-shim-runsc-v1`, register the `runsc` runtime with
    containerd (on k3s via a drop-in under `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/`), and

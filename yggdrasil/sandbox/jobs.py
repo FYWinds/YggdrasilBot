@@ -13,9 +13,9 @@ Everything lives in files and Redis, nothing in long-lived connections, so a res
   job's files incrementally over sandboxd, drives omp, enforces deadlines and cancellation, and when a job ends
   starts a synthetic chat invocation that reports the result back to the requester.
 
-While a job runs its supervisor pid sits in the group's keep hash (``job:<id>``), so the end-of-invocation
-reap spares it and the workspace is never evicted; a workspace that is destroyed or replaced meanwhile fails
-the job on its next poll.
+While a job runs its supervisor pid sits in its workspace's keep hash (``job:<id>``), so the end-of-invocation
+reap spares it and the workspace is never evicted; starting a job pushes the workspace's hard cap out so the
+job fits. A workspace that is destroyed or replaced meanwhile fails the job on its next poll.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from yggdrasil.sandbox.state import keep_key, random_id
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
-    from yggdrasil.sandbox.state import Link, WorkspaceInfo
+    from yggdrasil.sandbox.state import Link
     from yggdrasil.settings import Settings, ToolSettings
 
 YGG = "/opt/ygg/ygg"
@@ -203,6 +203,7 @@ class Job:
     request_text: str
     title: str
     spec: str  # the script (command) or the task (agent)
+    workspace: str  # the workspace's name in its group
     claim: str
     created_at: float
     deadline: float
@@ -268,6 +269,7 @@ class Job:
                 request_text=data.get("request_text", ""),
                 title=data.get("title", ""),
                 spec=data.get("spec", ""),
+                workspace=data.get("workspace", ""),
                 claim=data.get("claim", ""),
                 created_at=float(data.get("created_at") or 0),
                 deadline=float(data.get("deadline") or 0),
@@ -455,11 +457,15 @@ def relay_enabled() -> bool:
 class Workspaces(Protocol):
     """The ``WorkspaceManager`` methods jobs use."""
 
-    async def backend_for(self, group_id: int) -> tuple[Any, str] | None: ...
-    async def renew(self, group_id: int, cfg: ToolSettings) -> bool: ...
-    async def get(self, group_id: int) -> WorkspaceInfo | None: ...
-    async def publish(self, group_id: int, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> Link: ...
-    async def unpublish(self, group_id: int, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> bool: ...
+    async def backend_for(self, group_id: int, name: str) -> tuple[Any, str] | None: ...
+    async def renew(self, group_id: int, name: str, cfg: ToolSettings) -> bool: ...
+    async def extend(self, group_id: int, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None: ...
+    async def publish(
+        self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+    ) -> Link: ...
+    async def unpublish(
+        self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
+    ) -> bool: ...
 
 
 class ReportDeferred(Exception):
@@ -565,8 +571,11 @@ class JobRunner:
 
     # --- starting -------------------------------------------------------------------------------------
 
-    async def _admit(self, req: Requester, backend: Any, kind: JobKind, cfg: ToolSettings) -> tuple[str, float]:
-        """Attach the workspace and check what does not need the reservation: (claim, seconds allowed)."""
+    async def _admit(
+        self, req: Requester, backend: Any, workspace: str, kind: JobKind, cfg: ToolSettings
+    ) -> tuple[str, float]:
+        """Attach the workspace, check what does not need the reservation and push the workspace's hard cap out
+        so the job fits: (claim, seconds allowed)."""
         if cfg.sandbox_max_jobs <= 0:
             raise SandboxError("后台任务已关闭")
         await backend.working_dir()
@@ -574,17 +583,12 @@ class JobRunner:
         if ref is None:
             raise SandboxError("工作区不可用")
         limit_s = (cfg.sandbox_job_command_min if kind == "command" else cfg.sandbox_job_agent_min) * 60
-        info = await self._workspaces().get(req.group_id)
-        if info is None or info.claim != ref.id:
+        # A later invocation retires a workspace with less than sandbox_invocation_s left before its cap (the
+        # manager's max-age rule), which would end the job: the cap must lie past the job's deadline by that much,
+        # plus time to stop it.
+        until = self._clock() + limit_s + cfg.sandbox_invocation_s + START_MARGIN_S
+        if await self._workspaces().extend(req.group_id, workspace, ref.id, until, cfg) is None:
             raise SandboxError("工作区刚被重置或回收，稍后再试")
-        left = info.created_at + cfg.sandbox_max_age_min * 60 - self._clock()
-        # A later invocation retires a workspace with less than sandbox_invocation_s left (the manager's max-age
-        # rule), which would end the job: it must finish before that point, plus time to stop it.
-        if left < limit_s + cfg.sandbox_invocation_s + START_MARGIN_S:
-            raise SandboxError(
-                f"工作区还剩约 {max(0, int(left // 60))} 分钟就到最长存活时间，装不下一个最长 {limit_s // 60} 分钟的"
-                "后台任务；等它回收重建后再开，或者把任务拆小在前台做"
-            )
         return ref.id, float(limit_s)
 
     async def _reserve(self, job: Job, cfg: ToolSettings) -> None:
@@ -631,7 +635,7 @@ class JobRunner:
                 LOGGER.opt(exception=True).info("stopping half-started sandbox job {} failed", job.id)
         r = self._r()
         try:
-            await r.hdel(keep_key(job.group_id), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
+            await r.hdel(keep_key(job.group_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
             if job.kind == "agent":
                 from yggdrasil import relay
 
@@ -647,7 +651,9 @@ class JobRunner:
         except Exception:
             LOGGER.exception("cleaning up the failed start of sandbox job {} failed", job.id)
 
-    def _new(self, req: Requester, kind: JobKind, claim: str, title: str, spec: str, limit_s: float) -> Job:
+    def _new(
+        self, req: Requester, kind: JobKind, workspace: str, claim: str, title: str, spec: str, limit_s: float
+    ) -> Job:
         now = self._clock()
         return Job(
             id=random_id(8),
@@ -659,6 +665,7 @@ class JobRunner:
             request_text=req.request_text[:2000],
             title=" ".join(title.split())[:40] or KIND_TEXT[kind],
             spec=spec,
+            workspace=workspace,
             claim=claim,
             created_at=now,
             deadline=now + limit_s,
@@ -670,7 +677,7 @@ class JobRunner:
         process just started is stopped again and the start fails."""
         r = self._r()
         # The keep entry first: the moment the record says running, the reap must already spare the process.
-        await r.hset(keep_key(job.group_id), keep_field(job.id), str(pid))  # pyright: ignore[reportGeneralTypeIssues]
+        await r.hset(keep_key(job.group_id, job.workspace), keep_field(job.id), str(pid))  # pyright: ignore[reportGeneralTypeIssues]
         if not await self._cas(job.id, "starting", status="running", pid=str(pid), model=job.model, driver=job.driver):
             await asyncio.shield(self._abort_start(job, ops, "启动太慢", kill=True))
             raise SandboxError("后台任务启动太慢，已被判定失败，刚启动的进程也已停掉；可以重试")
@@ -685,11 +692,12 @@ class JobRunner:
             return None
         return SandboxError(f"后台任务没能启动（{e}）；可能已启动的部分已经停掉，这个任务不会再回报")
 
-    async def start_command(self, req: Requester, backend: Any, *, script: str, title: str) -> Job:
-        """Start ``script`` detached in the group's workspace (``backend``: the invocation's session backend)."""
+    async def start_command(self, req: Requester, backend: Any, *, workspace: str, script: str, title: str) -> Job:
+        """Start ``script`` detached in the group's workspace ``workspace`` (``backend``: the invocation's session
+        backend, attached to it)."""
         cfg = self._settings(req.group_id).tools
-        claim, limit_s = await self._admit(req, backend, "command", cfg)
-        job = self._new(req, "command", claim, title, script, limit_s)
+        claim, limit_s = await self._admit(req, backend, workspace, "command", cfg)
+        job = self._new(req, "command", workspace, claim, title, script, limit_s)
         await self._reserve(job, cfg)
         ops = self._ops(backend)
         sent = False
@@ -707,8 +715,8 @@ class JobRunner:
         )
         return job
 
-    async def start_agent(self, req: Requester, backend: Any, *, task: str, title: str) -> Job:
-        """Start omp on ``task`` in the group's workspace, talking to the model through the relay."""
+    async def start_agent(self, req: Requester, backend: Any, *, workspace: str, task: str, title: str) -> Job:
+        """Start omp on ``task`` in the group's workspace ``workspace``, talking to the model through the relay."""
         from yggdrasil import relay
 
         base_url = relay.relay_url()
@@ -716,14 +724,14 @@ class JobRunner:
             raise SandboxError("没有配置模型中转，不能委托后台大任务")
         settings = self._settings(req.group_id)
         cfg = settings.tools
-        claim, limit_s = await self._admit(req, backend, "agent", cfg)
+        claim, limit_s = await self._admit(req, backend, workspace, "agent", cfg)
         models = await relay.relay_models()
         if not models:
             raise SandboxError(
                 "没有给后台大任务配置模型（控制台「模型路由」里的 agent 路由，需要 Anthropic 格式的 provider）"
             )
         model = models[0]
-        job = self._new(req, "agent", claim, title, task, limit_s)
+        job = self._new(req, "agent", workspace, claim, title, task, limit_s)
         job.model = model.id
         job.driver = omp.DriverState(since=self._clock()).to_json()
         await self._reserve(job, cfg)
@@ -868,7 +876,7 @@ class JobRunner:
 
     async def _step(self, job: Job) -> None:
         now = self._clock()
-        found = await self._workspaces().backend_for(job.group_id)
+        found = await self._workspaces().backend_for(job.group_id, job.workspace)
         if found is None or found[1] != job.claim:
             if found is not None:
                 await found[0].aclose()
@@ -901,7 +909,7 @@ class JobRunner:
             return
         job.renewed_at = self._clock()
         await self._save(job, "renewed_at")
-        if not await self._workspaces().renew(job.group_id, cfg):
+        if not await self._workspaces().renew(job.group_id, job.workspace, cfg):
             LOGGER.warning("sandbox job {}: renewing the workspace failed", job.id)
 
     async def _step_command(self, job: Job, ops: JobOps) -> None:
@@ -994,7 +1002,7 @@ class JobRunner:
         job.report = "skipped" if job.cancel.startswith("chat:") else "pending"
         job.report_at = self._clock()
         r = self._r()
-        await r.hdel(keep_key(job.group_id), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
+        await r.hdel(keep_key(job.group_id, job.workspace), keep_field(job.id))  # pyright: ignore[reportGeneralTypeIssues]
         await r.hdel(running_key(job.group_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
         await self._save(job, "status", "ended_at", "result", "error", "exit_code", "usage", "report", "report_at")
         await self._event(job, f"{STATUS_TEXT[status]}" + (f"：{error[:100]}" if error else ""))
@@ -1052,12 +1060,12 @@ class JobRunner:
             audit = {"job": job.id}
             try:
                 if name == "publish":
-                    link = await self._workspaces().publish(job.group_id, port, cfg, audit=audit)
+                    link = await self._workspaces().publish(job.group_id, job.workspace, port, cfg, audit=audit)
                     job.links = [*(x for x in job.links if x.get("port") != port), {"port": port, "url": link.url}]
                     await self._save(job, "links")
                     await self._event(job, f"publish {port} → {link.url}")
                     return f"已公开端口 {port}：{link.url}\n这个链接任何人都能打开；在最终回答里写出它。", False
-                closed = await self._workspaces().unpublish(job.group_id, port, cfg, audit=audit)
+                closed = await self._workspaces().unpublish(job.group_id, job.workspace, port, cfg, audit=audit)
             except SandboxError as e:
                 return str(e), True
             job.links = [x for x in job.links if x.get("port") != port]

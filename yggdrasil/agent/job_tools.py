@@ -38,22 +38,25 @@ def _requester(deps: Deps) -> Requester:
 def _started(job: Job) -> str:
     minutes = int((job.deadline - job.created_at) // 60)
     return (
-        f"已在后台开始{KIND_TEXT[job.kind]} {job.id}「{job.title}」，最长 {minutes} 分钟。"
-        "结束后会自动在群里回复请求者结果，不用等它。"
+        f"已在工作区「{job.workspace}」后台开始{KIND_TEXT[job.kind]} {job.id}「{job.title}」，最长 {minutes} 分钟"
+        "（工作区会保留到它结束）。结束后会自动在群里回复请求者结果，不用等它。"
         "现在直接回复群友：任务已经开始、大概要做什么、做完会自动通知；不要编造结果。"
     )
 
 
 @_tool("background")
 async def background(ctx: RunContext[Deps], script: str, title: str) -> ToolResult:
-    """在工作区后台运行一段 bash 脚本，不等它结束：用于要跑几分钟以上的单个长命令（训练、批量下载、长测试、
-    大文件转换）。脚本在 /workspace 下执行，输出记到文件里；结束后会自动在群里把结果（退出码和输出的头尾）
-    回复给请求者。title 是一句话的任务名（≤20 字）。几十秒能跑完的命令直接用 sh，不要用这个。"""
+    """在当前选中的工作区后台运行一段 bash 脚本，不等它结束：用于要跑几分钟以上的单个长命令（训练、批量下载、
+    长测试、大文件转换）。脚本在 /workspace 下执行，输出记到文件里；结束后会自动在群里把结果（退出码和输出的
+    头尾）回复给请求者。title 是一句话的任务名（≤20 字）。几十秒能跑完的命令直接用 sh，不要用这个。"""
     session = _session(ctx)
     if not script.strip():
         raise ToolError("脚本不能为空")
     try:
-        job = await runner().start_command(_requester(ctx.deps), session.backend, script=script, title=title)
+        name = await session.require()
+        job = await runner().start_command(
+            _requester(ctx.deps), session.backend, workspace=name, script=script, title=title
+        )
     except SandboxError as e:
         raise ToolError(str(e)) from e
     if ctx.deps.on_slow_tool is not None:
@@ -62,28 +65,39 @@ async def background(ctx: RunContext[Deps], script: str, title: str) -> ToolResu
 
 
 @_tool("delegate")
-async def delegate(ctx: RunContext[Deps], task: str, title: str) -> ToolResult:
+async def delegate(
+    ctx: RunContext[Deps], task: str, title: str, workspace: str | None = None, new: bool = False, description: str = ""
+) -> ToolResult:
     """把一个需要多步完成的大任务交给工作区里的编程 agent 在后台独立去做（它有命令行、读写文件、带浏览器的
     Python，能自己验证效果），适合「搭个网站并测好」「把这个仓库跑起来修好」这类要几分钟到十几分钟的活。
     task 要写清楚：目标、要用的文件或数据在哪、验收标准、交付物（图、公开链接、文件）。它看不到聊天记录，
     也没法向你提问；它的环境和你的 py kernel 不同，task 里只写要什么结果，不要指定函数、工具或端口。
     title 是一句话的任务名（≤20 字）。结束后会自动在群里把结果回复给请求者。
+    workspace 选在哪个工作区做，用法同 open_workspace：现有的名字就接着用它（同一话题的后续活），配合
+    new=True 和 description 就新建一个；不填用当前选中的工作区。工作区会保留到任务结束。
     一两分钟内能自己用 sh / py 做完的事不要委托。"""
     session = _session(ctx)
     if not task.strip():
         raise ToolError("任务描述不能为空")
+    notes: list[str] = []
     try:
-        job = await runner().start_agent(_requester(ctx.deps), session.backend, task=task, title=title)
+        if workspace is not None and workspace.strip():
+            opened = await session.open(workspace.strip().lower(), new=new, description=description)
+            notes.append(await session.summary(opened, files=False))
+        elif new:
+            raise ToolError("new=True 时要用 workspace 写新工作区的名字")
+        name = await session.require()
+        job = await runner().start_agent(_requester(ctx.deps), session.backend, workspace=name, task=task, title=title)
     except SandboxError as e:
-        raise ToolError(str(e)) from e
+        raise ToolError("\n".join([*notes, str(e)])) from e
     if ctx.deps.on_slow_tool is not None:
         await ctx.deps.on_slow_tool()
-    return _started(job)
+    return "\n".join([*notes, _started(job)])
 
 
 def describe_job(job: Job, *, now: float, detail: bool = False) -> str:
     """One job for the model: id, kind, status, timing, progress; ``detail`` adds the result excerpt."""
-    head = f"- {job.id} {KIND_TEXT[job.kind]}「{job.title}」{STATUS_TEXT[job.status]}"
+    head = f"- {job.id} {KIND_TEXT[job.kind]}「{job.title}」（工作区 {job.workspace}）{STATUS_TEXT[job.status]}"
     if job.running:
         head += f"，已运行 {fmt_duration(now - job.created_at)}，最多还剩 {fmt_duration(job.deadline - now)}"
         if job.cancel:
@@ -135,8 +149,10 @@ async def cancel_job(ctx: RunContext[Deps], job_id: str) -> ToolResult:
 
 
 def job_tools() -> list[Tool[Deps]]:
-    """The job tools of the sandbox suite; ``delegate`` only when the LLM relay is configured."""
+    """The job tools of the sandbox suite; ``delegate`` only when the LLM relay is configured. ``delegate`` may
+    switch the selected workspace, so it runs alone like ``open_workspace``."""
     fns: list[Callable[..., Awaitable[ToolResult]]] = [background, jobs, cancel_job]
+    tools: list[Tool[Deps]] = [Tool(fn, takes_ctx=True) for fn in fns]
     if relay_enabled():
-        fns.insert(1, delegate)
-    return [Tool(fn, takes_ctx=True) for fn in fns]
+        tools.insert(1, Tool(delegate, takes_ctx=True, sequential=True))
+    return tools
