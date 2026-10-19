@@ -32,6 +32,8 @@ TASKS = (
     "tldr",
     "quick_ack",
     "ops",
+    # Agent tasks inside sandboxes (omp via the LLM relay); Anthropic-format providers only.
+    "agent",
     "vision",
     "moderation",
     "embedding",
@@ -41,13 +43,14 @@ TASKS = (
     "memory_profile",
     "memory_digest",
 )
-CHAT_TASKS = tuple(t for t in TASKS if t not in ("moderation", "embedding", "rerank"))
+CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embedding", "rerank"))
 # Capabilities a route's models must have; checked on save when the catalog knows the model.
 # Agents with tools or structured output (pydantic-ai output tools) need tool calling.
 TASK_NEEDS: dict[str, tuple[str, ...]] = {
     "vision": ("vision",),
     **dict.fromkeys(
-        ("chat", "tldr", "ops", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"), ("tools",)
+        ("chat", "tldr", "ops", "agent", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"),
+        ("tools",),
     ),
 }
 

@@ -205,7 +205,7 @@ def main() -> None:
         if manager().configured:
             # Background jobs: resumes whatever was running before this process started.
             _tasks.append(asyncio.create_task(runner().run_forever(), name="sandbox-jobs"))
-        await start_relay()  # after runtime.load: it routes by the snapshot's chat route
+        await start_relay()  # after runtime.load: it routes by the snapshot's agent route
         LOGGER.info("yggdrasil bot started on {}:{}", APP_CONFIG.host, APP_CONFIG.port)
 
     @driver.on_shutdown

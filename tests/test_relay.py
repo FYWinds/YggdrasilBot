@@ -60,8 +60,8 @@ def _snapshot(*, fallback_format: str = "anthropic") -> Snapshot:
     backup = ProviderInfo(
         2, "backup", "https://backup.example.com", "sk-backup", {}, True, (FALLBACK,), fallback_format
     )
-    route = Route("chat", 1, MODEL, {}, 2, FALLBACK, {})
-    return Snapshot(providers={1: primary, 2: backup}, routes={"chat": route})
+    route = Route("agent", 1, MODEL, {}, 2, FALLBACK, {})
+    return Snapshot(providers={1: primary, 2: backup}, routes={"agent": route})
 
 
 @pytest.fixture

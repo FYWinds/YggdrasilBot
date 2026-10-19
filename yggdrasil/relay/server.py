@@ -2,7 +2,7 @@
 
 A request is checked against its token's grant (expiry, model allowlist, budget) and reserves its
 ``max_tokens`` of the output budget (clamped to what is left, so parallel requests can't overrun it).
-It is then forwarded with the provider's real key to the chat route's upstream for that model (falling
+It is then forwarded with the provider's real key to the agent route's upstream for that model (falling
 back to the route's fallback on transport errors, 408/429 and 5xx before any byte reached the client).
 Responses stream through unchanged; usage is read from ``message_start``/``message_delta`` (or the JSON
 body) and added to the job's usage and the ``ygg.llm.*`` metrics. A stream that ends before its

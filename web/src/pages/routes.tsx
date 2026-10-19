@@ -27,6 +27,7 @@ const TASK_LABELS: Record<string, string> = {
   tldr: "TL;DR",
   quick_ack: "快速响应",
   ops: "管理操作",
+  agent: "后台 agent",
   vision: "看图",
   moderation: "审核",
   embedding: "向量",

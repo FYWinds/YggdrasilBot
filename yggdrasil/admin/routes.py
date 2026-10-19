@@ -101,6 +101,8 @@ async def upsert_route(task: str, body: RouteIn, actor: Actor) -> TaskRouteRow:
     fallback_model = (body.fallback_model or "").strip() or None
     fallback_provider_id = body.fallback_provider_id if fallback_model else None
     thinking = _thinking_needs(body.params)
+    if task == "agent" and (body.params or body.limits.model_dump(exclude_none=True)):
+        raise unprocessable("agent 路由的参数和限制由工作区里的 agent 自己决定（预算在设置里），这里不能设置")
     async with change(actor, "route", "upsert", task) as c:
         for pid, model in {(body.provider_id, body.model.strip()), (fallback_provider_id, fallback_model)}:
             if pid is None or model is None:
@@ -108,6 +110,8 @@ async def upsert_route(task: str, body: RouteIn, actor: Actor) -> TaskRouteRow:
             p = await c.session.get(Provider, pid)
             if p is None:
                 raise not_found(f"provider {pid} ")
+            if task == "agent" and p.api_format != "anthropic":
+                raise unprocessable(f"agent 路由只能用 Anthropic 格式的 provider，{p.name} 是 {p.api_format}")
             if why := _missing_caps(task, p, model, thinking):
                 raise unprocessable(why)
         r = await c.session.get(TaskRoute, task)

@@ -30,7 +30,7 @@ _RESERVATION_S = 3600
 # Model metadata for omp when models.dev doesn't know the model.
 _DEFAULT_CONTEXT = 200_000
 _DEFAULT_MAX_TOKENS = 32_000
-ROUTE_TASK = "chat"
+ROUTE_TASK = "agent"
 
 
 @dataclass(frozen=True)
@@ -116,9 +116,9 @@ def relay_url() -> str | None:
 def route_targets(snap: Snapshot | None = None) -> dict[str, list[Target]]:
     """Relay model id → upstreams to try in order.
 
-    The chat route's primary and fallback, restricted to enabled Anthropic-format providers. A request
-    for the primary falls through to the fallback like the bot's own FallbackModel does; the fallback
-    model can also be requested directly.
+    The ``agent`` route's primary and fallback, restricted to enabled Anthropic-format providers. A
+    request for the primary falls through to the fallback like the bot's own FallbackModel does; the
+    fallback model can also be requested directly.
     """
     snap = snap or snapshot()
     r = snap.routes.get(ROUTE_TASK)

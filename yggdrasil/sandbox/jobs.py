@@ -719,8 +719,10 @@ class JobRunner:
         claim, limit_s = await self._admit(req, backend, "agent", cfg)
         models = await relay.relay_models()
         if not models:
-            raise SandboxError("模型中转没有可用的模型（chat 路由没有 Anthropic 格式的模型）")
-        model = next((m for m in models if m.id == cfg.sandbox_job_model), models[0])
+            raise SandboxError(
+                "没有给后台大任务配置模型（控制台「模型路由」里的 agent 路由，需要 Anthropic 格式的 provider）"
+            )
+        model = models[0]
         job = self._new(req, "agent", claim, title, task, limit_s)
         job.model = model.id
         job.driver = omp.DriverState(since=self._clock()).to_json()

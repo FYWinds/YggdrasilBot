@@ -145,7 +145,8 @@ It needs:
 6. **LLM relay (background agent jobs):** agents running inside a workspace call models through the bot with a
    per-job token, never a provider key. Add a `ClusterIP` Service selecting the bot pod on port 8090 (pin its
    `clusterIP`: sandboxes have no cluster DNS), set `YGG_RELAY_URL=http://<that IP>:8090`, allow sandbox egress
-   to it and bot ingress from sandbox pods on 8090. The relay serves the chat route's Anthropic-format models.
+   to it and bot ingress from sandbox pods on 8090. The relay serves the `agent` model route (Models page;
+   primary + fallback, Anthropic-format providers only); `delegate` is unavailable until it is configured.
 7. Enable the `sandbox` tool for chat in the dashboard (tool settings).
 
 The dashboard's Sandbox page lists live workspaces and can destroy them; `tools.sandbox_enabled` in the global

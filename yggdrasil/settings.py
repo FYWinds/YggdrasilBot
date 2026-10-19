@@ -187,9 +187,6 @@ class ToolSettings(BaseModel):
     sandbox_job_agent_min: int = Field(
         default=20, ge=1, le=240, description="后台大任务（delegate）最长运行时间（分钟）"
     )
-    sandbox_job_model: str = Field(
-        default="", description="后台大任务用的模型 id（须在 chat 路由里）；留空用 chat 路由的主模型"
-    )
     sandbox_job_max_input_tokens: int = Field(
         default=3_000_000, ge=10_000, description="每个后台大任务经中转最多消耗的输入 token"
     )
