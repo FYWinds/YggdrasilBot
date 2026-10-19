@@ -24,6 +24,7 @@ from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
 from yggdrasil.llm.streaming import drain_events
 from yggdrasil.people import People, clean_name, resolve
 from yggdrasil.prompts import render
+from yggdrasil.tools import render as renderer
 from yggdrasil.tools.errors import ToolError
 
 if TYPE_CHECKING:
@@ -315,37 +316,66 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
 MAX_IMAGES = 4  # images per reply, shared by render_* and the workspace's show()
 
 
-async def _attach_render(ctx: RunContext[Deps], kind: str, source: str, caption: str) -> str:
-    from yggdrasil.tools import render as renderer
+def reserve_images(deps: Deps, wanted: int) -> int:
+    """Hold up to ``wanted`` free image slots before awaiting; release with ``deps.images_reserved -= held``.
 
-    if not APP_CONFIG.browser_ws_url:
-        raise ToolError("没有可用的渲染浏览器")
-    if len(ctx.deps.images) >= MAX_IMAGES:
+    Tool calls in one turn run concurrently, so checking len(deps.images) before an await could overfill the reply.
+    """
+    free = MAX_IMAGES - len(deps.images) - deps.images_reserved
+    if free <= 0:
+        if deps.images_reserved:
+            raise ToolError("剩下的图片名额正被同时进行的出图占用，等它完成后再试")
         raise ToolError(f"这次回复已经有 {MAX_IMAGES} 张图了")
-    fn = {"mermaid": renderer.render_mermaid, "markdown": renderer.render_markdown, "html": renderer.render_html}[kind]
-    png = await fn(source, browser_ws_url=APP_CONFIG.browser_ws_url)
-    ctx.deps.images.append((png, caption.strip()))
-    return f"已生成图 {len(ctx.deps.images)}（{caption or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"
+    held = min(wanted, free)
+    deps.images_reserved += held
+    return held
+
+
+async def _attach_render(ctx: RunContext[Deps], kind: renderer.Kind, source: str, caption: str) -> str:
+    if not APP_CONFIG.render_url:
+        raise ToolError("没有配置渲染服务")
+    deps = ctx.deps
+    # Only Markdown can come back as several pages; mermaid/html always use one slot.
+    held = reserve_images(deps, MAX_IMAGES if kind == "markdown" else 1)
+    try:
+        pngs, warnings = await renderer.render(kind, source, base_url=APP_CONFIG.render_url, max_images=held)
+    finally:
+        deps.images_reserved -= held
+    pngs = pngs[:held]
+    caption = caption.strip()
+    first = len(deps.images) + 1
+    for i, png in enumerate(pngs, 1):
+        page = caption if i == 1 else (f"{caption}（{i}/{len(pngs)}）" if caption else "")
+        deps.images.append((png, page))
+    numbers = f"图 {first}" if len(pngs) == 1 else f"图 {first}–{first + len(pngs) - 1}（共 {len(pngs)} 页）"
+    result = f"已生成{numbers}（{caption or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"
+    if warnings:
+        lines = "\n".join(f"- {w}" for w in warnings)
+        result += f"\n渲染时有问题（图已经加上了，需要的话改好内容后重新生成）：\n{lines}"
+    return result
 
 
 @_tool("render_mermaid")
 async def render_mermaid(ctx: RunContext[Deps], code: str, caption: str = "") -> str:
-    """把 Mermaid 代码（flowchart、sequenceDiagram、classDiagram 等）渲染成图片，附在合并转发里发出。
-    节点文字用中文即可，含特殊字符的文字用双引号包起来。语法错误会返回报错，改好后重试。"""
+    """把 Mermaid 代码渲染成图片，附在合并转发里发出。支持所有 Mermaid 图类型：flowchart、sequenceDiagram、
+    classDiagram、stateDiagram、erDiagram、gantt、mindmap、timeline、pie、sankey、xychart 等。
+    节点文字用中文即可，含特殊字符的文字用双引号包起来。语法错误会返回报错和出错的行，改好后重试。"""
     return await _attach_render(ctx, "mermaid", code, caption)
 
 
 @_tool("render_markdown")
 async def render_markdown(ctx: RunContext[Deps], markdown: str, caption: str = "") -> str:
-    """把 Markdown（表格、代码块、标题、列表都支持）排版渲染成一张图片，附在合并转发里发出。
+    """把 Markdown 按 GitHub 风格排版渲染成图片，附在合并转发里发出。支持 GFM 表格、代码高亮、
+    数学公式 $…$ / $$…$$、提示块 > [!NOTE]、任务列表、脚注，```mermaid 代码块会直接画成图。
+    内容长会自动分成多页，最多用掉这次回复剩下的图片名额（总共 4 张）；放不下会报错，删减后重试。
     适合对比表、代码、带格式的长内容这类纯文本消息里不好看的东西。"""
     return await _attach_render(ctx, "markdown", markdown, caption)
 
 
 @_tool("render_html")
 async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> str:
-    """把一段 HTML（可以用内联 style，不能用脚本和外部资源）渲染成图片，附在合并转发里发出。
-    Markdown 表达不了的排版（卡片、色块、复杂表格）再用它。"""
+    """把一段 HTML 渲染成一张图片，附在合并转发里发出。只能用内联 style，不能用脚本，也不能引用外部图片、
+    字体或链接。Markdown 表达不了的排版（卡片、色块、复杂表格）再用它。"""
     return await _attach_render(ctx, "html", html, caption)
 
 

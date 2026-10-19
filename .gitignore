@@ -1,11 +1,5 @@
-# local planning docs and the private prod runbook
-/docs/DEPLOY.md
-/docs/DESIGN.md
-/docs/SANDBOX.md
-/docs/SEARCH_APIS.md
-/docs/SITE_ADAPTERS.md
-/docs/SNOWLUMA.md
-/docs/research/
+# local planning docs, research and the private prod runbook (never pushed)
+/docs/
 
 # local SnowLuma (OneBot protocol endpoint) install for dev testing
 /snowluma/

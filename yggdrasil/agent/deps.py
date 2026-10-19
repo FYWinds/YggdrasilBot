@@ -65,6 +65,7 @@ class Deps:
     tool_seconds: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))  # wall time per tool
     vision_tokens: list[tuple[str, int, int]] = field(default_factory=list)  # (model, in, out) of sub-calls
     images: list[tuple[bytes, str]] = field(default_factory=list)  # generated (png, caption), e.g. diagrams
+    images_reserved: int = 0  # slots held by in-flight image tools, so parallel calls can't overfill the reply
     on_slow_tool: Callable[[], Awaitable[None]] | None = None  # called before each tools.slow_tools call
     sandbox: "Session | None" = None  # this run's workspace session (chat with the sandbox suite only)
     # Where this run came from, for background jobs whose report replies to the trigger message later.

@@ -12,6 +12,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/fywinds/yggdrasil-bot
   SANDBOX_IMAGE: ghcr.io/fywinds/yggdrasil-sandbox
+  RENDER_IMAGE: ghcr.io/fywinds/yggdrasil-render
 
 jobs:
   check:
@@ -139,3 +140,25 @@ jobs:
           labels: ${{ steps.sandbox-meta.outputs.labels }}
           cache-from: type=gha,scope=sandbox
           cache-to: type=gha,mode=max,scope=sandbox
+
+      # Render service (Markdown/Mermaid/HTML to PNG + Playwright browser server for read_url); same tags as the bot.
+      - name: Render metadata
+        id: render-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.RENDER_IMAGE }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=sha,prefix=sha-
+            type=raw,value=main,enable={{is_default_branch}}
+
+      - name: Build and push render
+        uses: docker/build-push-action@v6
+        with:
+          context: render
+          file: render/Dockerfile
+          push: true
+          tags: ${{ steps.render-meta.outputs.tags }}
+          labels: ${{ steps.render-meta.outputs.labels }}
+          cache-from: type=gha,scope=render
+          cache-to: type=gha,mode=max,scope=render

@@ -13,7 +13,7 @@ placeholders: replace `example.com`, `<qq-account>`, `<admin-email>` and friends
 | An OpenAI- or Anthropic-compatible LLM endpoint | chat, tldr, memory, ops | configured in the dashboard |
 | Embedding endpoint (OpenAI-compatible) | memory search | e.g. llama.cpp serving a Qwen3 embedding GGUF |
 | Optional: guard model endpoint | input/output moderation | e.g. llama.cpp serving Qwen3Guard |
-| Optional: Playwright server | rendering, browser fallback for `read_url` | `YGG_BROWSER_WS_URL` |
+| Optional: render service | `render_*` tools (HTTP :8080), browser fallback for `read_url` (Playwright ws :3000) | `YGG_RENDER_URL`, `YGG_BROWSER_WS_URL` |
 | Optional: SearXNG | web search | configured in the dashboard |
 | Optional: agent-sandbox + gVisor | the sandbox workspace tools | see [Sandbox](#sandbox) |
 
@@ -47,7 +47,8 @@ Environment variables (see `yggdrasil/config.py` and `.env.example` for the full
 | `YGG_SUPERUSERS` | yes | QQ numbers allowed to use ops commands |
 | `YGG_ADMIN_EMAILS` | yes | dashboard admins; the dashboard trusts `X-Auth-Request-Email` from your auth proxy |
 | `YGG_ENV` | no | `prod` / `dev`, used in telemetry |
-| `YGG_BROWSER_WS_URL` | no | Playwright server, e.g. `ws://browser:3000/` |
+| `YGG_RENDER_URL` | no | render service for the `render_*` tools, e.g. `http://yggdrasil-render:8080`; the tools are unavailable when unset |
+| `YGG_BROWSER_WS_URL` | no | Playwright endpoint for `read_url`'s browser fallback, served by the render service, e.g. `ws://yggdrasil-render:3000/` |
 | `YGG_GRAFANA_URL` | no | links invocations to traces in the dashboard |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` etc. | no | OpenTelemetry traces, metrics and logs |
 | `LOG_JSON` | no | `true` for JSON logs |

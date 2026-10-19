@@ -1,0 +1,188 @@
+@import "github-markdown-css/github-markdown-light.css";
+@import "katex/dist/katex.min.css";
+
+:root {
+  --sans: "Noto Sans CJK SC", "Noto Color Emoji", sans-serif;
+  --mono: "JetBrains Mono", "Noto Sans Mono CJK SC", "Noto Color Emoji", monospace;
+}
+
+html,
+body {
+  margin: 0;
+  background: #ffffff;
+  color: #1f2328;
+  font-family: var(--sans);
+}
+
+#out {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+}
+
+.page,
+.diagram,
+.slice {
+  background: #ffffff;
+  width: max-content;
+}
+
+.slice {
+  overflow: hidden;
+}
+
+/* GitHub light Markdown with CJK typography. */
+.markdown-body {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.7;
+  color: #1f2328;
+  background: #ffffff;
+  word-break: break-word;
+}
+
+.markdown-body strong,
+.markdown-body b {
+  font-weight: 700;
+}
+
+.markdown-body h1,
+.markdown-body h2 {
+  font-weight: 700;
+}
+
+.markdown-body code,
+.markdown-body kbd,
+.markdown-body pre,
+.markdown-body samp,
+.markdown-body tt {
+  font-family: var(--mono);
+}
+
+.markdown-body pre {
+  font-size: 13.5px;
+  line-height: 1.55;
+  padding: 14px 16px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: visible;
+}
+
+.markdown-body pre.shiki {
+  background-color: #f6f8fa !important;
+}
+
+.markdown-body pre code {
+  white-space: inherit;
+}
+
+/* JetBrains Mono ligatures turn "->" into arrows, which misrepresents code. */
+.markdown-body code,
+.markdown-body pre,
+.html-body code,
+.html-body pre {
+  font-variant-ligatures: none;
+}
+
+/* The footnotes section already draws a top border. */
+.markdown-body hr.footnotes-sep {
+  display: none;
+}
+
+.markdown-body table {
+  width: max-content;
+  max-width: 100%;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  padding: 6px 14px;
+}
+
+.markdown-body .markdown-alert .markdown-alert-title .octicon {
+  margin-right: 8px;
+  fill: currentColor;
+}
+
+.markdown-body .task-list-container {
+  padding-left: 0.5em;
+}
+
+.markdown-body .task-list-item {
+  list-style: none;
+}
+
+.markdown-body .task-list-item-checkbox {
+  margin: 0 0.4em 0.2em 0;
+  vertical-align: middle;
+  width: 1em;
+  height: 1em;
+}
+
+.markdown-body .katex {
+  font-size: 1.1em;
+}
+
+.markdown-body .katex-block {
+  overflow: visible;
+  text-align: center;
+}
+
+.markdown-body .katex-error {
+  color: #cf222e;
+  font-family: var(--mono);
+}
+
+.markdown-body .mermaid-block {
+  margin-bottom: 16px;
+}
+
+.markdown-body .mermaid-block svg {
+  margin: 0 auto;
+}
+
+.image-placeholder {
+  color: #59636e;
+  background: #f6f8fa;
+  border: 1px dashed #d1d9e0;
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+/* Sanitized HTML: plain document defaults. */
+.html-body {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  color: #1f2328;
+  word-break: break-word;
+}
+
+.html-body code,
+.html-body pre {
+  font-family: var(--mono);
+}
+
+/* Pele palette matching GitHub light. */
+.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1f2328;
+  --pele-muted: #59636e;
+  --pele-line: #59636e;
+  --pele-surface: #f6f8fa;
+  --pele-surface-alt: #eef2f6;
+  --pele-border: #d1d9e0;
+  --pele-accent: #0969da;
+  --pele-font: var(--sans);
+  --pele-radius: 8px;
+  --pele-series-1: #0969da;
+  --pele-series-2: #1a7f37;
+  --pele-series-3: #bc4c00;
+  --pele-series-4: #8250df;
+  --pele-series-5: #cf222e;
+  --pele-series-6: #1b7c83;
+  --pele-series-7: #9a6700;
+  --pele-series-8: #bf3989;
+}

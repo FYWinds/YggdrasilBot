@@ -36,7 +36,7 @@ from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import fit_image, media_bytes, media_type
-from yggdrasil.agent.tools import MAX_IMAGES, ToolResult, _handle, _tool, _vision, sandbox_requested
+from yggdrasil.agent.tools import MAX_IMAGES, ToolResult, _handle, _tool, _vision, reserve_images, sandbox_requested
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
@@ -417,16 +417,18 @@ def needs_image_check(settings: Settings) -> bool:
 
 async def attach_image(deps: Deps, blob: bytes, caption: str, *, check: Any = check_image) -> str:
     """Moderate (when the group moderates output) and queue one image for the reply's forward message."""
-    if len(deps.images) >= MAX_IMAGES:
-        raise ToolError(f"这次回复已经有 {MAX_IMAGES} 张图了，不能再发")
-    image = await asyncio.to_thread(_decode_image, blob)
-    if needs_image_check(deps.settings):
-        verdict: ImageVerdict = await check(image)
-        if verdict.model:
-            deps.vision_tokens.append((verdict.model, verdict.input_tokens, verdict.output_tokens))
-        if not verdict.safe:
-            reason = "审核没通过" if verdict.category != "error" else "审核出错"
-            raise ToolError(f"这张图{reason}（{verdict.category}），不能发；不要在正文里描述它的内容")
+    reserve_images(deps, 1)
+    try:
+        image = await asyncio.to_thread(_decode_image, blob)
+        if needs_image_check(deps.settings):
+            verdict: ImageVerdict = await check(image)
+            if verdict.model:
+                deps.vision_tokens.append((verdict.model, verdict.input_tokens, verdict.output_tokens))
+            if not verdict.safe:
+                reason = "审核没通过" if verdict.category != "error" else "审核出错"
+                raise ToolError(f"这张图{reason}（{verdict.category}），不能发；不要在正文里描述它的内容")
+    finally:
+        deps.images_reserved -= 1
     deps.images.append((image, caption.strip()))
     left = MAX_IMAGES - len(deps.images)
     return (
