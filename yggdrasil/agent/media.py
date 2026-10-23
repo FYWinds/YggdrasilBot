@@ -51,7 +51,19 @@ async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes
         name = info.file_name or name
     if not url:
         raise ToolError("拿不到文件下载地址")
-    return await download(url, max_bytes), name
+    try:
+        return await download(url, max_bytes), name
+    except httpx.HTTPStatusError as e:
+        # QQ image URLs carry an rkey that expires within hours; the protocol side re-signs it by file name.
+        if h.kind != "image" or not data.get("file") or not 400 <= e.response.status_code < 500:
+            raise
+    try:
+        fresh = (await api.get_image(file=str(data["file"]))).url
+    except Exception as e:
+        raise ToolError("图片链接已过期，也没能重新获取（可能太久了）") from e
+    if not fresh or fresh == url:
+        raise ToolError("图片链接已过期，也没能重新获取（可能太久了）")
+    return await download(fresh, max_bytes), name
 
 
 def media_type(blob: bytes) -> str:

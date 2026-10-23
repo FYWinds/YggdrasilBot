@@ -6,6 +6,7 @@ suite lives in ``agent/sandbox_tools.py``.
 """
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime, timedelta
@@ -169,10 +170,46 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
     return f"{header}\n\n{text}"
 
 
+_HISTORY_REF = re.compile(r"#?(\d+)(?:/(\d+))?")
+
+
+async def _history_image(ctx: RunContext[Deps], ref: str) -> Handle:
+    """``#<message id>[/<n>]`` from the chat history: the n-th image of that message in this group, as a handle."""
+    from sqlalchemy import select
+
+    from yggdrasil.db.models import Message
+    from yggdrasil.db.session import get_session
+
+    m = _HISTORY_REF.fullmatch(ref.strip())
+    if m is None or ctx.deps.group_id is None:
+        raise ToolError(f"{ref} 不是 img#N 句柄，也不是本群聊天记录里的消息编号 #N")
+    msg_id, n = int(m.group(1)), int(m.group(2) or 1)
+    async with get_session() as session:
+        segments = await session.scalar(
+            select(Message.segments).where(
+                Message.group_id == ctx.deps.group_id, Message.id == msg_id, Message.recalled.is_(False)
+            )
+        )
+    if segments is None:
+        raise ToolError(f"本群聊天记录里没有消息 #{msg_id}（或者已撤回）")
+    images = [a for a in normalize(segments).attachments if a.kind == "image"]
+    if not images:
+        raise ToolError(f"消息 #{msg_id} 里没有图片")
+    if not 1 <= n <= len(images):
+        raise ToolError(f"消息 #{msg_id} 只有 {len(images)} 张图")
+    h = ctx.deps.handles.get(ctx.deps.handles.add("image", images[n - 1].data) or "")
+    if h is None:
+        raise ToolError(f"消息 #{msg_id} 的图片打不开")
+    return h
+
+
 @_tool("view_image")
 async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> ToolResult:
-    """查看图片，参数是 img#N 句柄，可附带具体问题。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
-    h = _handle(ctx, handle, "image")
+    """查看图片，可附带具体问题。handle 是 img#N 句柄，或聊天记录里的消息编号 #N（那条消息里的图；有多张时用 #N/2
+    取第 2 张），所以群里之前发过的图也能看。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
+    h = ctx.deps.handles.get(handle) or await _history_image(ctx, handle)
+    if h.kind != "image":
+        raise ToolError(f"{handle} 不是图片")
     blob = await load_image(ctx.deps.api, ctx.deps.group_id, h)
     if sees_images(ctx.deps.task):
         return ToolReturn(
