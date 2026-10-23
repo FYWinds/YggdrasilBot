@@ -1,9 +1,15 @@
 name: CI
 
+# Releases are git tags, one namespace per image (one commit may carry several):
+#   vX.Y.Z          bot           -> ghcr.io/fywinds/yggdrasil-bot:vX.Y.Z
+#   sandbox-vX.Y.Z  sandbox image -> ghcr.io/fywinds/yggdrasil-sandbox:vX.Y.Z
+#   render-vX.Y.Z   render image  -> ghcr.io/fywinds/yggdrasil-render:vX.Y.Z
+# Each image is versioned on its own; argocd-image-updater follows each image's newest vX.Y.Z. Pushes to main build
+# only the bot (sha-* / main tags for manual pins).
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*", "sandbox-v*", "render-v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -76,26 +82,22 @@ jobs:
           uv run alembic upgrade head
           uv run pytest -q
 
-  build-and-push:
+  bot:
     needs: check
-    if: github.event_name != 'pull_request'
+    # Branch pushes, manual runs and vX.Y.Z tags; not the sandbox-/render- release tags.
+    if: github.event_name != 'pull_request' && (github.ref_type != 'tag' || startsWith(github.ref_name, 'v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -106,7 +108,6 @@ jobs:
             type=semver,pattern=v{{version}}
             type=sha,prefix=sha-
             type=raw,value=main,enable={{is_default_branch}}
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -119,46 +120,71 @@ jobs:
           cache-from: type=gha,scope=bot
           cache-to: type=gha,mode=max,scope=bot
 
-      # Sandbox workspace image; shares the bot's tags so a release pins both.
-      - name: Sandbox metadata
-        id: sandbox-meta
+  # Sandbox workspace image (sandbox/), only on sandbox-vX.Y.Z tags.
+  sandbox:
+    needs: check
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sandbox-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.SANDBOX_IMAGE }}
           tags: |
-            type=semver,pattern=v{{version}}
-            type=sha,prefix=sha-
-            type=raw,value=main,enable={{is_default_branch}}
-
-      - name: Build and push sandbox
+            type=match,pattern=^sandbox-(v\d+\.\d+\.\d+)$,group=1
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: sandbox
           file: sandbox/Dockerfile
           push: true
-          tags: ${{ steps.sandbox-meta.outputs.tags }}
-          labels: ${{ steps.sandbox-meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=sandbox
           cache-to: type=gha,mode=max,scope=sandbox
 
-      # Render service (Markdown/Mermaid/HTML to PNG + Playwright browser server for read_url); same tags as the bot.
-      - name: Render metadata
-        id: render-meta
+  # Render service image (render/: Markdown/Mermaid/HTML to PNG + the Playwright server read_url uses), only on
+  # render-vX.Y.Z tags.
+  render:
+    needs: check
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/render-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.RENDER_IMAGE }}
           tags: |
-            type=semver,pattern=v{{version}}
-            type=sha,prefix=sha-
-            type=raw,value=main,enable={{is_default_branch}}
-
-      - name: Build and push render
+            type=match,pattern=^render-(v\d+\.\d+\.\d+)$,group=1
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: render
           file: render/Dockerfile
           push: true
-          tags: ${{ steps.render-meta.outputs.tags }}
-          labels: ${{ steps.render-meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=render
           cache-to: type=gha,mode=max,scope=render

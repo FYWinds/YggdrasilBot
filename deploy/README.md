@@ -109,9 +109,13 @@ Pod hardening that the images support: run as non-root, `readOnlyRootFilesystem:
 
 ### Releases
 
-- Pushes to `main` publish `sha-<short>` and `main` image tags; tags `vX.Y.Z` publish `vX.Y.Z`.
-- `pyproject.toml` stays at `0.0.0`; the git tag reaches the image as `YGG_VERSION`.
-- With argocd-image-updater, track `^v\d+\.\d+\.\d+$` for both images; a sync runs the migration first.
+- Each image has its own release tag, and one commit may carry several:
+  - `vX.Y.Z` publishes `yggdrasil-bot:vX.Y.Z`. Pushes to `main` publish only the bot's `sha-<short>` and `main` tags.
+  - `sandbox-vX.Y.Z` publishes `yggdrasil-sandbox:vX.Y.Z`.
+  - `render-vX.Y.Z` publishes `yggdrasil-render:vX.Y.Z`.
+  Tag the sandbox or render image only when `sandbox/` or `render/` changed; their versions move independently.
+- `pyproject.toml` stays at `0.0.0`; the git tag reaches the bot image as `YGG_VERSION`.
+- With argocd-image-updater, track `^v\d+\.\d+\.\d+$` for each image; a sync runs the migration first.
 
 ### Rollback
 
