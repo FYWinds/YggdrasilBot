@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, tuple_
+from sqlalchemy.dialects.postgresql import distinct_on
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, UserAlias
@@ -87,7 +88,7 @@ async def resolve(
             rows = await session.execute(
                 select(UserAlias.user_id, UserAlias.name)
                 .where(UserAlias.group_id == group_id, UserAlias.user_id.in_(ids))
-                .distinct(UserAlias.user_id)
+                .ext(distinct_on(UserAlias.user_id))
                 .order_by(UserAlias.user_id, UserAlias.last_seen.desc())
             )
             names = {u: n for u, n in rows.all() if n}
@@ -116,7 +117,7 @@ async def names_in_groups(pairs: Iterable[tuple[int | None, int | None]]) -> dic
         rows = await session.execute(
             select(UserAlias.group_id, UserAlias.user_id, UserAlias.name)
             .where(tuple_(UserAlias.group_id, UserAlias.user_id).in_(keys))
-            .distinct(UserAlias.group_id, UserAlias.user_id)
+            .ext(distinct_on(UserAlias.group_id, UserAlias.user_id))
             .order_by(UserAlias.group_id, UserAlias.user_id, UserAlias.last_seen.desc())
         )
         return {(g, u): n for g, u, n in rows.all() if n}
