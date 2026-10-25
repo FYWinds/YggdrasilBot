@@ -76,8 +76,8 @@ class AppConfig(BaseSettings):
     # YGG_DEV_ADMIN_EMAIL instead.
     auth_email_header: str = Field(default="X-Auth-Request-Email", alias="YGG_AUTH_EMAIL_HEADER")
     dev_admin_email: str | None = Field(default=None, alias="YGG_DEV_ADMIN_EMAIL")
-    # Playwright server for read_url's browser fallback (the render service exposes one on :3000).
-    browser_ws_url: str | None = Field(default=None, alias="YGG_BROWSER_WS_URL")
+    # Browser service (yggdrasil.browser) for read_url's browser tier; unset keeps read_url to plain HTTP.
+    browser_url: str | None = Field(default=None, alias="YGG_BROWSER_URL")
     # Render service for the render_* tools; unset disables them.
     render_url: str | None = Field(default=None, alias="YGG_RENDER_URL")
     web_dist: str = Field(default="web/dist", alias="YGG_WEB_DIST")

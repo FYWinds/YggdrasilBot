@@ -1,9 +1,9 @@
 """``read_url``: fetch a web page (or a document link) and return readable, paginated text.
 
 Pipeline: site adapter (official APIs, over httpx) -> Chrome-impersonating curl_cffi + trafilatura
-(readability-lxml + markdownify fallback) -> remote Playwright render when the page is a JS app,
-answers 401/403/429/503, or is an anti-bot block page. Verification / login walls raise
-:class:`ToolError` instead of returning junk; we never try to defeat captchas.
+(readability-lxml + markdownify fallback) -> the browser service (real Chrome: patchright, then nodriver) when the
+page is a JS app, answers 401/403/429/503, or is an anti-bot block page / JS challenge. Captcha and login walls
+raise :class:`ToolError` instead of returning junk; we never try to defeat captchas.
 """
 
 import asyncio
@@ -72,7 +72,7 @@ _WALL_KEYWORDS = (
     "enable javascript and cookies",
 )
 # Anti-bot block and error pages that answer with a normal-looking page (often HTTP 200). Same short-page rule as
-# the walls; unlike a wall, a real browser may still get through, so plain-HTTP hits escalate to it once.
+# the walls; unlike a wall, a real browser may still get through, so these escalate to the browser tier.
 _BLOCK_KEYWORDS = (
     "blocked by network security",  # reddit
     "you've been blocked",
@@ -81,9 +81,15 @@ _BLOCK_KEYWORDS = (
     "request blocked",
     "pardon our interruption",  # Akamai
     "something went wrong",  # generic SPA error shells (e.g. behind Cloudflare)
+    "请求已被拦截",  # CN WAFs (e.g. coolapk's HTTP 567 page)
+    "安全策略拦截",
 )
+# Walls that are JavaScript challenges rather than captchas or logins: a better browser may pass them, so they
+# escalate like block pages. Captcha / login walls never do (no captcha fighting; CN walls are IP reputation).
+_JS_CHALLENGES = frozenset({"just a moment...", "checking your browser", "enable javascript and cookies"})
 _BROWSER_RETRY_STATUSES = frozenset({401, 403, 429, 503})
-_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+# Browser service engines, in escalation order (see yggdrasil.browser.service).
+_BROWSER_ENGINES = ("patchright", "nodriver")
 _CACHE_TTL = 600.0
 _CACHE_SIZE = 32
 _DOC_TYPES = (
@@ -156,7 +162,7 @@ async def read_url(
     *,
     max_chars: int = 16000,
     page: int = 1,
-    browser_ws_url: str | None = None,
+    browser_url: str | None = None,
     timeout: float = 20,  # noqa: ASYNC109 - per-request network timeout, not a cancel scope
 ) -> PageResult:
     """Read ``url`` and return page ``page`` of its text split into ``max_chars`` pages."""
@@ -165,11 +171,11 @@ async def read_url(
     if page < 1:
         raise ToolError("页码从 1 开始")
     target = await check_url(url)
-    key = (target, browser_ws_url is not None)
+    key = (target, browser_url is not None)
     extracted = _cache_get(key)
     with TRACER.start_as_current_span("tool.read_url") as span:
         if extracted is None:
-            extracted = await _fetch(target, browser_ws_url, timeout)
+            extracted = await _fetch(target, browser_url, timeout)
             _cache_put(key, extracted)
         span.set_attribute("ygg.read_url.via", extracted.via)
     pages = paginate(extracted.text, max_chars)
@@ -301,7 +307,7 @@ def _readability(html: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------- fetch pipeline
 
 
-async def _fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
+async def _fetch(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
     try:
         async with guarded_client(timeout=timeout_s, headers=_HEADERS) as client:
             for _ in range(3):
@@ -315,7 +321,7 @@ async def _fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extr
                 if result is not None:
                     return result
                 break
-        return await _fetch_generic(url, browser_ws_url, timeout_s)
+        return await _fetch_generic(url, browser_url, timeout_s)
     except httpx.TooManyRedirects as exc:
         raise ToolError("重定向次数过多") from exc
     except (httpx.TimeoutException, CurlTimeout) as exc:
@@ -334,14 +340,14 @@ class _Body:
     charset: str | None
 
 
-async def _fetch_generic(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
+async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
     # curl_cffi owns the browser header set (UA, client hints) so it matches the impersonated TLS fingerprint.
     async with impersonated_stream(url, timeout=timeout_s, headers={"Accept-Language": _ACCEPT_LANGUAGE}) as resp:
         final_url, status = resp.url, resp.status_code
         body = await _download(resp) if status < 400 else None
     if body is None:
-        if status in _BROWSER_RETRY_STATUSES and browser_ws_url:
-            return await _render_or_raise(final_url, browser_ws_url, timeout_s, None)
+        if status in _BROWSER_RETRY_STATUSES and browser_url:
+            return await _render_or_raise(final_url, browser_url, timeout_s, None)
         raise ToolError(f"网页返回错误（HTTP {status}）")
 
     if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
@@ -356,14 +362,20 @@ async def _fetch_generic(url: str, browser_ws_url: str | None, timeout_s: float)
 
     title, text = await asyncio.to_thread(extract_html, decode_html(body.data, body.charset), final_url)
     extracted = Extracted(final_url, title, text, "http", capped=body.capped)
+    challenged = _is_challenge(title, text)
+    thin = len(text) < _MIN_TEXT_CHARS and detect_wall(title, text) is None
+    if browser_url and (challenged or thin):
+        return await _render_or_raise(final_url, browser_url, timeout_s, None if challenged else extracted)
     _raise_if_wall(extracted)
-    blocked = detect_block(title, text) is not None
-    if (blocked or len(text) < _MIN_TEXT_CHARS) and browser_ws_url:
-        return await _render_or_raise(final_url, browser_ws_url, timeout_s, None if blocked else extracted)
     _raise_if_blocked(extracted)
     if not text:
         raise ToolError("页面没有可读取的正文")
     return extracted
+
+
+def _is_challenge(title: str, text: str) -> bool:
+    """A block page or JS challenge: worth another (better) browser, unlike captcha and login walls."""
+    return detect_wall(title, text) in _JS_CHALLENGES or detect_block(title, text) is not None
 
 
 async def _download(resp: GuardedResponse) -> _Body:
@@ -407,77 +419,52 @@ def _ext(filename: str) -> str:
     return f".{ext}" if dot else ""
 
 
-async def _render_or_raise(url: str, ws_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
-    """Render with the remote browser; keep the plain-http result if rendering fails."""
-    try:
-        final_url, html = await render_page(url, ws_url, timeout=timeout_s)
-    except ToolError:
-        raise
-    except Exception as exc:
-        LOGGER.warning("browser render failed for {}: {!r}", httpx.URL(url).host, exc)
-        if fallback is not None and fallback.text:
-            return fallback
-        raise ToolError("网页渲染失败，无法读取") from exc
-    title, text = await asyncio.to_thread(extract_html, html, final_url)
-    extracted = Extracted(final_url, title, text, "browser")
-    _raise_if_wall(extracted)
-    _raise_if_blocked(extracted)
-    if not text:
-        if fallback is not None and fallback.text:
-            return fallback
-        raise ToolError("页面没有可读取的正文")
-    return extracted
+async def _render_or_raise(url: str, browser_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
+    """Render with the browser service, moving to the next engine on failure, block pages and JS challenges.
 
-
-async def render_page(url: str, ws_url: str, *, timeout: float = 20) -> tuple[str, str]:  # noqa: ASYNC109
-    """Load ``url`` in the remote Playwright browser and return ``(final_url, html)``.
-
-    Every request the page makes is SSRF-checked (per host, cached for the render); images,
-    media and fonts are skipped.
+    Captcha / login walls raise at once; if no engine produced text, the plain-http ``fallback`` is kept.
     """
-    from playwright.async_api import Route, async_playwright
-    from playwright.async_api import TimeoutError as PlaywrightTimeout
-
-    verdicts: dict[str, bool] = {}
-
-    async def guard(route: Route) -> None:
-        request = route.request
-        if request.resource_type in _BLOCKED_RESOURCE_TYPES:
-            await route.abort("blockedbyclient")
-            return
-        if not request.url.startswith(("http://", "https://")):
-            await route.continue_()
-            return
-        origin = httpx.URL(request.url).copy_with(path="/", query=None, fragment=None)
-        key = str(origin)
-        if key not in verdicts:
-            try:
-                await check_url(key)
-                verdicts[key] = True
-            except ToolError:
-                verdicts[key] = False
-        if verdicts[key]:
-            await route.continue_()
-        else:
-            await route.abort("blockedbyclient")
-
-    deadline_ms = timeout * 1000
-    async with async_playwright() as pw:
-        browser = await pw.chromium.connect(ws_url, timeout=deadline_ms)
+    rendered: Extracted | None = None
+    for engine in _BROWSER_ENGINES:
         try:
-            context = await browser.new_context(
-                user_agent=USER_AGENT, locale="zh-CN", timezone_id="Asia/Shanghai", service_workers="block"
-            )
-            await context.route("**/*", guard)
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=deadline_ms)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=min(deadline_ms / 2, 8000))
-            except PlaywrightTimeout:
-                pass  # long-polling pages never go idle; use what has rendered
-            return page.url, await page.content()
-        finally:
-            await browser.close()
+            final_url, html = await render_page(url, browser_url, engine, timeout=timeout_s)
+        except ToolError:
+            raise
+        except Exception as exc:
+            LOGGER.warning("browser render ({}) failed for {}: {!r}", engine, httpx.URL(url).host, exc)
+            continue
+        title, text = await asyncio.to_thread(extract_html, html, final_url)
+        via = "browser" if engine == _BROWSER_ENGINES[0] else f"browser:{engine}"
+        rendered = Extracted(final_url, title, text, via)
+        if text and not _is_challenge(title, text):
+            break
+        if detect_wall(title, text) not in (None, *_JS_CHALLENGES):
+            break  # captcha / login wall: another engine will not help
+    if rendered is not None:
+        _raise_if_wall(rendered)
+        _raise_if_blocked(rendered)
+        if rendered.text:
+            return rendered
+    if fallback is not None and fallback.text:
+        return fallback
+    raise ToolError("网页渲染失败，无法读取" if rendered is None else "页面没有可读取的正文")
+
+
+async def render_page(url: str, browser_url: str, engine: str, *, timeout: float = 20) -> tuple[str, str]:  # noqa: ASYNC109
+    """Load ``url`` with ``engine`` in the browser service and return ``(final_url, html)``.
+
+    The service SSRF-checks the URL and every request the page makes; a rejected URL raises :class:`ToolError`.
+    """
+    # Plain client: the service is internal; nodriver starts a fresh Chrome, hence the margin.
+    async with httpx.AsyncClient(timeout=timeout + 15) as client:
+        resp = await client.post(
+            f"{browser_url.rstrip('/')}/render", json={"url": url, "engine": engine, "timeout": timeout}
+        )
+    if resp.status_code == 400:
+        raise ToolError(str(resp.json().get("error") or "不允许访问该链接"))
+    resp.raise_for_status()
+    data = resp.json()
+    return str(data["final_url"]), str(data["html"])
 
 
 def _cache_get(key: tuple[str, bool]) -> Extracted | None:

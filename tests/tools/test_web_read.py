@@ -121,7 +121,7 @@ def fake_fetch(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     async def check(url: str) -> str:
         return url
 
-    async def fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
+    async def fetch(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
         calls.append(url)
         return Extracted(url, "标题", "\n\n".join(["甲" * 40, "乙" * 40, "丙" * 40]), "http")
 
@@ -198,6 +198,82 @@ async def test_block_page_escalates_to_browser_without_keeping_it(
     result = await web._fetch_generic("https://www.reddit.com/r/x/comments/1/y/", "ws://browser", 5)
     assert result.via == "browser"
     assert seen == [None]  # the block page must never come back as the plain-HTTP fallback
+
+
+def _page(title: str, body: str) -> str:
+    return f"<html><head><title>{title}</title></head><body>{body}</body></html>"
+
+
+@pytest.fixture
+def engines(monkeypatch: pytest.MonkeyPatch) -> Callable[[dict[str, str | Exception]], list[str]]:
+    """Answer ``render_page`` per engine with HTML (or raise); returns the engines asked, in order."""
+
+    def install(answers: dict[str, str | Exception]) -> list[str]:
+        asked: list[str] = []
+
+        async def render_page(url: str, browser_url: str, engine: str, **_: object) -> tuple[str, str]:
+            asked.append(engine)
+            answer = answers[engine]
+            if isinstance(answer, Exception):
+                raise answer
+            return url, answer
+
+        monkeypatch.setattr(web, "render_page", render_page)
+        return asked
+
+    return install
+
+
+async def test_browser_tier_escalates_block_page_to_nodriver(engines: Callable[..., list[str]]) -> None:
+    asked = engines({"patchright": BLOCK_PAGE, "nodriver": ARTICLE})
+    result = await web._render_or_raise("https://www.reddit.com/r/x/", "http://browser", 5, None)
+    assert asked == ["patchright", "nodriver"]
+    assert (result.via, result.title) == ("browser:nodriver", "测试文章")
+
+
+async def test_browser_tier_stops_at_captcha_wall(engines: Callable[..., list[str]]) -> None:
+    asked = engines({"patchright": _page("安全验证", "<p>请完成下方验证码</p>"), "nodriver": ARTICLE})
+    with pytest.raises(ToolError, match="验证"):
+        await web._render_or_raise("https://example.com/a", "http://browser", 5, None)
+    assert asked == ["patchright"]  # no captcha fighting: the second engine is not tried
+
+
+async def test_browser_tier_reports_challenge_both_engines_saw(engines: Callable[..., list[str]]) -> None:
+    challenge = _page("Just a moment...", "<p>Checking if the site connection is secure</p>")
+    asked = engines({"patchright": challenge, "nodriver": challenge})
+    with pytest.raises(ToolError, match="just a moment"):
+        await web._render_or_raise("https://example.com/a", "http://browser", 5, None)
+    assert asked == ["patchright", "nodriver"]
+
+
+async def test_browser_tier_failures_keep_plain_http_fallback(engines: Callable[..., list[str]]) -> None:
+    engines({"patchright": RuntimeError("chrome crashed"), "nodriver": RuntimeError("no display")})
+    fallback = Extracted("https://example.com/a", "t", "short plain text", "http")
+    assert await web._render_or_raise("https://example.com/a", "http://browser", 5, fallback) is fallback
+    with pytest.raises(ToolError, match="渲染失败"):
+        await web._render_or_raise("https://example.com/a", "http://browser", 5, None)
+
+
+@pytest.mark.parametrize(
+    ("html", "renders"),
+    [
+        (_page("Just a moment...", "<p>Checking if the site connection is secure</p>"), True),
+        (_page("安全验证", "<p>请完成下方验证码</p>"), False),
+    ],
+)
+async def test_plain_http_sends_js_challenges_but_not_captchas_to_the_browser(
+    serve: Callable[[Handler], None], monkeypatch: pytest.MonkeyPatch, html: str, renders: bool
+) -> None:
+    async def render(url: str, browser_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
+        return Extracted(url, "t", "rendered", "browser")
+
+    monkeypatch.setattr(web, "_render_or_raise", render)
+    serve(lambda r: httpx.Response(200, html=html))
+    if renders:
+        assert (await web._fetch_generic("https://example.com/a", "http://browser", 5)).via == "browser"
+    else:
+        with pytest.raises(ToolError, match="验证"):
+            await web._fetch_generic("https://example.com/a", "http://browser", 5)
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,6 @@ dependencies = [
     "orjson>=3.13.0",
     "pgvector>=0.5.0",
     "pillow>=12.3.0",
-    "playwright>=1.63.0",
     "protobuf>=7.36.2",
     "pyahocorasick>=2.3.1",
     "pydantic-ai-harness==0.57.0",
@@ -60,6 +59,10 @@ dependencies = [
 ]
 
 [dependency-groups]
+browser = [
+    "nodriver>=0.50.6",
+    "patchright>=1.64.2",
+]
 dev = [
     "basedpyright",
     "ruff",
@@ -72,7 +75,8 @@ test = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "test"]
+# `browser` is only installed into the browser service image (browser/Dockerfile); the bot image skips all groups.
+default-groups = ["dev", "test", "browser"]
 
 [tool.nonebot]
 adapters = [{ name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }]

@@ -22,6 +22,7 @@ resources:
   - scheduler.yaml
   - snowluma.yaml
   - render.yaml
+  - browser.yaml
   - embed.yaml
 
   # Optional: moderation classifier and a self-hosted search backend.
@@ -36,15 +37,18 @@ resources:
 #   - sandbox
 
 # Images are built by this repository's CI (.github/workflows/ci.yaml) from a fork, or locally with
-# `docker build`. Each image has its own release tag: vX.Y.Z (bot), sandbox-vX.Y.Z, render-vX.Y.Z; all of
-# them publish plain vX.Y.Z image tags.
+# `docker build`. Each image has its own release tag: vX.Y.Z (bot), sandbox-vX.Y.Z, render-vX.Y.Z,
+# browser-vX.Y.Z; all of them publish plain vX.Y.Z image tags.
 images:
   - name: yggdrasil-bot
     newName: ghcr.io/example/yggdrasil-bot
-    newTag: v0.2.7
+    newTag: v0.2.8
   - name: yggdrasil-render
     newName: ghcr.io/example/yggdrasil-render
-    newTag: v0.2.5
+    newTag: v0.2.6
+  - name: yggdrasil-browser
+    newName: ghcr.io/example/yggdrasil-browser
+    newTag: v0.2.8
   # Used by the sandbox component only.
   - name: yggdrasil-sandbox
     newName: ghcr.io/example/yggdrasil-sandbox

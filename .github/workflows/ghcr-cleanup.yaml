@@ -16,8 +16,8 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Keep in sync with the images pushed by ci.yaml (IMAGE/SANDBOX_IMAGE/RENDER_IMAGE).
-          packages: yggdrasil-bot,yggdrasil-sandbox,yggdrasil-render
+          # Keep in sync with the images pushed by ci.yaml (IMAGE/SANDBOX_IMAGE/RENDER_IMAGE/BROWSER_IMAGE).
+          packages: yggdrasil-bot,yggdrasil-sandbox,yggdrasil-render,yggdrasil-browser
           delete-tags: "sha-*"
           exclude-tags: "main"
           keep-n-tagged: 5

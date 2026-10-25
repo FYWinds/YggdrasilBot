@@ -4,12 +4,13 @@ name: CI
 #   vX.Y.Z          bot           -> ghcr.io/fywinds/yggdrasil-bot:vX.Y.Z
 #   sandbox-vX.Y.Z  sandbox image -> ghcr.io/fywinds/yggdrasil-sandbox:vX.Y.Z
 #   render-vX.Y.Z   render image  -> ghcr.io/fywinds/yggdrasil-render:vX.Y.Z
+#   browser-vX.Y.Z  browser image -> ghcr.io/fywinds/yggdrasil-browser:vX.Y.Z
 # Each image is versioned on its own; argocd-image-updater follows each image's newest vX.Y.Z. Pushes to main build
 # only the bot (sha-* / main tags for manual pins).
 on:
   push:
     branches: [main]
-    tags: ["v*", "sandbox-v*", "render-v*"]
+    tags: ["v*", "sandbox-v*", "render-v*", "browser-v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -19,6 +20,7 @@ env:
   IMAGE: ghcr.io/fywinds/yggdrasil-bot
   SANDBOX_IMAGE: ghcr.io/fywinds/yggdrasil-sandbox
   RENDER_IMAGE: ghcr.io/fywinds/yggdrasil-render
+  BROWSER_IMAGE: ghcr.io/fywinds/yggdrasil-browser
 
 jobs:
   check:
@@ -53,7 +55,7 @@ jobs:
 
   bot:
     needs: check
-    # Branch pushes, manual runs and vX.Y.Z tags; not the sandbox-/render- release tags.
+    # Branch pushes, manual runs and vX.Y.Z tags; not the sandbox-/render-/browser- release tags.
     if: github.event_name != 'pull_request' && (github.ref_type != 'tag' || startsWith(github.ref_name, 'v'))
     runs-on: ubuntu-latest
     permissions:
@@ -153,8 +155,7 @@ jobs:
           cache-from: type=gha,scope=sandbox
           cache-to: type=gha,mode=max,scope=sandbox
 
-  # Render service image (render/: Markdown/Mermaid/HTML to PNG + the Playwright server read_url uses), only on
-  # render-vX.Y.Z tags.
+  # Render service image (render/: Markdown/Mermaid/HTML to PNG for the render_* tools), only on render-vX.Y.Z tags.
   render:
     needs: check
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/render-v')
@@ -187,3 +188,38 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=render
           cache-to: type=gha,mode=max,scope=render
+
+  # Browser service image (browser/Dockerfile: real Chrome for read_url's browser tier), only on browser-vX.Y.Z
+  # tags. Built from the repository root: it copies yggdrasil/browser and the SSRF guard.
+  browser:
+    needs: check
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/browser-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.BROWSER_IMAGE }}
+          tags: |
+            type=match,pattern=^browser-(v\d+\.\d+\.\d+)$,group=1
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: browser/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=browser
+          cache-to: type=gha,mode=max,scope=browser

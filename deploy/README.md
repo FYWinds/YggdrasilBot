@@ -30,6 +30,7 @@ flowchart TB
     pg[("yggdrasil-pg<br/>CNPG Cluster")]
     redis[("yggdrasil-redis<br/>StatefulSet")]
     render["yggdrasil-render"]
+    browser["yggdrasil-browser"]
     embed["yggdrasil-embed"]
     guard["yggdrasil-guard (optional)"]
     searxng["yggdrasil-searxng (optional)"]
@@ -40,7 +41,7 @@ flowchart TB
   migration --> pg
   bot & worker & scheduler --> pg & redis
   bot --> render & guard & searxng & sbx
-  bot & worker --> embed
+  bot & worker --> embed & browser
 ```
 
 | File | Kind | Role | Needed |
@@ -55,7 +56,8 @@ flowchart TB
 | `worker.yaml` | Deployment | memory pipelines, embeddings, maintenance | yes |
 | `scheduler.yaml` | Deployment | cron for the worker | yes |
 | `snowluma.yaml` | StatefulSet | the QQ client speaking OneBot v11 | yes (or your own OneBot endpoint) |
-| `render.yaml` | Deployment + Service | `render_*` tools, browser fallback of `read_url` | recommended |
+| `render.yaml` | Deployment + Service | `render_*` tools | recommended |
+| `browser.yaml` | Deployment + Service | real Chrome for `read_url` (JavaScript apps, anti-bot pages) | recommended |
 | `embed.yaml` | Deployment + Service + PVC | local embedding model for memory search | recommended (or a hosted API) |
 | `guard.yaml` | Deployment + Service + PVC | Qwen3Guard moderation | optional |
 | `searxng.yaml` | Deployment + Service + ConfigMap | self-hosted web search backend | optional |
@@ -122,6 +124,7 @@ several tags:
 | `vX.Y.Z` | `yggdrasil-bot:vX.Y.Z` | bot, worker, scheduler and migration (one image, different commands) |
 | `sandbox-vX.Y.Z` | `yggdrasil-sandbox:vX.Y.Z` | workspace image: sandboxd, Python + IPython, Chromium, helpers |
 | `render-vX.Y.Z` | `yggdrasil-render:vX.Y.Z` | render service: Chromium, markdown-it, Shiki, KaTeX, Mermaid |
+| `browser-vX.Y.Z` | `yggdrasil-browser:vX.Y.Z` | browser service: Google Chrome under Xvfb, patchright, nodriver |
 
 Pushes to `main` publish only the bot's `sha-<short>` and `main` tags. The version in `pyproject.toml` stays
 `0.0.0`; the git tag reaches the bot as `YGG_VERSION` (reported in telemetry and the API metadata).
@@ -305,7 +308,7 @@ Environment variables (`yggdrasil/config.py` has the authoritative list):
 | `YGG_DEV_ADMIN_EMAIL` | unset | dev only: requests without the auth header act as this admin |
 | `YGG_HOST`, `YGG_PORT` | `0.0.0.0`, `8080` | bot listen address |
 | `YGG_RENDER_URL` | unset | render service; the `render_*` tools are unavailable without it |
-| `YGG_BROWSER_WS_URL` | unset | Playwright endpoint for `read_url`'s browser fallback |
+| `YGG_BROWSER_URL` | unset | browser service for `read_url`'s real-Chrome tier; plain HTTP only without it |
 | `YGG_LLM_USER_AGENT` | `yggdrasil-bot/0.1` | User-Agent for LLM requests (some gateways reject SDK defaults) |
 | `YGG_GRAFANA_URL` | unset | links invocations to traces in Grafana |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | unset | OpenTelemetry over OTLP/HTTP; telemetry is off without an endpoint |
@@ -360,7 +363,7 @@ spec:
           commonUpdateSettings:
             updateStrategy: semver
             allowTags: "regexp:^v\\d+\\.\\d+\\.\\d+$"
-        # same for yggdrasil-render and yggdrasil-sandbox
+        # same for yggdrasil-render, yggdrasil-browser and yggdrasil-sandbox
 ```
 
 After a **sandbox image** update, also recycle the workspaces ([§9](#9-sandbox-workspaces-optional)).
@@ -445,8 +448,9 @@ are not worth backing up: losing them means a new QR login.
   bind mounts. Keep it isolated: no inbound traffic (NetworkPolicy), its WebUI on loopback only, access by
   port-forward.
 - **Untrusted content.** Web pages, files and chat messages are treated as data: they are fenced in prompts,
-  fetched through an SSRF guard, and pages that need a real browser are opened in the render pod, which may only
-  reach the public internet. Workspaces run under gVisor with their own egress policy and no cluster DNS.
+  fetched through an SSRF guard, and pages that need a real browser are opened in the browser pod, which checks
+  every request it makes and may only reach the public internet. Workspaces run under gVisor with their own egress
+  policy and no cluster DNS.
 - **Who can do what.** Action tools (recalling messages, admin operations) are only given to a run after the
   code has checked the speaker's role. Moderation (optional) can hold replies for review.
 
@@ -516,7 +520,7 @@ events and usage, and can cancel jobs or destroy workspaces.
 | Pods crash-loop right after install | Postgres not ready or migrations not applied yet | `kubectl -n yggdrasil get cluster,job`; migration Job logs |
 | Migration fails with `permission denied to create extension` | the database was created without `vector` / `pg_search` | `postInitApplicationSQL` in `postgres.yaml`, or create both extensions as a superuser |
 | QQ asks for a QR login after every restart | device identity or SnowLuma volumes changed | the identity values in `snowluma.yaml`; PVCs still bound |
-| `read_url` fails on JavaScript-heavy pages | render service not configured | `YGG_BROWSER_WS_URL`; render pod logs |
+| `read_url` fails on JavaScript-heavy pages | browser service not configured or unhealthy | `YGG_BROWSER_URL`; browser pod logs |
 | History search finds nothing semantic | no active embedding space, or the worker is behind | dashboard Models page; worker logs; memory lag metric |
 | `delegate` is not offered to the model | `agent` route or `YGG_RELAY_URL` missing | dashboard Models page; bot config |
 | Workspaces keep an old image | warm pods are not recreated on template changes | the note in [§9](#9-sandbox-workspaces-optional) |

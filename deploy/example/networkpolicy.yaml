@@ -42,8 +42,7 @@ spec:
   policyTypes:
     - Ingress
 ---
-# Pages opened through the Playwright endpoint (read_url) are untrusted: the browser may reach the internet
-# but nothing inside the cluster or the LAN, except DNS. Render pages only load bundled assets.
+# The render page only loads bundled assets (everything else is aborted in the page), so no egress at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -56,21 +55,37 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Playwright (read_url) from the bot, worker and scheduler.
+    # Render API: the bot only.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: yggdrasil-bot
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress: []
+---
+# Pages opened by the browser service (read_url) are untrusted: the browser may reach the internet but nothing
+# inside the cluster or the LAN, except DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-browser
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-browser
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # read_url runs in the bot, the worker and the scheduler.
     - from:
         - podSelector:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
                 values: [yggdrasil-bot, yggdrasil-worker, yggdrasil-scheduler]
-      ports:
-        - port: 3000
-          protocol: TCP
-    # Render API: the bot only.
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: yggdrasil-bot
       ports:
         - port: 8080
           protocol: TCP

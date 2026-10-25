@@ -1,7 +1,5 @@
-# Render service (render/ in this repo): one Chromium behind two endpoints.
-# - HTTP :8080 POST /render: Markdown (GFM, Shiki, KaTeX), Mermaid and sanitized HTML to PNG for the
-#   render_* tools (YGG_RENDER_URL).
-# - Playwright :3000: the browser fallback of read_url for JavaScript-only pages (YGG_BROWSER_WS_URL).
+# Render service (render/ in this repo): HTTP :8080 POST /render turns Markdown (GFM, Shiki, KaTeX), Mermaid and
+# sanitized HTML into PNG for the render_* tools (YGG_RENDER_URL).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,9 +40,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-              protocol: TCP
-            - name: ws
-              containerPort: 3000
               protocol: TCP
           readinessProbe:
             httpGet:
@@ -100,8 +95,4 @@ spec:
     - name: http
       port: 8080
       targetPort: http
-      protocol: TCP
-    - name: ws
-      port: 3000
-      targetPort: ws
       protocol: TCP

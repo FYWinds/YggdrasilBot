@@ -1,16 +1,13 @@
-// Render service: one Chromium shared by
-//   - a Playwright browser server on :3000 (read_url's JS fallback connects with `chromium.connect(ws://host:3000/)`)
-//   - an HTTP API on :8080 (POST /render) backed by a pool of pre-warmed pages that load the bundled render page.
+// Render service: an HTTP API on :8080 (POST /render) backed by a pool of pre-warmed pages in one Chromium that load
+// the bundled render page. (read_url's browser tier is the separate browser service.)
 import { readdir, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { type Browser, type BrowserContext, type BrowserServer, chromium, type Page, type Route } from "playwright";
+import { type Browser, type BrowserContext, chromium, type Page, type Route } from "playwright";
 import type { Kind, RenderOutcome } from "./page/main.js";
 
-const WS_PORT = Number(process.env.RENDER_WS_PORT ?? 3000);
-const WS_PATH = process.env.RENDER_WS_PATH ?? "/";
 const HTTP_PORT = Number(process.env.RENDER_HTTP_PORT ?? 8080);
 const POOL_SIZE = Math.max(1, Number(process.env.RENDER_POOL_SIZE ?? 2));
 const QUEUE_TIMEOUT_MS = Number(process.env.RENDER_QUEUE_TIMEOUT_MS ?? 10_000);
@@ -184,7 +181,7 @@ async function loadAssets(): Promise<Map<string, { body: Buffer; contentType: st
 
 /**
  * Context-wide route: fulfills exact asset paths on ORIGIN, aborts everything else. Must never throw: a rejection
- * from a route handler is unhandled and would take down the process (and the :3000 browser server with it).
+ * from a route handler is unhandled and would take down the process.
  */
 function assetRoute(assets: Map<string, { body: Buffer; contentType: string }>) {
   return async (route: Route): Promise<void> => {
@@ -299,14 +296,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 }
 
 async function main(): Promise<void> {
-  const browserServer: BrowserServer = await chromium.launchServer({
-    host: "0.0.0.0",
-    port: WS_PORT,
-    wsPath: WS_PATH,
-    args: ["--disable-dev-shm-usage"],
-  });
-  const local = browserServer.wsEndpoint().replace("://0.0.0.0:", "://127.0.0.1:");
-  const browser: Browser = await chromium.connect(local);
+  const browser: Browser = await chromium.launch({ args: ["--disable-dev-shm-usage"] });
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 2,
@@ -373,7 +363,7 @@ async function main(): Promise<void> {
     })();
   });
   server.listen(HTTP_PORT, "0.0.0.0", () => {
-    log("listening", { http: HTTP_PORT, ws: `ws://0.0.0.0:${WS_PORT}${WS_PATH}` });
+    log("listening", { http: HTTP_PORT });
   });
 
   const shutdown = async (signal: string) => {
@@ -385,7 +375,6 @@ async function main(): Promise<void> {
     while (inflight > 0 && Date.now() < deadline) await sleep(50);
     pool.close();
     await browser.close().catch(() => {});
-    await browserServer.close().catch(() => {});
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

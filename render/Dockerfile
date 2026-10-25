@@ -1,5 +1,5 @@
-# Render service: Playwright browser server (:3000, for read_url) + Markdown/Mermaid/HTML render API (:8080).
-# The Playwright version here must match playwright in package.json and the bot's Python playwright.
+# Render service: Markdown/Mermaid/HTML render API (:8080) for the render_* tools.
+# The Playwright version here must match playwright in package.json (the base image ships its browsers).
 FROM node:22-bookworm-slim AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
@@ -24,6 +24,6 @@ COPY --from=build /src/dist ./dist
 # Read-only root filesystem: Chromium profiles, fontconfig cache and other scratch go to /tmp.
 ENV HOME=/tmp NODE_ENV=production
 USER pwuser
-EXPOSE 3000 8080
+EXPOSE 8080
 STOPSIGNAL SIGTERM
 CMD ["node", "dist/server.js"]

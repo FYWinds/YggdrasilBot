@@ -16,10 +16,12 @@ data:
   # X-Auth-Request-Email header your auth proxy sets. Both lists can be extended later in the dashboard.
   YGG_SUPERUSERS: "[10001]"
   YGG_ADMIN_EMAILS: '["admin@example.com"]'
-  # Render service: render_markdown / render_mermaid / render_html, and the browser fallback of read_url.
-  # Remove both lines (and render.yaml) to run without it.
+  # Render service: render_markdown / render_mermaid / render_html. Remove the line (and render.yaml) to run
+  # without it.
   YGG_RENDER_URL: http://yggdrasil-render:8080
-  YGG_BROWSER_WS_URL: ws://yggdrasil-render:3000/
+  # Browser service: read_url's real-Chrome tier for JavaScript apps and anti-bot pages. Remove the line (and
+  # browser.yaml) to keep read_url to plain HTTP.
+  YGG_BROWSER_URL: http://yggdrasil-browser:8080
   # Optional: link each invocation in the dashboard to its trace (Grafana with a Tempo data source).
   # YGG_GRAFANA_URL: https://grafana.example.com
   # Optional: OpenTelemetry traces, metrics and logs over OTLP/HTTP.

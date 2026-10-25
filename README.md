@@ -93,7 +93,8 @@ flowchart LR
     scheduler["<b>scheduler</b><br/>cron"]
     pg[("PostgreSQL<br/>pg_search + pgvector")]
     redis[("Redis")]
-    render["<b>render</b><br/>Chromium: PNG + Playwright"]
+    render["<b>render</b><br/>Chromium: Markdown/HTML to PNG"]
+    browser["<b>browser</b><br/>real Chrome for read_url"]
     embed["embeddings<br/>llama.cpp"]
     guard["moderation<br/>llama.cpp"]
     sandbox["sandbox workspaces<br/>gVisor pods"]
@@ -103,6 +104,7 @@ flowchart LR
   bot & worker --> pg
   bot & worker --> redis
   bot --> render
+  bot & worker --> browser
   bot & worker --> embed
   bot --> guard
   bot <--> sandbox
@@ -166,6 +168,7 @@ sequenceDiagram
 | Background | taskiq + Redis |
 | Dashboard | React 19, Vite, shadcn/ui, TanStack Query/Router, client generated from the OpenAPI schema |
 | Render service | Node + TypeScript, Playwright Chromium, markdown-it, Shiki, KaTeX, Mermaid, DOMPurify |
+| Browser service | Google Chrome (headed, Xvfb), patchright, nodriver, curl_cffi for the plain-HTTP tier |
 | Sandbox | kubernetes-sigs/agent-sandbox, gVisor, sandboxd (REST + gRPC), IPython |
 | Local inference | llama.cpp: Qwen3-Embedding-0.6B, Qwen3Guard-Gen-0.6B |
 | Observability | OpenTelemetry (OTLP/HTTP), loguru JSON logs |
@@ -216,10 +219,13 @@ With `YGG_ENV=dev` and `YGG_DEV_ADMIN_EMAIL` set, the dashboard needs no login. 
 <summary>Optional: render service and API-only mode</summary>
 
 ```sh
-# Render service (render_* tools and read_url's browser fallback)
+# Render service (render_* tools)
 docker build -t ygg-render render
-docker run -d --name ygg-render -p 8580:8080 -p 3000:3000 --tmpfs /tmp --shm-size 1g ygg-render
-# then set YGG_RENDER_URL=http://127.0.0.1:8580 and YGG_BROWSER_WS_URL=ws://127.0.0.1:3000/ in .env
+docker run -d --name ygg-render -p 8580:8080 --tmpfs /tmp --shm-size 1g ygg-render
+# Browser service (read_url's real-Chrome tier); built from the repository root
+docker build -t ygg-browser -f browser/Dockerfile .
+docker run -d --name ygg-browser -p 8680:8080 --tmpfs /tmp --shm-size 1g ygg-browser
+# then set YGG_RENDER_URL=http://127.0.0.1:8580 and YGG_BROWSER_URL=http://127.0.0.1:8680 in .env
 
 # Instead of the bot: the dashboard API alone, without a OneBot connection
 uv run uvicorn yggdrasil.admin.standalone:app --port 8192
@@ -290,6 +296,7 @@ Each image is released by its own git tag; one commit may carry several:
 | `vX.Y.Z` | `yggdrasil-bot:vX.Y.Z` (bot, worker, scheduler, migration) |
 | `sandbox-vX.Y.Z` | `yggdrasil-sandbox:vX.Y.Z` |
 | `render-vX.Y.Z` | `yggdrasil-render:vX.Y.Z` |
+| `browser-vX.Y.Z` | `yggdrasil-browser:vX.Y.Z` |
 
 ## Acknowledgements
 
@@ -297,5 +304,6 @@ Built on [NoneBot2](https://github.com/nonebot/nonebot2), [pydantic-ai](https://
 [ParadeDB](https://github.com/paradedb/paradedb), [pgvector](https://github.com/pgvector/pgvector),
 [taskiq](https://github.com/taskiq-python/taskiq), [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox),
 [gVisor](https://github.com/google/gvisor), [llama.cpp](https://github.com/ggml-org/llama.cpp),
-[Playwright](https://github.com/microsoft/playwright), [markitdown](https://github.com/microsoft/markitdown) and
-[trafilatura](https://github.com/adbar/trafilatura).
+[Playwright](https://github.com/microsoft/playwright), [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright),
+[nodriver](https://github.com/ultrafunkamsterdam/nodriver), [curl_cffi](https://github.com/lexiforest/curl_cffi),
+[markitdown](https://github.com/microsoft/markitdown) and [trafilatura](https://github.com/adbar/trafilatura).
