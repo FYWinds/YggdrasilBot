@@ -1,0 +1,29 @@
+# Deployment-level settings shared by the bot, worker and scheduler (full list: yggdrasil/config.py).
+# Everything else (models, groups, triggers, prompts, tool settings) lives in the database and is edited in
+# the dashboard. Postgres credentials come from the CNPG-generated secret yggdrasil-pg-app; tokens and keys from
+# yggdrasil-secrets (secret.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yggdrasil-config
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+data:
+  YGG_ENV: prod
+  REDIS_URL: redis://yggdrasil-redis:6379/0
+  # Bootstrap access (JSON lists). Superusers are QQ numbers allowed to run admin commands and the
+  # natural-language ops agent in private chat; admins are dashboard logins, matched against the
+  # X-Auth-Request-Email header your auth proxy sets. Both lists can be extended later in the dashboard.
+  YGG_SUPERUSERS: "[10001]"
+  YGG_ADMIN_EMAILS: '["admin@example.com"]'
+  # Render service: render_markdown / render_mermaid / render_html, and the browser fallback of read_url.
+  # Remove both lines (and render.yaml) to run without it.
+  YGG_RENDER_URL: http://yggdrasil-render:8080
+  YGG_BROWSER_WS_URL: ws://yggdrasil-render:3000/
+  # Optional: link each invocation in the dashboard to its trace (Grafana with a Tempo data source).
+  # YGG_GRAFANA_URL: https://grafana.example.com
+  # Optional: OpenTelemetry traces, metrics and logs over OTLP/HTTP.
+  # OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring:4318
+  LOG_JSON: "true"
+  # Local time for daily digests, "today" in prompts and log timestamps.
+  TZ: Asia/Shanghai

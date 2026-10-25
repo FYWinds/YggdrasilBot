@@ -1,0 +1,110 @@
+# Optional moderation classifier: Qwen3Guard-Gen-0.6B on CPU with llama.cpp (OpenAI-compatible chat
+# completions). Add it in the dashboard as an OpenAI-format provider with base URL
+# http://yggdrasil-guard:8080/v1 and map the `moderation` task to model qwen3guard-gen-0.6b. Without it,
+# input and output moderation are skipped.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: yggdrasil-guard-cache
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-guard
+  labels:
+    app.kubernetes.io/name: yggdrasil-guard
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-guard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-guard
+        app.kubernetes.io/component: inference
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      containers:
+        - name: llama
+          image: ghcr.io/ggml-org/llama.cpp:server-b11459
+          imagePullPolicy: IfNotPresent
+          args:
+            - -hf
+            - mradermacher/Qwen3Guard-Gen-0.6B-GGUF:Q8_0
+            - -c
+            - "8192"
+            - -t
+            - "2"
+            - --alias
+            - qwen3guard-gen-0.6b
+            # Output checks send user + assistant; without this llama.cpp continues the assistant message
+            # instead of judging it, and long replies never get a "Safety:" verdict.
+            - --no-prefill-assistant
+            # The default 8 GiB RAM prompt cache grows into the memory limit; guard prompts rarely repeat.
+            - --cache-ram
+            - "0"
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8080"
+          env:
+            - name: LLAMA_CACHE
+              value: /cache
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: yggdrasil-guard-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-guard
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-guard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

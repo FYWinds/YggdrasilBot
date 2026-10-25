@@ -1,0 +1,243 @@
+# SnowLuma (image motricseven7/snowluma): Linux QQ with a hook that speaks OneBot v11. It dials out to the
+# bot's reverse WebSocket; nothing inside the cluster needs to reach it. Log in by scanning a QR code over
+# noVNC (`kubectl -n yggdrasil port-forward pod/snowluma-0 6081`, then http://127.0.0.1:6081).
+# NapCat works too: configure it the same way (reverse WS client, array messages, no self messages).
+#
+# QQ binds its login to the device. The StatefulSet keeps the QQ volumes, and the pod presents one fixed
+# desktop: MAC address, hostname, machine-id, a plain /etc/hosts and PID 1's cgroup. Changing any of these
+# makes QQ see a new device and ask for a fresh QR login (and new devices are watched more closely by risk
+# control), so pick values once and keep them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: snowluma
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: snowluma
+  ports:
+    - name: webui
+      port: 5099
+      targetPort: webui
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: snowluma
+  labels:
+    app.kubernetes.io/name: snowluma
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  serviceName: snowluma
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: snowluma
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: snowluma
+        app.kubernetes.io/component: onebot
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      terminationGracePeriodSeconds: 30
+      # No Kubernetes service variables inside QQ's view.
+      enableServiceLinks: false
+      initContainers:
+        # Pod MACs change with every pod; pin one before anything uses the network. Replace this placeholder
+        # (00:00:5e:00:53:xx is the RFC 7042 documentation range) with your own fixed address, ideally with the
+        # OUI of a common desktop NIC vendor.
+        - name: net-identity
+          image: busybox:1.37
+          command: ["sh", "-ec", "ip link set dev eth0 address 00:00:5e:00:53:01"]
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+        # SnowLuma reads config/onebot_<uin>.json (seeded from onebot.json on an account's first login).
+        # Both are rewritten on every start, so the reverse WebSocket target and token always match the bot;
+        # edits to the OneBot config in SnowLuma's WebUI do not survive a restart. No HTTP/WS listeners, the
+        # built-in "#sl" status reply off, history sync off, WebUI on loopback only.
+        - name: onebot-config
+          image: busybox:1.37
+          command:
+            - sh
+            - -ec
+            - |
+              mkdir -p /data/config
+              cat > /tmp/onebot.json <<EOF
+              {
+                "networks": {
+                  "httpServers": [],
+                  "httpClients": [],
+                  "wsServers": [],
+                  "wsClients": [
+                    {
+                      "name": "yggdrasil",
+                      "enabled": true,
+                      "url": "ws://yggdrasil-bot.yggdrasil.svc.cluster.local:8080/onebot/v11/ws",
+                      "role": "Universal",
+                      "accessToken": "$ONEBOT_ACCESS_TOKEN",
+                      "messageFormat": "array",
+                      "reportSelfMessage": false,
+                      "reconnectIntervalMs": 5000
+                    }
+                  ]
+                },
+                "statusCommand": {"enabled": false, "swallow": false, "cooldownSeconds": 5, "trigger": "#sl"},
+                "historySync": {"enabled": false},
+                "musicSignUrl": ""
+              }
+              EOF
+              cp /tmp/onebot.json /data/config/onebot.json
+              cp /tmp/onebot.json "/data/config/onebot_${QQ_ACCOUNT}.json"
+              for f in /data/config/onebot_*.json; do
+                [ -e "$f" ] && cp /tmp/onebot.json "$f"
+              done
+              cat > /data/config/runtime.json <<'EOF'
+              {"webuiPort": 5099, "webuiHost": "127.0.0.1", "hookAutoLoad": true}
+              EOF
+              echo "$MACHINE_ID" > /data/config/machine-id
+              chown -R 1000:1000 /data/config
+          env:
+            # The bot's QQ number.
+            - name: QQ_ACCOUNT
+              value: "10001"
+            # 32 hex characters, generated once: openssl rand -hex 16
+            - name: MACHINE_ID
+              value: 0123456789abcdef0123456789abcdef
+            - name: ONEBOT_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: yggdrasil-secrets
+                  key: ONEBOT_ACCESS_TOKEN
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            - name: snowluma-data
+              mountPath: /data
+      containers:
+        - name: snowluma
+          image: motricseven7/snowluma:v1.14.22
+          imagePullPolicy: IfNotPresent
+          # Device identity before the image's start script: a desktop hostname (the StatefulSet would force
+          # snowluma-0), a hosts file without the "Kubernetes-managed" header, PID 1's cgroup as on a real host,
+          # and no KUBERNETES_* variables.
+          command:
+            - bash
+            - -ec
+            - |
+              hostname "$HOST_NAME"
+              echo "$HOST_NAME" > /etc/hostname
+              printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\tlocalhost ip6-localhost ip6-loopback\n' "$HOST_NAME" > /tmp/hosts
+              mount --bind /tmp/hosts /etc/hosts
+              echo '0::/init.scope' > /tmp/cgroup_1
+              mount --bind /tmp/cgroup_1 /proc/1/cgroup
+              export HOSTNAME="$HOST_NAME"
+              unset $(compgen -e | grep '^KUBERNETES_') HOST_NAME
+              exec docker-entrypoint.sh /root/start.sh
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: HOST_NAME
+              value: my-desktop
+            - name: SNOWLUMA_TELEMETRY
+              value: "0"
+            - name: SNOWLUMA_HOOK_AUTOLOAD
+              value: "1"
+          ports:
+            - name: webui
+              containerPort: 5099
+              protocol: TCP
+            - name: novnc
+              containerPort: 6081
+              protocol: TCP
+          securityContext:
+            # The command above needs mount(2) and sethostname; SnowLuma injects its hook into QQ with ptrace,
+            # which the default seccomp profile blocks.
+            privileged: true
+            seccompProfile:
+              type: Unconfined
+          resources:
+            requests:
+              cpu: 300m
+              memory: 768Mi
+            limits:
+              memory: 3Gi
+          volumeMounts:
+            - name: snowluma-data
+              mountPath: /app/data
+            - name: qq-config
+              mountPath: /app/.config
+            - name: qq-share
+              mountPath: /app/.local/share
+            # QQ is Chromium-based; the default 64Mi /dev/shm crashes it.
+            - name: dshm
+              mountPath: /dev/shm
+        # QQ caches every image, sticker, video, file and its own logs under nt_data (on the order of
+        # 100 MB a day in a busy group). Originals stay a week so quoted older images still load.
+        - name: cache-cleaner
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              while true; do
+                for d in /qq/QQ/nt_qq_*/nt_data; do
+                  [ -d "$d" ] || continue
+                  find "$d/Pic" -path '*/Ori/*' -type f -mtime +7 -delete 2>/dev/null
+                  find "$d/Pic" "$d/Emoji/emoji-recv" "$d/Video" "$d/File" "$d/log" ! -path '*/Ori/*' -type f -mtime +3 -delete 2>/dev/null
+                  find "$d/Pic" "$d/Emoji/emoji-recv" "$d/Video" "$d/File" -mindepth 1 -type d -empty -delete 2>/dev/null
+                done
+                find /qq/QQ/Cache -type f -mtime +3 -delete 2>/dev/null
+                sleep 3600
+              done
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: qq-config
+              mountPath: /qq
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  # Not worth backing up: a lost volume only means a new QR login.
+  volumeClaimTemplates:
+    - metadata:
+        name: snowluma-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+    # QQ's media cache (trimmed by cache-cleaner).
+    - metadata:
+        name: qq-config
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: qq-share
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

@@ -1,0 +1,81 @@
+# Cron for the worker's periodic tasks (see worker.yaml). Exactly one replica: a second scheduler would
+# enqueue every job twice, hence Recreate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-scheduler
+  labels:
+    app.kubernetes.io/name: yggdrasil-scheduler
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-scheduler
+        app.kubernetes.io/component: scheduler
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scheduler
+          image: yggdrasil-bot
+          imagePullPolicy: IfNotPresent
+          # The tasks module must be imported: the schedule source only sees tasks registered in this process.
+          command: ["taskiq", "scheduler", "yggdrasil.worker.broker:scheduler", "yggdrasil.worker.tasks"]
+          envFrom:
+            - configMapRef:
+                name: yggdrasil-config
+            - secretRef:
+                name: yggdrasil-secrets
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: host }
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: port }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: user }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: password }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: dbname }
+            - name: OTEL_SERVICE_NAME
+              value: yggdrasil-scheduler
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

@@ -1,0 +1,149 @@
+# The bot: OneBot v11 reverse WebSocket (/onebot/v11/ws), the agent runs, the dashboard SPA and /api,
+# health endpoints (/healthz, /readyz, /drainz). Run exactly one replica: it owns the single connection from
+# the OneBot endpoint.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yggdrasil-bot
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-bot
+  labels:
+    app.kubernetes.io/name: yggdrasil-bot
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  # Zero-downtime updates: the new pod becomes ready without the OneBot connection (/readyz checks Postgres
+  # only) and takes over the dashboard. The old pod, already out of the Service, keeps the connection in
+  # preStop until its in-flight replies are sent; then the OneBot endpoint reconnects to the new pod, which
+  # backfills the messages of that gap.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-bot
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-bot
+        app.kubernetes.io/component: bot
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      # Only the sandbox component grants it permissions (sandbox/rbac.yaml).
+      serviceAccountName: yggdrasil-bot
+      # preStop drain (up to 170 s) + shutdown.
+      terminationGracePeriodSeconds: 200
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bot
+          image: yggdrasil-bot
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            # LLM relay for agent jobs inside sandbox workspaces (sandbox component only).
+            - name: relay
+              containerPort: 8090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: yggdrasil-config
+            - secretRef:
+                name: yggdrasil-secrets
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: host }
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: port }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: user }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: password }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: dbname }
+            - name: OTEL_SERVICE_NAME
+              value: yggdrasil-bot
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            # Waits up to 5 minutes for Postgres and Redis on a cold start.
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - python
+                  - -c
+                  - import urllib.request as r; r.urlopen("http://127.0.0.1:8080/drainz?max_wait=170", timeout=180)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # TMPDIR: jieba's dictionary cache and temp files; the root filesystem is read-only.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-bot
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-bot
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

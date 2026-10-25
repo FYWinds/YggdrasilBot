@@ -1,0 +1,124 @@
+# Embeddings for memory search (OpenAI-compatible POST /v1/embeddings), on CPU with llama.cpp:
+# Qwen3-Embedding-0.6B, Q8_0 (~220 tokens/s on 4 cores). Add it in the dashboard as an OpenAI-format provider
+# with base URL http://yggdrasil-embed:8080/v1, then create and activate an embedding space with model
+# qwen3-embedding-0.6b-q8. Any hosted embedding API works instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: yggdrasil-embed-cache
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 3Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-embed
+  labels:
+    app.kubernetes.io/name: yggdrasil-embed
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-embed
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-embed
+        app.kubernetes.io/component: inference
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      containers:
+        - name: llama
+          image: ghcr.io/ggml-org/llama.cpp:server-b11459
+          imagePullPolicy: IfNotPresent
+          args:
+            - -hf
+            - Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+            - --embedding
+            - --pooling
+            - last
+            # A whole input must fit one ubatch; the bot caps inputs at 3000 chars (~1900 tokens). One slot:
+            # two long inputs batched together run out of memory at 4Gi.
+            - -c
+            - "4096"
+            - -np
+            - "1"
+            - -b
+            - "4096"
+            - -ub
+            - "4096"
+            # Without flash attention the 4096-token attention buffer needs over 3Gi.
+            - -fa
+            - "on"
+            # Match the CPU limit; llama.cpp defaults to every host core.
+            - -t
+            - "4"
+            # The RAM prompt cache only grows, and embedding inputs rarely repeat.
+            - --cache-ram
+            - "0"
+            - --alias
+            - qwen3-embedding-0.6b-q8
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8080"
+          env:
+            # -hf downloads land here and survive restarts.
+            - name: LLAMA_CACHE
+              value: /cache
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            # First start downloads the model.
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: yggdrasil-embed-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-embed
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-embed
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

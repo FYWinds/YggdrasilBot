@@ -1,0 +1,80 @@
+# Background work (taskiq), enqueued by the scheduler: message chunking and embeddings (every 5 min), topic
+# segmentation (every 15 min), member profiles (hourly), daily digests, glossary mining (nightly), monthly
+# partition maintenance, and re-embedding when you switch embedding spaces in the dashboard. It never talks to
+# QQ directly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-worker
+  labels:
+    app.kubernetes.io/name: yggdrasil-worker
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: yggdrasil-bot
+          imagePullPolicy: IfNotPresent
+          command: ["taskiq", "worker", "yggdrasil.worker.broker:broker", "yggdrasil.worker.tasks"]
+          envFrom:
+            - configMapRef:
+                name: yggdrasil-config
+            - secretRef:
+                name: yggdrasil-secrets
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: host }
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: port }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: user }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: password }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: dbname }
+            - name: OTEL_SERVICE_NAME
+              value: yggdrasil-worker
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

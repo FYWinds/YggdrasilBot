@@ -1,0 +1,51 @@
+# Example YggdrasilBot install: `kubectl apply -k deploy/example` or an Argo CD Application pointing here.
+# Walkthrough: deploy/README.md. Copy this directory into your own GitOps repo and edit it there.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: yggdrasil
+
+resources:
+  - namespace.yaml
+  # Deployment settings shared by every role (edit before the first apply).
+  - config.yaml
+  # The secret yggdrasil-secrets is created by hand or by your secret manager
+  # (template: secret.example.yaml, deliberately not listed here).
+
+  # Data (sync wave 0) and schema migration (wave 1).
+  - postgres.yaml
+  - redis.yaml
+  - migration.yaml
+
+  # Workloads (wave 2).
+  - bot.yaml
+  - worker.yaml
+  - scheduler.yaml
+  - snowluma.yaml
+  - render.yaml
+  - embed.yaml
+
+  # Optional: moderation classifier and a self-hosted search backend.
+  # - guard.yaml
+  # - searxng.yaml
+
+  - networkpolicy.yaml
+  - ingress.yaml
+
+# Optional: persistent Linux workspaces for the chat model (gVisor + agent-sandbox).
+# components:
+#   - sandbox
+
+# Images are built by this repository's CI (.github/workflows/ci.yaml) from a fork, or locally with
+# `docker build`. Each image has its own release tag: vX.Y.Z (bot), sandbox-vX.Y.Z, render-vX.Y.Z; all of
+# them publish plain vX.Y.Z image tags.
+images:
+  - name: yggdrasil-bot
+    newName: ghcr.io/example/yggdrasil-bot
+    newTag: v0.2.7
+  - name: yggdrasil-render
+    newName: ghcr.io/example/yggdrasil-render
+    newTag: v0.2.5
+  # Used by the sandbox component only.
+  - name: yggdrasil-sandbox
+    newName: ghcr.io/example/yggdrasil-sandbox
+    newTag: v0.2.5

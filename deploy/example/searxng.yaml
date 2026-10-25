@@ -1,0 +1,121 @@
+# Optional self-hosted metasearch for web_search. Add it on the dashboard's Search page as a SearXNG provider
+# with URL http://yggdrasil-searxng:8080 (Exa and other providers are configured there too). Needs
+# SEARXNG_SECRET in yggdrasil-secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yggdrasil-searxng
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+data:
+  settings.yml: |
+    use_default_settings: true
+    general:
+      instance_name: yggdrasil
+    server:
+      # Overridden by $SEARXNG_SECRET.
+      secret_key: unused
+      limiter: false
+      image_proxy: false
+    search:
+      safe_search: 0
+      # The bot reads the JSON API.
+      formats:
+        - html
+        - json
+    # Engines that work well for Chinese-language queries, on top of the defaults.
+    engines:
+      - name: baidu
+        disabled: false
+      - name: bing
+        disabled: false
+      - name: 360search
+        disabled: false
+      - name: quark
+        disabled: false
+      - name: sogou
+        disabled: false
+      - name: sogou wechat
+        disabled: false
+      - name: bilibili
+        disabled: false
+      - name: duckduckgo
+        disabled: false
+      - name: brave
+        disabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-searxng
+  labels:
+    app.kubernetes.io/name: yggdrasil-searxng
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-searxng
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-searxng
+        app.kubernetes.io/component: search
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      containers:
+        - name: searxng
+          image: searxng/searxng:2026.10.7-6671d89be
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: yggdrasil-secrets
+                  key: SEARXNG_SECRET
+            - name: SEARXNG_BASE_URL
+              value: http://yggdrasil-searxng:8080/
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+      volumes:
+        - name: settings
+          configMap:
+            name: yggdrasil-searxng
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-searxng
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-searxng
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

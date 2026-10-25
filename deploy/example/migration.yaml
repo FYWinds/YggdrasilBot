@@ -1,0 +1,75 @@
+# Schema migrations (`alembic upgrade head`) before the workloads start.
+# - Argo CD: a Sync hook, recreated on every sync, so every release migrates first.
+# - Plain kubectl: Jobs are immutable; before applying a new image tag run
+#   `kubectl -n yggdrasil delete job yggdrasil-migration --ignore-not-found` and wait for the new one to finish.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yggdrasil-migration
+  labels:
+    app.kubernetes.io/name: yggdrasil-migration
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-migration
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migration
+          image: yggdrasil-bot
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: yggdrasil-config
+            - secretRef:
+                name: yggdrasil-secrets
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: host }
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: port }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: user }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: password }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: yggdrasil-pg-app, key: dbname }
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

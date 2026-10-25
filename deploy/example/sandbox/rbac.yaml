@@ -1,0 +1,33 @@
+# The bot claims workspace pods from the warm pool, reads the bound Sandbox for the pod IP, and creates a
+# Service + IngressRoute per public link (owned by the Sandbox, so they go away with it).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yggdrasil-bot-sandbox
+rules:
+  - apiGroups: [extensions.agents.x-k8s.io]
+    resources: [sandboxclaims]
+    verbs: [create, get, list, watch, patch, delete]
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, watch]
+  # Public links only.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [create, get, list, delete]
+  - apiGroups: [traefik.io]
+    resources: [ingressroutes]
+    verbs: [create, get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yggdrasil-bot-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yggdrasil-bot-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: yggdrasil-bot
+    namespace: yggdrasil

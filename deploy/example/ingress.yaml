@@ -1,0 +1,36 @@
+# The dashboard (SPA + /api) behind single sign-on. The bot trusts the X-Auth-Request-Email header and checks
+# it against the dashboard admins, so every request MUST pass through an auth proxy that sets that header
+# (e.g. oauth2-proxy with --set-xauthrequest behind a Traefik forwardAuth middleware) and the bot must not be
+# reachable any other way. /onebot is never exposed.
+#
+# This uses Traefik's IngressRoute (the k3s default). With another ingress controller, route the host to
+# yggdrasil-bot:8080, exclude /onebot, and wire your controller's external-auth feature the same way.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: dashboard-auth
+spec:
+  forwardAuth:
+    # Your oauth2-proxy's auth endpoint.
+    address: http://oauth2-proxy.auth.svc.cluster.local/oauth2/auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-Email
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: yggdrasil-dashboard
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`ygg.example.com`) && !PathPrefix(`/onebot`)
+      middlewares:
+        - name: dashboard-auth
+      services:
+        - name: yggdrasil-bot
+          port: 8080
+  # TLS: a certResolver or a secret from cert-manager.
+  tls: {}

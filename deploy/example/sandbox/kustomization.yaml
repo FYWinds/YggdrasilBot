@@ -1,0 +1,23 @@
+# Optional component: persistent Linux workspaces for the chat model (sh, a Python kernel with Chromium,
+# background jobs, delegate to an inner agent, public links). Enable with `components: [sandbox]` in
+# ../kustomization.yaml after installing gVisor and agent-sandbox (deploy/README.md, "Sandbox").
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - rbac.yaml
+  - sandbox.yaml
+  - relay.yaml
+
+patches:
+  # Bot settings for the sandbox. YGG_SANDBOX_TOKEN goes into yggdrasil-secrets.
+  - target:
+      kind: ConfigMap
+      name: yggdrasil-config
+    patch: |
+      - op: add
+        path: /data/YGG_RELAY_URL
+        value: http://10.43.255.90:8090
+      - op: add
+        path: /data/YGG_SANDBOX_LINK_DOMAIN
+        value: sandbox.example.com

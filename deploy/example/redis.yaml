@@ -1,0 +1,84 @@
+# Redis: task queue (taskiq), rate limits, config change notifications, sandbox workspace and job state.
+# AOF persistence keeps queued tasks and workspace mappings across restarts. A managed Redis or an operator
+# works as well; set REDIS_URL in config.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: yggdrasil-redis
+  labels:
+    app.kubernetes.io/name: yggdrasil-redis
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: 1
+  serviceName: yggdrasil-redis
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-redis
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:8-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-redis
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP

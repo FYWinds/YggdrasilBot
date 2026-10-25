@@ -1,0 +1,192 @@
+# Workspace pods (gVisor), managed by kubernetes-sigs/agent-sandbox. The bot claims a pod from the warm pool
+# (SandboxClaim) and talks to sandboxd on the pod IP: REST 8080, gRPC 9090. Each group gets up to 3 named
+# workspaces and the deployment up to 8 pods (tool settings); size the warm pool for how fast a new workspace
+# should start.
+#
+# sandboxd only stores the token's digest. The token itself is YGG_SANDBOX_TOKEN in yggdrasil-secrets;
+# rotating it means updating the secret and the digest below together.
+#
+# After changing this template (new image, limits), agent-sandbox v1.0.7 does not replace warm pods: destroy
+# the workspaces from the dashboard's Sandbox page and delete the pool's Sandbox objects so they are recreated.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: yggdrasil-sandbox
+  labels:
+    app.kubernetes.io/name: yggdrasil-sandbox
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    # The CRDs come from the agent-sandbox install.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # Managed: the controller renders this into the NetworkPolicy yggdrasil-sandbox-network-policy. Without an
+  # explicit policy its defaults apply (router-only ingress, no DNS).
+  networkPolicyManagement: Managed
+  networkPolicy:
+    ingress:
+      # sandboxd, from the bot only.
+      - from:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: yggdrasil-bot
+        ports:
+          - port: 8080
+            protocol: TCP
+          - port: 9090
+            protocol: TCP
+      # Public links: the ingress controller may reach whatever port the served app listens on, but never
+      # sandboxd itself.
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+        ports:
+          - port: 1024
+            endPort: 8079
+            protocol: TCP
+          - port: 8081
+            endPort: 9089
+            protocol: TCP
+          - port: 9091
+            endPort: 65535
+            protocol: TCP
+    egress:
+      # The web and package registries only: no cluster, LAN, CGNAT or link-local addresses, and none of
+      # your own public addresses.
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 100.64.0.0/10
+                - 169.254.0.0/16
+                # Your nodes' public IPs (placeholder from the documentation range).
+                - 203.0.113.10/32
+        ports:
+          - port: 80
+            protocol: TCP
+          - port: 443
+            protocol: TCP
+      # Public resolvers (dnsConfig below); cluster DNS stays unreachable.
+      - to:
+          - ipBlock:
+              cidr: 1.1.1.1/32
+          - ipBlock:
+              cidr: 8.8.8.8/32
+        ports:
+          - port: 53
+            protocol: UDP
+          - port: 53
+            protocol: TCP
+      # The bot's LLM relay. Policies match after the Service DNAT, so this names the bot pod, not the
+      # yggdrasil-llm-relay ClusterIP.
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: yggdrasil-bot
+        ports:
+          - port: 8090
+            protocol: TCP
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-sandbox
+        app.kubernetes.io/part-of: yggdrasil
+      annotations:
+        # Enforced by the CNI bandwidth plugin, where available.
+        kubernetes.io/egress-bandwidth: 20M
+        kubernetes.io/ingress-bandwidth: 50M
+    spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 1.1.1.1
+          - 8.8.8.8
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox
+          image: yggdrasil-sandbox
+          imagePullPolicy: IfNotPresent
+          args:
+            - --root-dir=/workspace
+            # printf %s "$YGG_SANDBOX_TOKEN" | sha256sum
+            - --auth-token-sha256=0000000000000000000000000000000000000000000000000000000000000000
+          ports:
+            - name: rest
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 9090
+              protocol: TCP
+          # /v1/health is the only path sandboxd serves without the token.
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+            limits:
+              cpu: "2"
+              # IPython kernel (~0.3Gi) + Chromium (~0.9Gi) + an agent job (~0.6Gi).
+              memory: 4Gi
+              # Both emptyDirs (6Gi) plus container logs.
+              ephemeral-storage: 7Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: yggdrasil-sandbox
+  labels:
+    app.kubernetes.io/name: yggdrasil-sandbox
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  replicas: 2
+  sandboxTemplateRef:
+    name: yggdrasil-sandbox

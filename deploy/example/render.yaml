@@ -1,0 +1,107 @@
+# Render service (render/ in this repo): one Chromium behind two endpoints.
+# - HTTP :8080 POST /render: Markdown (GFM, Shiki, KaTeX), Mermaid and sanitized HTML to PNG for the
+#   render_* tools (YGG_RENDER_URL).
+# - Playwright :3000: the browser fallback of read_url for JavaScript-only pages (YGG_BROWSER_WS_URL).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yggdrasil-render
+  labels:
+    app.kubernetes.io/name: yggdrasil-render
+    app.kubernetes.io/part-of: yggdrasil
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-render
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yggdrasil-render
+        app.kubernetes.io/component: render
+        app.kubernetes.io/part-of: yggdrasil
+    spec:
+      # pwuser from the Playwright base image.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: render
+          image: yggdrasil-render
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: ws
+              containerPort: 3000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Chromium needs a large /dev/shm; the default 64Mi crashes tabs.
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-render
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yggdrasil-render
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: ws
+      port: 3000
+      targetPort: ws
+      protocol: TCP

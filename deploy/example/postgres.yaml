@@ -1,0 +1,39 @@
+# PostgreSQL 18 with ParadeDB's extensions: pg_search (BM25 with the jieba tokenizer) and pgvector, run by
+# CloudNativePG (https://cloudnative-pg.io; install the operator first). Any other Postgres with both
+# extensions works too; point POSTGRES_* at it instead.
+#
+# CNPG creates the secret yggdrasil-pg-app (host, port, user, password, dbname) that the workloads read.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: yggdrasil-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  instances: 1
+  # CNPG reads the Postgres major version from the tag prefix (same image as paradedb:0.26.0-pg18).
+  imageName: paradedb/paradedb:18-v0.26.0
+  # The ParadeDB image runs postgres as UID 999, not CNPG's default 26.
+  postgresUID: 999
+  postgresGID: 999
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+  storage:
+    # Raw messages are kept forever (monthly partitions), plus BM25 indexes and vectors.
+    size: 20Gi
+  postgresql:
+    shared_preload_libraries:
+      - pg_search
+  bootstrap:
+    initdb:
+      database: ygg
+      owner: ygg
+      # The app user is not a superuser, so the extensions are created here, at init time.
+      postInitApplicationSQL:
+        # pg_search depends on vector.
+        - CREATE EXTENSION IF NOT EXISTS vector;
+        - CREATE EXTENSION IF NOT EXISTS pg_search;
+  # Backups: add the Barman Cloud plugin (WAL archive + base backups to S3-compatible storage) and a
+  # ScheduledBackup. See deploy/README.md, "Backups".

@@ -1,0 +1,98 @@
+# Network policies (enforced by most CNIs; k3s ships an enforcing controller). Adjust the ingress
+# controller selector to yours: k3s runs Traefik in kube-system with app.kubernetes.io/name=traefik.
+#
+# The bot serves both the OneBot reverse WebSocket and the dashboard on port 8080. NetworkPolicy cannot match
+# paths, so /onebot is kept off the public route (ingress.yaml) and the port only admits the OneBot endpoint
+# and the ingress controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-bot-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-bot
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: snowluma
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Nothing needs to reach SnowLuma (noVNC 6081, WebUI 5099): QR login and the WebUI go through
+# `kubectl port-forward`, which NetworkPolicy does not filter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-snowluma
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: snowluma
+  policyTypes:
+    - Ingress
+---
+# Pages opened through the Playwright endpoint (read_url) are untrusted: the browser may reach the internet
+# but nothing inside the cluster or the LAN, except DNS. Render pages only load bundled assets.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-render
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-render
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Playwright (read_url) from the bot, worker and scheduler.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [yggdrasil-bot, yggdrasil-worker, yggdrasil-scheduler]
+      ports:
+        - port: 3000
+          protocol: TCP
+    # Render API: the bot only.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: yggdrasil-bot
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10

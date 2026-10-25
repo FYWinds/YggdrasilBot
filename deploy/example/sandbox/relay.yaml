@@ -1,0 +1,39 @@
+# LLM relay: agents inside a workspace call models through the bot with a short-lived per-job token, never a
+# provider key. Workspaces have no cluster DNS, so the Service gets a pinned ClusterIP (pick a free address in
+# your Service CIDR; k3s uses 10.43.0.0/16) that YGG_RELAY_URL points at (kustomization.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: yggdrasil-llm-relay
+  labels:
+    app.kubernetes.io/part-of: yggdrasil
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.255.90
+  selector:
+    app.kubernetes.io/name: yggdrasil-bot
+  ports:
+    - name: relay
+      port: 8090
+      targetPort: relay
+      protocol: TCP
+---
+# Admits workspace pods to the relay port (policies are additive with yggdrasil-bot-ingress).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: yggdrasil-bot-relay
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yggdrasil-bot
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: yggdrasil-sandbox
+      ports:
+        - port: 8090
+          protocol: TCP
