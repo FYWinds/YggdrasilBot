@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 import { useState } from "react";
 import { Field, JsonEditor, MultiToggle, NumberInput, OptionSelect, TagInput } from "@/components/common";
@@ -235,15 +234,6 @@ function defaultsOf(schema: JsonSchema, root: JsonSchema): unknown {
   return null;
 }
 
-export function FieldLabel({ name, schema }: { name: string; schema: JsonSchema }): ReactNode {
-  return (
-    <span className="flex items-baseline gap-2">
-      <span className="font-mono text-xs">{name}</span>
-      {schema.title && <span className="text-xs font-normal text-muted-foreground">{schema.title}</span>}
-    </span>
-  );
-}
-
 /** Renders an object schema: nested objects become sections, everything else a labelled input. */
 export function SchemaObject({
   schema,
@@ -267,7 +257,7 @@ export function SchemaObject({
           return (
             <fieldset key={key} className="grid gap-3 rounded-lg border p-3">
               <legend className="px-1">
-                <FieldLabel name={key} schema={cs} />
+                <span className="font-mono text-xs">{key}</span>
               </legend>
               {cs.description && <p className="text-xs text-muted-foreground">{cs.description}</p>}
               <SchemaObject
@@ -280,7 +270,7 @@ export function SchemaObject({
           );
         }
         return (
-          <Field key={key} label={<FieldLabel name={key} schema={cs} />} hint={cs.description}>
+          <Field key={key} label={<span className="font-mono text-xs">{key}</span>} hint={cs.description}>
             <SchemaInput schema={cs} root={root} value={obj[key]} onChange={(nv) => onChange({ ...obj, [key]: nv })} />
           </Field>
         );

@@ -10,9 +10,9 @@ export function capsOf(provider: ProviderOut | undefined, model: string | null |
   return model ? provider?.model_caps[model.trim()] : undefined;
 }
 
-/** Capability badges from models.dev; "能力未知" (or nothing when `quiet`) if the model isn't matched. */
-export function CapBadges({ caps, showId = false, quiet = false }: { caps: ModelCaps | undefined; showId?: boolean; quiet?: boolean }) {
-  if (!caps) return quiet ? null : <span className="text-xs text-muted-foreground">能力未知</span>;
+/** Capability badges from models.dev; "能力未知" if the model isn't matched. */
+export function CapBadges({ caps, showId = false }: { caps: ModelCaps | undefined; showId?: boolean }) {
+  if (!caps) return <span className="text-xs text-muted-foreground">能力未知</span>;
   const flags: [boolean, string][] = [
     [caps.vision, "看图"],
     [caps.pdf, "PDF"],

@@ -97,17 +97,12 @@ export function RoutesPage() {
               <TableRow key={row.task}>
                 <TableCell>
                   <div className="font-medium">{TASK_LABELS[row.task] ?? row.task}</div>
-                  <div className="font-mono text-xs text-muted-foreground">{row.task}</div>
                 </TableCell>
                 <TableCell>
                   {row.route ? (
                     <>
                       <div className="font-mono text-xs">{row.route.model}</div>
                       <div className="text-xs text-muted-foreground">{providerName(row.route.provider_id)}</div>
-                      <CapBadges
-                        quiet
-                        caps={capsOf(providers.data?.find((p) => p.id === row.route?.provider_id), row.route.model)}
-                      />
                       {thinkingOf(row.route.params) && (
                         <Badge variant="outline" className="mt-1">
                           思考 {thinkingOf(row.route.params)}
@@ -194,7 +189,7 @@ function RouteDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {TASK_LABELS[row.task] ?? row.task} <span className="font-mono text-sm text-muted-foreground">{row.task}</span>
+            {TASK_LABELS[row.task] ?? row.task}
           </DialogTitle>
         </DialogHeader>
         <div className="grid gap-4">

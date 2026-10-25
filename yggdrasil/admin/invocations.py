@@ -14,6 +14,7 @@ from yggdrasil.admin.common import Page, not_found
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
+from yggdrasil.people import names_in_groups
 
 router = APIRouter(prefix="/invocations", tags=["invocations"])
 
@@ -37,6 +38,7 @@ class InvocationSummary(BaseModel):
     created_at: datetime
     group_id: int | None
     user_id: int
+    user_name: str  # latest group card / nickname; "" when unknown (private chats)
     handler: str
     status: str
     request_text: str
@@ -73,12 +75,13 @@ class InvocationDetail(InvocationSummary):
     moderation: list[ModerationOut]
 
 
-def _summary_fields(i: Invocation) -> dict[str, Any]:
+def _summary_fields(i: Invocation, names: dict[tuple[int, int], str]) -> dict[str, Any]:
     return {
         "id": i.id,
         "created_at": i.created_at,
         "group_id": i.group_id,
         "user_id": i.user_id,
+        "user_name": names.get((i.group_id or 0, i.user_id), ""),
         "handler": i.handler,
         "status": i.status,
         "request_text": i.request_text,
@@ -110,10 +113,13 @@ async def list_invocations(
         cond.append(Invocation.status == status)
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(Invocation).where(*cond)) or 0
-        rows = await s.scalars(
-            select(Invocation).where(*cond).order_by(Invocation.created_at.desc()).limit(limit).offset(offset)
-        )
-        items = [InvocationSummary(**_summary_fields(i)) for i in rows.all()]
+        rows = (
+            await s.scalars(
+                select(Invocation).where(*cond).order_by(Invocation.created_at.desc()).limit(limit).offset(offset)
+            )
+        ).all()
+    names = await names_in_groups((i.group_id, i.user_id) for i in rows)
+    items = [InvocationSummary(**_summary_fields(i, names)) for i in rows]
     return Page[InvocationSummary](items=items, total=total)
 
 
@@ -143,7 +149,7 @@ async def get_invocation(invocation_id: UUID) -> InvocationDetail:
             for m in mods.all()
         ]
     return InvocationDetail(
-        **_summary_fields(i),
+        **_summary_fields(i, await names_in_groups([(i.group_id, i.user_id)])),
         trigger_qq_message_id=i.trigger_qq_message_id,
         tokens_cached=i.tokens_cached,
         tool_calls=dict(i.tool_calls),

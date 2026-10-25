@@ -86,13 +86,9 @@ export function ProvidersPage() {
                 <TableCell className="font-mono text-xs">{p.base_url}</TableCell>
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell>
-                  <Hint content={p.models.join("\n")}>
+                  <Hint content={`${p.models.join("\n")}\n\n更新于 ${fmtTime(p.models_fetched_at)}`}>
                     <span>{p.models.length} 个</span>
                   </Hint>
-                  <span className="ml-1 text-xs text-muted-foreground">
-                    · 能力 {Object.keys(p.model_caps).length}
-                  </span>
-                  <div className="text-xs text-muted-foreground">{fmtTime(p.models_fetched_at)}</div>
                 </TableCell>
                 <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
                 <TableCell>

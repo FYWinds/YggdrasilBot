@@ -3,7 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { decideReviewMutation, listReviewsOptions } from "@/client/@tanstack/react-query.gen";
 import type { ReviewOut } from "@/client/types.gen";
-import { Disclosure, Empty, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import { Disclosure, Empty, OptionSelect, PageHeader, Pager, Pre, QueryState, useGroupName } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,6 +40,7 @@ export function ReviewsPage() {
   const decide = useMutation({ ...decideReviewMutation(), onSuccess: (r) => toast.success(`R${r.id} ${STATUS_LABELS[r.status as Status] ?? r.status}`) });
   const [editing, setEditing] = useState<ReviewOut | null>(null);
   const [text, setText] = useState("");
+  const groupName = useGroupName();
 
   return (
     <div>
@@ -71,7 +72,7 @@ export function ReviewsPage() {
                   {STATUS_LABELS[r.status as Status] ?? r.status}
                 </Badge>
                 <span className="text-sm font-normal text-muted-foreground">
-                  群 {r.group_id} · 用户 {r.user_id} · {fmtTime(r.created_at)}
+                  {groupName(r.group_id)} · {r.user_id} · {fmtTime(r.created_at)}
                   {r.status === "pending" ? ` · ${fmtTime(r.expires_at)} 过期` : r.decided_by ? ` · ${r.decided_by}` : ""}
                 </span>
               </CardTitle>

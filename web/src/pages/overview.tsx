@@ -58,7 +58,6 @@ export function OverviewPage() {
               <Link to="/reviews" className="underline">
                 打开审核队列
               </Link>
-              <p className="mt-2 text-xs text-muted-foreground">配置版本 v{s.snapshot_version}</p>
             </CardContent>
           </Card>
         </div>

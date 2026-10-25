@@ -56,7 +56,6 @@ export function SettingsPage() {
             <Card key={key}>
               <CardHeader>
                 <CardTitle>{SECTION_LABELS[key] ?? key}</CardTitle>
-                <CardDescription className="font-mono text-xs">{key}</CardDescription>
               </CardHeader>
               <CardContent>
                 <SchemaObject

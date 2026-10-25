@@ -44,10 +44,7 @@ export function Layout() {
   return (
     <div className="flex min-h-svh">
       <aside className="sticky top-0 flex h-svh w-52 shrink-0 flex-col border-r bg-muted/30">
-        <div className="px-4 py-5">
-          <div className="text-lg font-semibold">Yggdrasil</div>
-          <div className="text-xs text-muted-foreground">控制台</div>
-        </div>
+        <div className="px-4 py-5 text-lg font-semibold">Yggdrasil</div>
         <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2">
           {NAV.map(({ to, label, icon: Icon }) => (
             <Link

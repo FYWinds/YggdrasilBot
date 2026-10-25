@@ -4,7 +4,17 @@ import { Fragment, useState } from "react";
 import { toast } from "sonner";
 import { decideEventMutation, listEventsOptions } from "@/client/@tanstack/react-query.gen";
 import type { EventOut } from "@/client/types.gen";
-import { ConfirmButton, Empty, Hint, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import {
+  ConfirmButton,
+  Empty,
+  Hint,
+  OptionSelect,
+  PageHeader,
+  Pager,
+  Pre,
+  QueryState,
+  useGroupName,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +85,7 @@ export function EventsPage() {
   const [groupId, setGroupId] = useState("");
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<number | null>(null);
+  const groupName = useGroupName();
   const events = useQuery(
     listEventsOptions({
       query: { kind, status, group_id: groupId ? Number(groupId) : null, limit: LIMIT, offset },
@@ -93,7 +104,7 @@ export function EventsPage() {
     <div>
       <PageHeader
         title="事件"
-        description="加群邀请、入群和好友申请，bot 自身状态（被踢、被禁言、管理员变动、掉线），已启用群的成员变动。保留天数和自动处理策略在设置的 events 一节；超级管理员也可以在私聊里让管理助手处理。"
+        description="加群和好友申请、bot 自身状态和已启用群的成员变动。保留天数和自动处理策略在设置的 events 一节。"
         actions={
           <div className="flex gap-2">
             <Input
@@ -143,10 +154,9 @@ export function EventsPage() {
                   <TableCell className="font-mono text-xs">E{e.id}</TableCell>
                   <TableCell className="text-xs">{fmtTime(e.at)}</TableCell>
                   <TableCell>
-                    <div>{KIND_LABELS[e.kind] ?? e.kind}</div>
-                    <div className="font-mono text-xs text-muted-foreground">{e.kind}</div>
+                    {KIND_LABELS[e.kind] ?? e.kind}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{e.group_id ?? "—"}</TableCell>
+                  <TableCell className="text-xs">{e.group_id != null ? groupName(e.group_id) : "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{e.user_id ?? "—"}</TableCell>
                   <TableCell className="max-w-72 text-xs">
                     <Hint content={detail(e)}>
@@ -155,13 +165,14 @@ export function EventsPage() {
                   </TableCell>
                   <TableCell>
                     {e.status ? (
-                      <Badge variant={STATUS[e.status as Status]?.variant ?? "outline"}>
-                        {STATUS[e.status as Status]?.label ?? e.status}
-                      </Badge>
+                      <Hint content={e.handled_by === "auto" ? "自动处理" : e.handled_by}>
+                        <Badge variant={STATUS[e.status as Status]?.variant ?? "outline"}>
+                          {STATUS[e.status as Status]?.label ?? e.status}
+                        </Badge>
+                      </Hint>
                     ) : (
                       "—"
                     )}
-                    {e.handled_by && <div className="text-xs text-muted-foreground">{e.handled_by}</div>}
                   </TableCell>
                   <TableCell onClick={(ev) => ev.stopPropagation()}>
                     {e.status === "pending" && (

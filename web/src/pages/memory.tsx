@@ -35,6 +35,7 @@ import {
   Pre,
   QueryState,
   TagInput,
+  useGroupName,
 } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -111,6 +112,7 @@ const NO_FILTERS: TopicFilters = {
 };
 
 function Topics({ groupId }: { groupId: number | null }) {
+  const groupName = useGroupName();
   const [range, setRange] = useState<DateRange | undefined>();
   const [filters, setFilters] = useState<TopicFilters>(NO_FILTERS);
   const [offset, setOffset] = useState(0);
@@ -242,8 +244,8 @@ function Topics({ groupId }: { groupId: number | null }) {
             />
             <div className={cn("min-w-0 flex-1", t.status === "archived" && "text-muted-foreground")}>
               <div className="text-xs text-muted-foreground">
-                {fmtTime(t.start_at)} — {fmtTime(t.end_at)} · 群 {t.group_id} · {t.msg_count} 条 ·{" "}
-                {t.participants.length} 人
+                {fmtTime(t.start_at)} — {fmtTime(t.end_at)}
+                {groupId === null && ` · ${groupName(t.group_id)}`} · {t.msg_count} 条 · {t.participants.length} 人
               </div>
               <div className="flex items-center gap-2 font-medium">
                 {t.title}
@@ -287,6 +289,7 @@ function Topics({ groupId }: { groupId: number | null }) {
 }
 
 function Digests({ groupId }: { groupId: number | null }) {
+  const groupName = useGroupName();
   const [offset, setOffset] = useState(0);
   const limit = 14;
   const digests = useQuery(listDigestsOptions({ query: { group_id: groupId, limit, offset } }));
@@ -298,7 +301,8 @@ function Digests({ groupId }: { groupId: number | null }) {
         <Card key={d.id}>
           <CardHeader>
             <CardTitle className="text-base">
-              {d.day} <span className="text-sm font-normal text-muted-foreground">群 {d.group_id}</span>
+              {d.day}
+              {groupId === null && <span className="ml-2 text-sm font-normal text-muted-foreground">{groupName(d.group_id)}</span>}
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm whitespace-pre-wrap">{d.summary}</CardContent>
@@ -310,6 +314,7 @@ function Digests({ groupId }: { groupId: number | null }) {
 }
 
 function Glossary({ groupId }: { groupId: number | null }) {
+  const groupName = useGroupName();
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;
@@ -356,7 +361,7 @@ function Glossary({ groupId }: { groupId: number | null }) {
                 <TableCell>
                   <div className="font-medium">{t.term}</div>
                   {!!t.aliases.length && <div className="text-xs text-muted-foreground">{t.aliases.join("、")}</div>}
-                  <div className="text-xs text-muted-foreground">群 {t.group_id}</div>
+                  {groupId === null && <div className="text-xs text-muted-foreground">{groupName(t.group_id)}</div>}
                 </TableCell>
                 <TableCell className="max-w-xl text-sm whitespace-pre-wrap">{t.definition}</TableCell>
                 <TableCell>
@@ -473,6 +478,7 @@ function GlossaryDialog({
 }
 
 function Profiles({ groupId }: { groupId: number | null }) {
+  const groupName = useGroupName();
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;
@@ -513,9 +519,7 @@ function Profiles({ groupId }: { groupId: number | null }) {
               <TableRow key={`${p.group_id}:${p.user_id}`}>
                 <TableCell>
                   <div className="font-medium">{p.display_name || p.user_id}</div>
-                  <div className="font-mono text-xs text-muted-foreground">
-                    {p.user_id} · 群 {p.group_id}
-                  </div>
+                  {groupId === null && <div className="text-xs text-muted-foreground">{groupName(p.group_id)}</div>}
                   {p.opted_out && <Badge variant="outline">已退出记忆</Badge>}
                 </TableCell>
                 {/* TableCell defaults to nowrap; long profile text must wrap and stay short (full text in 查看). */}
@@ -565,6 +569,7 @@ function Profiles({ groupId }: { groupId: number | null }) {
 }
 
 function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_id: number; onClose: () => void }) {
+  const groupName = useGroupName();
   const profile = useQuery(getProfileOptions({ path: { group_id, user_id } }));
   const removeFact = useMutation(deleteProfileFactMutation());
   const p = profile.data;
@@ -573,7 +578,10 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {p?.display_name || user_id} <span className="font-mono text-sm text-muted-foreground">群 {group_id}</span>
+            {p?.display_name || user_id}{" "}
+            <span className="text-sm font-normal text-muted-foreground">
+              {groupName(group_id)} · <span className="font-mono">{user_id}</span>
+            </span>
           </DialogTitle>
         </DialogHeader>
         <QueryState isLoading={profile.isLoading} error={profile.error} />

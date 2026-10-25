@@ -2,7 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
 import { getInvocationOptions, listInvocationsOptions } from "@/client/@tanstack/react-query.gen";
-import { Empty, Field, GroupSelect, Hint, OptionSelect, PageHeader, Pager, Pre, QueryState } from "@/components/common";
+import {
+  Empty,
+  Field,
+  GroupSelect,
+  Hint,
+  OptionSelect,
+  PageHeader,
+  Pager,
+  Pre,
+  QueryState,
+  useGroupName,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -20,11 +31,11 @@ function statusVariant(status: string): "default" | "destructive" | "outline" | 
   return "outline";
 }
 
-function TraceLink({ url, id }: { url: string | null | undefined; id: string | null | undefined }) {
-  if (!url || !id) return <span className="text-muted-foreground">—</span>;
+function TraceLink({ url }: { url: string | null | undefined }) {
+  if (!url) return <span className="text-muted-foreground">—</span>;
   return (
-    <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs underline">
-      {id.slice(0, 16)} <ExternalLinkIcon className="size-3" />
+    <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs underline">
+      打开 <ExternalLinkIcon className="size-3" />
     </a>
   );
 }
@@ -38,6 +49,7 @@ export function InvocationsPage() {
   const list = useQuery(
     listInvocationsOptions({ query: { group_id: groupId, handler, status, limit: LIMIT, offset } }),
   );
+  const groupName = useGroupName();
   return (
     <div>
       <PageHeader title="调用记录" description="每次触发的完整记录，trace 链接打开 Grafana Tempo。" />
@@ -81,7 +93,8 @@ export function InvocationsPage() {
           <TableHeader>
             <TableRow>
               <TableHead>时间</TableHead>
-              <TableHead>群 / 用户</TableHead>
+              <TableHead>群</TableHead>
+              <TableHead>用户</TableHead>
               <TableHead>handler</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>请求</TableHead>
@@ -94,9 +107,9 @@ export function InvocationsPage() {
             {list.data.items.map((i) => (
               <TableRow key={i.id} className="cursor-pointer" onClick={() => setSelected(i.id)}>
                 <TableCell className="text-xs whitespace-nowrap">{fmtTime(i.created_at)}</TableCell>
-                <TableCell className="font-mono text-xs">
-                  {i.group_id ?? "私聊"}
-                  <div className="text-muted-foreground">{i.user_id}</div>
+                <TableCell className="max-w-36 truncate text-xs">{i.group_id != null ? groupName(i.group_id) : "私聊"}</TableCell>
+                <TableCell className="max-w-32 truncate text-xs" title={i.user_name ? `${i.user_name}（${i.user_id}）` : undefined}>
+                  {i.user_name || <span className="font-mono">{i.user_id}</span>}
                 </TableCell>
                 <TableCell className="font-mono text-xs">{i.handler}</TableCell>
                 <TableCell>
@@ -112,7 +125,7 @@ export function InvocationsPage() {
                 </TableCell>
                 <TableCell className="text-xs">{i.duration_ms != null ? `${(i.duration_ms / 1000).toFixed(1)}s` : "—"}</TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  <TraceLink url={i.trace_url} id={i.trace_id} />
+                  <TraceLink url={i.trace_url} />
                 </TableCell>
               </TableRow>
             ))}
@@ -120,19 +133,55 @@ export function InvocationsPage() {
         </Table>
       )}
       {list.data && <Pager total={list.data.total} limit={LIMIT} offset={offset} onChange={setOffset} />}
-      {selected && <InvocationDialog id={selected} onClose={() => setSelected(null)} />}
+      {selected && <InvocationDialog id={selected} groupName={groupName} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
-function InvocationDialog({ id, onClose }: { id: string; onClose: () => void }) {
+type ReplyDoc = { title?: string; sections?: { content?: string }[]; sources?: { url?: string; label?: string }[] };
+
+function Reply({ reply }: { reply: Record<string, unknown> }) {
+  const r = reply as ReplyDoc;
+  if (!Array.isArray(r.sections)) return <Pre value={reply} />;
+  return (
+    <div className="grid gap-2 rounded-lg bg-muted p-3">
+      {r.title && <div className="font-medium">{r.title}</div>}
+      {r.sections.map((s, i) => (
+        <p key={i} className="whitespace-pre-wrap">
+          {s.content}
+        </p>
+      ))}
+      {!!r.sources?.length && (
+        <div className="grid gap-0.5 text-xs">
+          {r.sources.map((s, i) => (
+            <a key={i} href={s.url} target="_blank" rel="noreferrer" className="truncate underline">
+              {s.label || s.url}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvocationDialog({
+  id,
+  groupName,
+  onClose,
+}: {
+  id: string;
+  groupName: (id: number) => string;
+  onClose: () => void;
+}) {
   const detail = useQuery(getInvocationOptions({ path: { invocation_id: id } }));
   const d = detail.data;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="font-mono text-sm">{id}</DialogTitle>
+          <DialogTitle className="flex flex-wrap items-baseline gap-2 pr-6">
+            调用详情 <span className="font-mono text-xs font-normal text-muted-foreground">{id}</span>
+          </DialogTitle>
         </DialogHeader>
         <QueryState isLoading={detail.isLoading} error={detail.error} />
         {d && (
@@ -141,6 +190,9 @@ function InvocationDialog({ id, onClose }: { id: string; onClose: () => void }) 
               <Badge variant={statusVariant(d.status)}>{d.status}</Badge>
               <span className="font-mono">{d.handler}</span>
               <span className="text-muted-foreground">{fmtTime(d.created_at)}</span>
+              <span>
+                {d.group_id != null ? groupName(d.group_id) : "私聊"} · {d.user_name || d.user_id}
+              </span>
               {d.trace_url && (
                 <Button size="sm" variant="outline" asChild>
                   <a href={d.trace_url} target="_blank" rel="noreferrer">
@@ -149,7 +201,7 @@ function InvocationDialog({ id, onClose }: { id: string; onClose: () => void }) 
                 </Button>
               )}
             </div>
-            <div>
+            <div className="whitespace-pre-wrap break-words">
               <span className="text-muted-foreground">请求：</span>
               {d.request_text || "—"}
             </div>
@@ -171,7 +223,7 @@ function InvocationDialog({ id, onClose }: { id: string; onClose: () => void }) 
             {d.reply && (
               <>
                 <div className="font-medium">回复</div>
-                <Pre value={d.reply} />
+                <Reply reply={d.reply} />
               </>
             )}
             {d.moderation.length > 0 && (
