@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --locked --no-default-groups --no-install-project
 
-COPY pyproject.toml uv.lock README.md alembic.ini ./
+COPY pyproject.toml uv.lock README.md LICENSE alembic.ini ./
 COPY migration ./migration
 COPY yggdrasil ./yggdrasil
 RUN --mount=type=cache,target=/root/.cache/uv \
