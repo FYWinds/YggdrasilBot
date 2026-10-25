@@ -1,11 +1,13 @@
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 
 from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web import Extracted, detect_wall, paginate, read_url
+from yggdrasil.tools.ssrf import GuardedResponse
+from yggdrasil.tools.web import Extracted, detect_block, detect_wall, paginate, read_url
 
 type Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -18,6 +20,26 @@ ARTICLE = "<html><head><title>测试文章</title></head><body><article>{}</arti
 
 def _client(handler: Handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.fixture
+def serve(monkeypatch: pytest.MonkeyPatch) -> Callable[[Handler], None]:
+    """Route the generic path's impersonated fetch to ``handler``."""
+
+    def install(handler: Handler) -> None:
+        @asynccontextmanager
+        async def fake(url: str, **_: object) -> AsyncGenerator[GuardedResponse]:
+            resp = handler(httpx.Request("GET", url))
+
+            async def chunks() -> AsyncIterator[bytes]:
+                yield resp.content
+
+            lowered = {k.lower(): v for k, v in resp.headers.items()}
+            yield GuardedResponse(url, resp.status_code, lowered, resp.charset_encoding, chunks())
+
+        monkeypatch.setattr(web, "impersonated_stream", fake)
+
+    return install
 
 
 # --------------------------------------------------------------------------- pagination
@@ -72,6 +94,23 @@ def test_long_article_mentioning_keywords_is_not_a_wall() -> None:
     assert detect_wall("短信验证的实现", text) is None
 
 
+@pytest.mark.parametrize(
+    ("title", "text"),
+    [
+        ("Reddit - Dive into anything", "You've been blocked by network security.\nTo continue, log in."),
+        ("Pardon Our Interruption", ""),
+        ("", "Something went wrong. Try reloading."),
+    ],
+)
+def test_detects_block_pages(title: str, text: str) -> None:
+    assert detect_block(title, text) is not None
+
+
+def test_long_article_mentioning_access_denied_is_not_a_block() -> None:
+    text = "How we debugged an access denied error in S3. " + "Body text. " * 300
+    assert detect_block("S3 permissions", text) is None
+
+
 # --------------------------------------------------------------------------- read_url
 
 
@@ -108,53 +147,75 @@ async def test_read_url_page_out_of_range(fake_fetch: list[str]) -> None:
 # --------------------------------------------------------------------------- generic fetch
 
 
-async def test_html_article_is_extracted() -> None:
-    async with _client(lambda r: httpx.Response(200, html=ARTICLE)) as client:
-        result = await web._fetch_generic(client, "https://example.com/post", None, 5)
+async def test_html_article_is_extracted(serve: Callable[[Handler], None]) -> None:
+    serve(lambda r: httpx.Response(200, html=ARTICLE))
+    result = await web._fetch_generic("https://example.com/post", None, 5)
     assert result.via == "http"
     assert result.title == "测试文章"
     assert "这是第 3 段正文" in result.text
 
 
-async def test_gbk_page_without_header_charset_uses_meta() -> None:
+async def test_gbk_page_without_header_charset_uses_meta(serve: Callable[[Handler], None]) -> None:
     html = ARTICLE.replace("<head>", '<head><meta charset="gbk">').encode("gbk")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=html, headers={"content-type": "text/html"})
-
-    async with _client(handler) as client:
-        result = await web._fetch_generic(client, "https://example.com/post", None, 5)
+    serve(lambda r: httpx.Response(200, content=html, headers={"content-type": "text/html"}))
+    result = await web._fetch_generic("https://example.com/post", None, 5)
     assert "这是第 3 段正文" in result.text
 
 
-async def test_verification_page_raises() -> None:
+async def test_verification_page_raises(serve: Callable[[Handler], None]) -> None:
     wall = (
         "<html><head><title>微信公众平台</title></head><body>"
         "<p>环境异常</p><p>当前环境异常，完成验证后即可继续访问。</p></body></html>"
     )
-    async with _client(lambda r: httpx.Response(200, html=wall)) as client:
-        with pytest.raises(ToolError, match="验证"):
-            await web._fetch_generic(client, "https://mp.weixin.qq.com/s/abc", None, 5)
+    serve(lambda r: httpx.Response(200, html=wall))
+    with pytest.raises(ToolError, match="验证"):
+        await web._fetch_generic("https://mp.weixin.qq.com/s/abc", None, 5)
+
+
+BLOCK_PAGE = (
+    "<html><head><title>Reddit - Dive into anything</title></head><body>"
+    "<p>You've been blocked by network security.</p><p>To continue, log in to your Reddit account.</p></body></html>"
+)
+
+
+async def test_block_page_without_browser_raises(serve: Callable[[Handler], None]) -> None:
+    serve(lambda r: httpx.Response(200, html=BLOCK_PAGE))
+    with pytest.raises(ToolError, match="拒绝"):
+        await web._fetch_generic("https://www.reddit.com/r/x/comments/1/y/", None, 5)
+
+
+async def test_block_page_escalates_to_browser_without_keeping_it(
+    serve: Callable[[Handler], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Extracted | None] = []
+
+    async def render(url: str, ws_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
+        seen.append(fallback)
+        return Extracted(url, "thread", "rendered", "browser")
+
+    monkeypatch.setattr(web, "_render_or_raise", render)
+    serve(lambda r: httpx.Response(200, html=BLOCK_PAGE))
+    result = await web._fetch_generic("https://www.reddit.com/r/x/comments/1/y/", "ws://browser", 5)
+    assert result.via == "browser"
+    assert seen == [None]  # the block page must never come back as the plain-HTTP fallback
 
 
 @pytest.mark.parametrize(
     ("status", "ctype"),
     [(200, "image/png"), (200, "video/mp4"), (200, "application/x-msdownload"), (404, "text/html")],
 )
-async def test_non_page_responses_raise(status: int, ctype: str) -> None:
-    async with _client(lambda r: httpx.Response(status, content=b"\x00", headers={"content-type": ctype})) as client:
-        with pytest.raises(ToolError):
-            await web._fetch_generic(client, "https://example.com/x", None, 5)
+async def test_non_page_responses_raise(serve: Callable[[Handler], None], status: int, ctype: str) -> None:
+    serve(lambda r: httpx.Response(status, content=b"\x00", headers={"content-type": ctype}))
+    with pytest.raises(ToolError):
+        await web._fetch_generic("https://example.com/x", None, 5)
 
 
-async def test_pdf_link_is_parsed_as_document() -> None:
+async def test_pdf_link_is_parsed_as_document(serve: Callable[[Handler], None]) -> None:
     from tests.tools.test_docs import _text_pdf
 
     pdf = _text_pdf("Linked PDF body")
-    async with _client(
-        lambda r: httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
-    ) as client:
-        result = await web._fetch_generic(client, "https://example.com/files/paper.pdf", None, 5)
+    serve(lambda r: httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"}))
+    result = await web._fetch_generic("https://example.com/files/paper.pdf", None, 5)
     assert result.via == "document:pdf"
     assert result.title == "paper.pdf"
     assert "Linked PDF body" in result.text
@@ -236,3 +297,88 @@ async def test_github_issue_pages_use_generic_path() -> None:
 
     async with _client(handler) as client:
         assert await web._github(client, httpx.URL("https://github.com/o/r/issues/1")) is None
+
+
+HN_ITEM = {
+    "id": 1,
+    "title": "Show HN: a thing",
+    "author": "op",
+    "points": 42,
+    "created_at_i": 1792774748,
+    "url": "https://example.com/thing",
+    "text": None,
+    "children": [
+        {
+            "author": "alice",
+            "text": "First paragraph.<p>Second paragraph.",
+            "children": [{"author": "bob", "text": "Reply &amp; more", "children": []}],
+        },
+        {"author": None, "text": None, "children": []},
+        {"author": None, "text": None, "children": [{"author": "carol", "text": "orphan reply", "children": []}]},
+    ],
+}
+
+
+def test_hacker_news_thread_keeps_tree_shape_through_pagination() -> None:
+    text = web.format_hacker_news(HN_ITEM)
+    assert text.startswith("作者 op · 42 分 · 5 条评论 · 2026-10-24 00:59\n链接：https://example.com/thing")
+    thread = "- alice：First paragraph.\n  Second paragraph.\n  - bob：Reply & more"
+    orphan = "- [已删除]：[已删除]\n  - carol：orphan reply"
+    # Deleted leaves vanish; deleted parents stay so their replies keep context. Indents survive pagination.
+    assert paginate(text, 10_000) == [text]
+    assert f"\n\n{thread}\n\n{orphan}" in paginate(text, 10_000)[0]
+
+
+async def test_hacker_news_item_uses_algolia_and_other_pages_fall_back() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=HN_ITEM)
+
+    async with _client(handler) as client:
+        result = await web._hacker_news(client, httpx.URL("https://news.ycombinator.com/item?id=1"))
+        assert await web._hacker_news(client, httpx.URL("https://news.ycombinator.com/newest")) is None
+    assert seen == ["https://hn.algolia.com/api/v1/items/1"]
+    assert isinstance(result, Extracted)
+    assert (result.title, result.final_url) == ("Show HN: a thing", "https://news.ycombinator.com/item?id=1")
+    assert result.via == "hackernews"
+
+
+TME_POST = """<html><body><div class="tgme_widget_message">
+<div class="tgme_widget_message_author"><a class="tgme_widget_message_owner_name"><span>Chan</span></a></div>
+<div class="tgme_widget_message_reply"><div class="tgme_widget_message_text js-message_reply_text">quoted</div></div>
+<a class="tgme_widget_message_photo_wrap"></a>
+<div class="tgme_widget_message_text js-message_text">line one<br/>line <b>two</b> <i class="emoji"><b>🔥</b></i></div>
+<span class="tgme_widget_message_views">1.2K</span>
+<time datetime="2026-10-21T13:48:45+00:00" class="datetime">Oct 21</time>
+</div></body></html>"""
+
+
+def test_telegram_embed_yields_post_text_not_the_quoted_reply() -> None:
+    result = web.parse_telegram_embed(TME_POST, "https://t.me/chan/7")
+    assert result is not None
+    assert result.text == (
+        "频道：Chan\n发布时间：2026-10-21 21:48\n浏览：1.2K\n\nline one  \nline **two** 🔥\n\n附件：图片 1 张"
+    )
+
+
+def test_telegram_embed_error_and_empty_pages() -> None:
+    with pytest.raises(ToolError, match="不存在"):
+        web.parse_telegram_embed('<div class="tgme_widget_message_error">Post not found</div>', "https://t.me/c/1")
+    assert web.parse_telegram_embed("<html><body><p>Telegram</p></body></html>", "https://t.me/c/1") is None
+
+
+async def test_telegram_adapter_fetches_embed_for_post_links_only() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, html=TME_POST)
+
+    async with _client(handler) as client:
+        result = await web._telegram_post(client, httpx.URL("https://t.me/s/chan/7"))
+        assert await web._telegram_post(client, httpx.URL("https://t.me/chan")) is None
+    assert seen == ["https://t.me/chan/7?embed=1&mode=tme"]
+    assert isinstance(result, Extracted)
+    assert result.final_url == "https://t.me/chan/7"

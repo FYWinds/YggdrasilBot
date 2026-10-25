@@ -1,9 +1,9 @@
 """``read_url``: fetch a web page (or a document link) and return readable, paginated text.
 
-Pipeline: site adapter (official APIs) -> httpx + trafilatura (readability-lxml +
-markdownify fallback) -> remote Playwright render when the page is a JS app or
-blocks plain clients. Verification / login walls raise :class:`ToolError` instead of
-returning junk; we never try to defeat captchas.
+Pipeline: site adapter (official APIs, over httpx) -> Chrome-impersonating curl_cffi + trafilatura
+(readability-lxml + markdownify fallback) -> remote Playwright render when the page is a JS app,
+answers 401/403/429/503, or is an anti-bot block page. Verification / login walls raise
+:class:`ToolError` instead of returning junk; we never try to defeat captchas.
 """
 
 import asyncio
@@ -16,12 +16,14 @@ from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import unquote
 
 import httpx
+from curl_cffi.requests.exceptions import RequestException as CurlRequestError
+from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.telemetry import TRACER
 from yggdrasil.tools.docs import decode_html, parse_document
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.ssrf import check_url, guarded_client
+from yggdrasil.tools.ssrf import GuardedResponse, check_url, guarded_client, impersonated_stream
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -29,10 +31,11 @@ USER_AGENT = (
 # Official JSON APIs (Bilibili in particular) answer 412 to browser user agents without a full
 # cookie fingerprint, but serve honest non-browser clients normally.
 API_USER_AGENT = "yggdrasil-bot/0.1"
+_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8"
 _HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Language": _ACCEPT_LANGUAGE,
 }
 _MB = 1024 * 1024
 MAX_HTML_BYTES = 5 * _MB
@@ -60,11 +63,24 @@ _WALL_KEYWORDS = (
     "captcha",
     "verify you are human",
     "are you a robot",
+    "you're not a robot",
+    "prove your humanity",
     "unusual traffic",
     "just a moment...",
     "attention required",
     "checking your browser",
     "enable javascript and cookies",
+)
+# Anti-bot block and error pages that answer with a normal-looking page (often HTTP 200). Same short-page rule as
+# the walls; unlike a wall, a real browser may still get through, so plain-HTTP hits escalate to it once.
+_BLOCK_KEYWORDS = (
+    "blocked by network security",  # reddit
+    "you've been blocked",
+    "you have been blocked",
+    "access denied",
+    "request blocked",
+    "pardon our interruption",  # Akamai
+    "something went wrong",  # generic SPA error shells (e.g. behind Cloudflare)
 )
 _BROWSER_RETRY_STATUSES = frozenset({401, 403, 429, 503})
 _BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
@@ -102,7 +118,7 @@ class PageResult:
     truncated: bool
     """More content exists beyond this page (later pages, or the source hit a size cap)."""
     via: str
-    """``http`` / ``browser`` / ``document:<kind>`` / adapter name (``bilibili`` / ``github``)."""
+    """``http`` / ``browser`` / ``document:<kind>`` / adapter name (``bilibili``, ``github``, ``hackernews``, ...)."""
 
 
 @dataclass(slots=True)
@@ -209,13 +225,22 @@ def _pack(parts: Iterable[str], sep: str, limit: int) -> list[str]:
 
 def detect_wall(title: str, text: str) -> str | None:
     """Return the matched keyword if the page looks like a captcha / verification / login wall."""
+    return _match_short_page(_WALL_KEYWORDS, title, text)
+
+
+def detect_block(title: str, text: str) -> str | None:
+    """Return the matched keyword if the page looks like an anti-bot block or error page."""
+    return _match_short_page(_BLOCK_KEYWORDS, title, text)
+
+
+def _match_short_page(keywords: tuple[str, ...], title: str, text: str) -> str | None:
     lowered_title = title.lower()
-    for keyword in _WALL_KEYWORDS:
+    for keyword in keywords:
         if keyword in lowered_title:
             return keyword
     if len(text) <= _WALL_MAX_CHARS:
         lowered = text.lower()
-        for keyword in _WALL_KEYWORDS:
+        for keyword in keywords:
             if keyword in lowered:
                 return keyword
     return None
@@ -224,6 +249,11 @@ def detect_wall(title: str, text: str) -> str | None:
 def _raise_if_wall(extracted: Extracted) -> None:
     if keyword := detect_wall(extracted.title, extracted.text):
         raise ToolError(f"该页面需要人机验证或登录（检测到「{keyword}」），无法读取")
+
+
+def _raise_if_blocked(extracted: Extracted) -> None:
+    if keyword := detect_block(extracted.title, extracted.text):
+        raise ToolError(f"网站拒绝了自动访问（检测到「{keyword}」），无法读取")
 
 
 def extract_html(html: str, url: str) -> tuple[str, str]:
@@ -272,8 +302,8 @@ def _readability(html: str) -> tuple[str, str]:
 
 
 async def _fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
-    async with guarded_client(timeout=timeout_s, headers=_HEADERS) as client:
-        try:
+    try:
+        async with guarded_client(timeout=timeout_s, headers=_HEADERS) as client:
             for _ in range(3):
                 adapter = _ADAPTERS.get(httpx.URL(url).host.lower())
                 if adapter is None:
@@ -285,59 +315,73 @@ async def _fetch(url: str, browser_ws_url: str | None, timeout_s: float) -> Extr
                 if result is not None:
                     return result
                 break
-            return await _fetch_generic(client, url, browser_ws_url, timeout_s)
-        except httpx.TooManyRedirects as exc:
-            raise ToolError("重定向次数过多") from exc
-        except httpx.TimeoutException as exc:
-            raise ToolError("网页加载超时") from exc
-        except httpx.HTTPError as exc:
-            raise ToolError("网页无法访问") from exc
+        return await _fetch_generic(url, browser_ws_url, timeout_s)
+    except httpx.TooManyRedirects as exc:
+        raise ToolError("重定向次数过多") from exc
+    except (httpx.TimeoutException, CurlTimeout) as exc:
+        raise ToolError("网页加载超时") from exc
+    except (httpx.HTTPError, CurlRequestError) as exc:
+        raise ToolError("网页无法访问") from exc
 
 
-async def _fetch_generic(
-    client: httpx.AsyncClient, url: str, browser_ws_url: str | None, timeout_s: float
-) -> Extracted:
-    async with client.stream("GET", url) as resp:
-        final_url = str(resp.url)
-        if resp.status_code >= 400:
-            if resp.status_code in _BROWSER_RETRY_STATUSES and browser_ws_url:
-                await resp.aclose()
-                return await _render_or_raise(final_url, browser_ws_url, timeout_s, None)
-            raise ToolError(f"网页返回错误（HTTP {resp.status_code}）")
-        ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        filename = _filename(resp, final_url)
-        if ctype.startswith("image/"):
-            raise ToolError("这是图片链接，不是网页，请用看图工具查看")
-        if ctype.startswith(("audio/", "video/")):
-            raise ToolError("这是音视频文件链接，无法读取内容")
-        is_doc = ctype.startswith(_DOC_TYPES) or (ctype in _HTML_TYPES and _ext(filename) in _DOC_EXTS)
-        if not is_doc and ctype not in _HTML_TYPES:
-            raise ToolError(f"不支持的内容类型：{ctype}")
-        limit = MAX_DOC_BYTES if is_doc else MAX_HTML_BYTES
-        declared = resp.headers.get("content-length", "")
-        if is_doc and declared.isdigit() and int(declared) > limit:
-            raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
-        data, capped = await _read_capped(resp.aiter_bytes(), limit)
-        charset = resp.charset_encoding
+@dataclass(slots=True)
+class _Body:
+    filename: str
+    is_doc: bool
+    limit: int
+    data: bytes
+    capped: bool
+    charset: str | None
 
-    if is_doc or data[:1024].lstrip().startswith(b"%PDF-"):
-        if capped:
-            raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
-        doc = await asyncio.to_thread(parse_document, data, filename)
+
+async def _fetch_generic(url: str, browser_ws_url: str | None, timeout_s: float) -> Extracted:
+    # curl_cffi owns the browser header set (UA, client hints) so it matches the impersonated TLS fingerprint.
+    async with impersonated_stream(url, timeout=timeout_s, headers={"Accept-Language": _ACCEPT_LANGUAGE}) as resp:
+        final_url, status = resp.url, resp.status_code
+        body = await _download(resp) if status < 400 else None
+    if body is None:
+        if status in _BROWSER_RETRY_STATUSES and browser_ws_url:
+            return await _render_or_raise(final_url, browser_ws_url, timeout_s, None)
+        raise ToolError(f"网页返回错误（HTTP {status}）")
+
+    if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
+        if body.capped:
+            raise ToolError(f"文件超过 {body.limit // _MB} MB，无法读取")
+        doc = await asyncio.to_thread(parse_document, body.data, body.filename)
         if not doc.text.strip():
             if doc.scanned_pages:
                 raise ToolError("这是扫描版 PDF，没有文字层，无法直接读取")
             raise ToolError("文档中没有可读取的文字")
-        return Extracted(final_url, filename, doc.text, f"document:{doc.kind}", capped=doc.truncated)
+        return Extracted(final_url, body.filename, doc.text, f"document:{doc.kind}", capped=doc.truncated)
 
-    title, text = await asyncio.to_thread(extract_html, decode_html(data, charset), final_url)
-    extracted = Extracted(final_url, title, text, "http", capped=capped)
+    title, text = await asyncio.to_thread(extract_html, decode_html(body.data, body.charset), final_url)
+    extracted = Extracted(final_url, title, text, "http", capped=body.capped)
     _raise_if_wall(extracted)
-    if len(text) < _MIN_TEXT_CHARS and browser_ws_url:
-        return await _render_or_raise(final_url, browser_ws_url, timeout_s, extracted)
+    blocked = detect_block(title, text) is not None
+    if (blocked or len(text) < _MIN_TEXT_CHARS) and browser_ws_url:
+        return await _render_or_raise(final_url, browser_ws_url, timeout_s, None if blocked else extracted)
+    _raise_if_blocked(extracted)
     if not text:
         raise ToolError("页面没有可读取的正文")
     return extracted
+
+
+async def _download(resp: GuardedResponse) -> _Body:
+    ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    filename = _filename(resp.headers, resp.url)
+    if ctype.startswith("image/"):
+        raise ToolError("这是图片链接，不是网页，请用看图工具查看")
+    if ctype.startswith(("audio/", "video/")):
+        raise ToolError("这是音视频文件链接，无法读取内容")
+    is_doc = ctype.startswith(_DOC_TYPES) or (ctype in _HTML_TYPES and _ext(filename) in _DOC_EXTS)
+    if not is_doc and ctype not in _HTML_TYPES:
+        raise ToolError(f"不支持的内容类型：{ctype}")
+    limit = MAX_DOC_BYTES if is_doc else MAX_HTML_BYTES
+    declared = resp.headers.get("content-length", "")
+    if is_doc and declared.isdigit() and int(declared) > limit:
+        raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
+    data, capped = await _read_capped(resp.chunks, limit)
+    return _Body(filename, is_doc, limit, data, capped, resp.charset)
 
 
 async def _read_capped(chunks: AsyncIterator[bytes], limit: int) -> tuple[bytes, bool]:
@@ -349,8 +393,8 @@ async def _read_capped(chunks: AsyncIterator[bytes], limit: int) -> tuple[bytes,
     return bytes(buf), False
 
 
-def _filename(resp: httpx.Response, final_url: str) -> str:
-    disposition = resp.headers.get("content-disposition", "")
+def _filename(headers: dict[str, str], final_url: str) -> str:
+    disposition = headers.get("content-disposition", "")
     if match := re.search(r"filename\*=(?:UTF-8'')?([^;]+)", disposition, re.IGNORECASE):
         return unquote(match.group(1).strip().strip('"'))
     if match := re.search(r'filename="?([^";]+)"?', disposition, re.IGNORECASE):
@@ -377,6 +421,7 @@ async def _render_or_raise(url: str, ws_url: str, timeout_s: float, fallback: Ex
     title, text = await asyncio.to_thread(extract_html, html, final_url)
     extracted = Extracted(final_url, title, text, "browser")
     _raise_if_wall(extracted)
+    _raise_if_blocked(extracted)
     if not text:
         if fallback is not None and fallback.text:
             return fallback
@@ -617,3 +662,138 @@ async def _github_repo(client: httpx.AsyncClient, owner: str, repo: str, ref: st
     if readme:
         lines += ["", "README：", "", readme.strip()]
     return Extracted(f"https://github.com/{full_name}", full_name, "\n".join(lines), "github")
+
+
+def _fragment_text(html: str) -> str:
+    """Markdown text of a small trusted-structure HTML fragment (comment bodies, post text)."""
+    from markdownify import markdownify
+
+    text = markdownify(html, heading_style="ATX", strip=["img"], escape_underscores=False, escape_asterisks=False)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _cn_time(epoch: int) -> str:
+    return f"{datetime.fromtimestamp(epoch, UTC).astimezone(_CN_TZ):%Y-%m-%d %H:%M}"
+
+
+@site_adapter("news.ycombinator.com")
+async def _hacker_news(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    item_id = url.params.get("id", "")
+    if url.path != "/item" or not item_id.isdigit():
+        return None
+    resp = await client.get(f"https://hn.algolia.com/api/v1/items/{item_id}", headers={"User-Agent": API_USER_AGENT})
+    if resp.status_code == 404:
+        raise ToolError("Hacker News 条目不存在")
+    if resp.status_code != 200:
+        return None
+    item = resp.json()
+    return Extracted(
+        final_url=f"https://news.ycombinator.com/item?id={item_id}",
+        title=item.get("title") or f"Hacker News 评论（{item.get('author') or '未知'}）",
+        text=format_hacker_news(item),
+        via="hackernews",
+    )
+
+
+def format_hacker_news(item: dict) -> str:
+    """The item header, its text and the whole comment tree, indented by depth."""
+    comments = _hn_count(item) - 1
+    facts = [f"作者 {item.get('author') or '未知'}"]
+    if item.get("points") is not None:
+        facts.append(f"{item['points']} 分")
+    facts.append(f"{comments} 条评论")
+    if created := item.get("created_at_i"):
+        facts.append(_cn_time(int(created)))
+    lines = [" · ".join(facts)]
+    if link := item.get("url"):
+        lines.append(f"链接：{link}")
+    if body := item.get("text"):
+        lines += ["", _fragment_text(body)]
+    if comments:
+        lines += ["", "评论："]
+        for child in item.get("children") or []:
+            thread: list[str] = []
+            _hn_comment_lines(child, 0, thread)
+            if thread:
+                lines += ["", *thread]  # blank lines only between threads: pagination strips paragraph indents
+    return "\n".join(lines)
+
+
+def _hn_count(node: dict) -> int:
+    return 1 + sum(_hn_count(child) for child in node.get("children") or [])
+
+
+def _hn_comment_lines(node: dict, depth: int, out: list[str]) -> None:
+    children = node.get("children") or []
+    text = node.get("text")
+    if text is None and not children:
+        return  # deleted leaf
+    body = _fragment_text(text) if text is not None else "[已删除]"
+    pad = "  " * depth
+    head, *rest = [line for line in body.splitlines() if line.strip()] or [""]
+    out.append(f"{pad}- {node.get('author') or '[已删除]'}：{head}")
+    out.extend(f"{pad}  {line}" for line in rest)
+    for child in children:
+        _hn_comment_lines(child, depth + 1, out)
+
+
+_TME_POST_RE = re.compile(r"^/(?:s/)?([A-Za-z0-9_]{3,32})/(\d+)/?$")
+
+
+@site_adapter("t.me", "telegram.me", "www.t.me")
+async def _telegram_post(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    match = _TME_POST_RE.match(url.path)
+    if match is None:
+        return None
+    channel, post = match.groups()
+    resp = await client.get(f"https://t.me/{channel}/{post}", params={"embed": "1", "mode": "tme"})
+    if resp.status_code != 200:
+        return None
+    return parse_telegram_embed(resp.text, f"https://t.me/{channel}/{post}")
+
+
+def parse_telegram_embed(html: str, final_url: str) -> Extracted | None:
+    """Turn a t.me ``?embed=1`` widget page into the post text, or ``None`` if it has nothing to show."""
+    from lxml import html as lxml_html
+
+    root = lxml_html.fromstring(html)
+
+    def first_text(xpath: str) -> str:
+        nodes = root.xpath(xpath)
+        return nodes[0].text_content().strip() if nodes else ""
+
+    if root.xpath("//*[contains(@class, 'tgme_widget_message_error')]"):
+        raise ToolError("Telegram 消息不存在，或频道不公开")
+    owner = first_text("//*[contains(@class, 'tgme_widget_message_owner_name')]")
+    lines = [f"频道：{owner}"] if owner else []
+    if stamps := root.xpath("//time[@datetime]/@datetime"):
+        lines.append(f"发布时间：{datetime.fromisoformat(stamps[0]).astimezone(_CN_TZ):%Y-%m-%d %H:%M}")
+    if views := first_text("//*[contains(@class, 'tgme_widget_message_views')]"):
+        lines.append(f"浏览：{views}")
+    found = False
+    if texts := root.xpath("//div[contains(@class, 'js-message_text')]"):
+        for emoji in texts[0].xpath(".//i[contains(@class, 'emoji')]"):
+            for inner in emoji.findall("b"):
+                inner.drop_tag()
+            emoji.drop_tag()
+        lines += ["", _fragment_text(str(lxml_html.tostring(texts[0], encoding="unicode")))]
+        found = True
+    media = []
+    if photos := root.xpath("//*[contains(@class, 'tgme_widget_message_photo_wrap')]"):
+        media.append(f"图片 {len(photos)} 张")
+    if root.xpath("//*[contains(@class, 'tgme_widget_message_video_player')]"):
+        media.append("视频")
+    if document := first_text("//*[contains(@class, 'tgme_widget_message_document_title')]"):
+        media.append(f"文件「{document}」")
+    if media:
+        lines += ["", "附件：" + "、".join(media)]
+        found = True
+    preview_title = first_text("//*[contains(@class, 'link_preview_title')]")
+    preview_desc = first_text("//*[contains(@class, 'link_preview_description')]")
+    if preview_title or preview_desc:
+        site = first_text("//*[contains(@class, 'link_preview_site_name')]")
+        lines += ["", f"链接预览（{site}）：" if site else "链接预览：", *filter(None, (preview_title, preview_desc))]
+        found = True
+    if not found:
+        return None
+    return Extracted(final_url, f"{owner} 的 Telegram 消息" if owner else "Telegram 消息", "\n".join(lines), "telegram")

@@ -1,7 +1,12 @@
 import ipaddress
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
+import curl_cffi
 import httpx
 import pytest
+from curl_cffi import CurlOpt
 
 from yggdrasil.tools import ssrf
 from yggdrasil.tools.errors import ToolError
@@ -125,3 +130,104 @@ async def test_redirect_chain_is_capped(monkeypatch: pytest.MonkeyPatch) -> None
     async with ssrf.guarded_client() as client:
         with pytest.raises(httpx.TooManyRedirects):
             await client.get("https://example.com/loop")
+
+
+class _CurlResponse:
+    def __init__(self, status_code: int, primary_ip: str, headers: dict[str, str] | None = None) -> None:
+        self.status_code = status_code
+        self.primary_ip = primary_ip
+        self.headers = httpx.Headers(headers)  # case-insensitive, like curl_cffi's Headers
+        self.charset_encoding = None
+
+    async def aiter_content(self) -> AsyncGenerator[bytes]:
+        yield b"body"
+
+
+@dataclass
+class _Upstream:
+    """Stands in for curl: records each hop's URL and DNS pins, answers from ``routes``."""
+
+    routes: dict[str, _CurlResponse]
+    hops: list[tuple[str, list[str]]] = field(default_factory=list)
+
+    def session(self, **_: object) -> "_Upstream._Session":
+        return _Upstream._Session(self)
+
+    class _Session:
+        def __init__(self, upstream: "_Upstream") -> None:
+            self.upstream = upstream
+            self.curl_options: dict[CurlOpt, object] = {}
+
+        async def __aenter__(self) -> "_Upstream._Session":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        @asynccontextmanager
+        async def stream(self, method: str, url: str, **_: object) -> AsyncGenerator[_CurlResponse]:
+            pins = self.curl_options[CurlOpt.RESOLVE]
+            assert isinstance(pins, list)
+            self.upstream.hops.append((url, pins))
+            yield self.upstream.routes[url]
+
+
+@pytest.fixture
+def curl(monkeypatch: pytest.MonkeyPatch) -> _Upstream:
+    upstream = _Upstream(routes={})
+    monkeypatch.setattr(curl_cffi, "AsyncSession", upstream.session)
+    return upstream
+
+
+async def test_impersonated_redirects_are_vetted_and_pinned_per_hop(
+    fake_dns: dict[str, list[str]], curl: _Upstream
+) -> None:
+    fake_dns["a.example.com"] = ["93.184.215.14"]
+    fake_dns["b.example.com"] = ["93.184.215.15", "2606:2800:21f:cb07:6820:80da:af6b:8b2c"]
+    curl.routes = {
+        "https://a.example.com/x": _CurlResponse(302, "93.184.215.14", {"Location": "https://b.example.com/y"}),
+        "https://b.example.com/y": _CurlResponse(200, "2606:2800:21f:cb07:6820:80da:af6b:8b2c", {"Content-Type": "t"}),
+    }
+    async with ssrf.impersonated_stream("https://a.example.com/x") as resp:
+        body = b"".join([chunk async for chunk in resp.chunks])
+    assert curl.hops == [
+        ("https://a.example.com/x", ["a.example.com:443:93.184.215.14"]),
+        ("https://b.example.com/y", ["b.example.com:443:93.184.215.15,[2606:2800:21f:cb07:6820:80da:af6b:8b2c]"]),
+    ]
+    assert (resp.url, resp.status_code, body) == ("https://b.example.com/y", 200, b"body")
+    assert resp.headers == {"content-type": "t"}
+
+
+async def test_impersonated_redirect_to_private_target_is_never_requested(
+    fake_dns: dict[str, list[str]], curl: _Upstream
+) -> None:
+    fake_dns["a.example.com"] = ["93.184.215.14"]
+    fake_dns["internal.example.com"] = ["10.43.0.10"]
+    curl.routes = {
+        "https://a.example.com/x": _CurlResponse(302, "93.184.215.14", {"Location": "http://internal.example.com/"}),
+    }
+    with pytest.raises(ToolError, match="内网"):
+        async with ssrf.impersonated_stream("https://a.example.com/x"):
+            pass
+    assert [url for url, _ in curl.hops] == ["https://a.example.com/x"]
+
+
+async def test_impersonated_rejects_connection_to_unvetted_address(
+    fake_dns: dict[str, list[str]], curl: _Upstream
+) -> None:
+    fake_dns["a.example.com"] = ["93.184.215.14"]
+    curl.routes = {"https://a.example.com/": _CurlResponse(200, "127.0.0.1")}
+    with pytest.raises(ToolError):
+        async with ssrf.impersonated_stream("https://a.example.com/"):
+            pass
+
+
+async def test_impersonated_redirect_chain_is_capped(fake_dns: dict[str, list[str]], curl: _Upstream) -> None:
+    fake_dns["a.example.com"] = ["93.184.215.14"]
+    curl.routes = {
+        f"https://a.example.com/{n}": _CurlResponse(302, "93.184.215.14", {"Location": f"/{n + 1}"}) for n in range(10)
+    }
+    with pytest.raises(ToolError, match="重定向"):
+        async with ssrf.impersonated_stream("https://a.example.com/0"):
+            pass
+    assert len(curl.hops) == ssrf.MAX_REDIRECTS + 1

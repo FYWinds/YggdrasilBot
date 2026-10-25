@@ -9,6 +9,9 @@ Two layers:
   resolves, vets and then connects to the vetted IP itself. Pinning the IP at
   connect time closes the DNS-rebinding gap between check and connect; TLS still
   uses the original host name for SNI / certificate verification.
+* :func:`impersonated_stream` does the same for curl_cffi (browser TLS / HTTP/2
+  fingerprint): redirects are followed here, one vetted hop at a time, and each
+  hop's vetted addresses are pinned with ``CURLOPT_RESOLVE``.
 
 The cluster NetworkPolicy egress rules are the second line of defence.
 """
@@ -18,13 +21,17 @@ import ipaddress
 import re
 import socket
 import ssl
-from collections.abc import Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import certifi
 import httpcore
 import httpx
 
 from yggdrasil.tools.errors import ToolError
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 type IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
@@ -275,3 +282,69 @@ def guarded_client(
         headers=headers,
         trust_env=False,
     )
+
+
+@dataclass(slots=True)
+class GuardedResponse:
+    """A streamed response from :func:`impersonated_stream`; ``headers`` keys are lower-case."""
+
+    url: str
+    status_code: int
+    headers: dict[str, str]
+    charset: str | None
+    chunks: AsyncIterator[bytes]
+
+
+@asynccontextmanager
+async def impersonated_stream(
+    url: str,
+    *,
+    timeout: float = 20,  # noqa: ASYNC109 - per-request network timeout, not a cancel scope
+    headers: dict[str, str] | None = None,
+) -> AsyncGenerator[GuardedResponse]:
+    """GET ``url`` with a Chrome-impersonating client; every hop is SSRF-checked and IP-pinned.
+
+    Raises :class:`ToolError` for unsafe hops or more than :data:`MAX_REDIRECTS` redirects;
+    transport failures surface as ``curl_cffi`` ``RequestException``.
+    """
+    from curl_cffi import AsyncSession, CurlOpt
+
+    # One session per call: cookies set on redirect hops carry over, pins never leak between calls.
+    async with AsyncSession(impersonate="chrome", trust_env=False, allow_redirects=False, timeout=timeout) as session:
+        for _ in range(MAX_REDIRECTS + 1):
+            parsed, host, literal = _vet_static(_parse(url))
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            addrs = [literal] if literal is not None else await resolve_public(host, port)
+            pins = [] if literal is not None else [f"{host}:{port}:" + ",".join(_curl_addr(a) for a in addrs)]
+            session.curl_options = {
+                CurlOpt.RESOLVE: pins,
+                CurlOpt.PROTOCOLS_STR: "http,https",
+                CurlOpt.REDIR_PROTOCOLS_STR: "http,https",
+            }
+            async with session.stream("GET", str(parsed), headers=headers) as resp:
+                if _peer(resp.primary_ip) not in addrs:
+                    raise ToolError("不允许访问内网或保留地址")
+                location = resp.headers.get("location")
+                if resp.status_code in _REDIRECT_STATUSES and location:
+                    url = str(parsed.join(location))
+                    continue
+                yield GuardedResponse(
+                    url=str(parsed),
+                    status_code=resp.status_code,
+                    headers={k.lower(): v for k, v in resp.headers.items() if v is not None},
+                    charset=resp.charset_encoding,
+                    chunks=resp.aiter_content(),
+                )
+                return
+        raise ToolError("重定向次数过多")
+
+
+def _curl_addr(addr: IPAddress) -> str:
+    return f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
+
+
+def _peer(primary_ip: str) -> IPAddress | None:
+    try:
+        return ipaddress.ip_address(primary_ip.split("%", 1)[0])
+    except ValueError:
+        return None
