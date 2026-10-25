@@ -434,12 +434,13 @@ async def test_github_blob_maps_to_raw() -> None:
     assert result.text == "print('hi')"
 
 
-async def test_github_issue_pages_use_generic_path() -> None:
+async def test_github_non_repo_pages_use_generic_path() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("adapter should not fetch")
 
     async with _client(handler) as client:
-        assert await web._github(client, httpx.URL("https://github.com/o/r/issues/1")) is None
+        for url in ("https://github.com/o/r/issues/1", "https://github.com/advisories/GHSA-9v8h-qqgm-4m35"):
+            assert await web._github(client, httpx.URL(url)) is None
 
 
 HN_ITEM = {

@@ -628,8 +628,9 @@ def _cn_count(value: int) -> str:
 
 
 _GITHUB_RESERVED = frozenset(
-    "about collections enterprise explore features login marketplace notifications orgs pricing search settings "
-    "sponsors topics trending users".split()
+    "about advisories apps codespaces collections copilot dashboard enterprise events explore features issues login "
+    "marketplace new notifications organizations orgs pricing pulls readme search security settings solutions "
+    "sponsors team topics trending users".split()
 )
 
 
