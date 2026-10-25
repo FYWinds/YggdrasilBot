@@ -1,4 +1,4 @@
-"""Collected stickers: listing, the original image, and enable/disable."""
+"""Collected stickers: listing, details, the original image, and enable/disable."""
 
 from datetime import datetime
 from typing import Literal
@@ -9,7 +9,7 @@ from sqlalchemy import ScalarSelect, func, or_, select
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Page, change, not_found
-from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
+from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
 
 router = APIRouter(prefix="/stickers", tags=["stickers"])
@@ -40,6 +40,22 @@ class StickerOut(BaseModel):
     enabled: bool
     first_seen: datetime
     last_seen: datetime
+
+
+class StickerGroupUsage(BaseModel):
+    group_id: int
+    group_name: str
+    count: int
+    last_seen: datetime
+
+
+class StickerDetail(StickerOut):
+    ref: str  # image: the md5 QQ uses as file name; mface: "<package_id>:<emoji_id>"
+    emoji_id: str | None
+    package_id: str | None
+    key: str
+    tag_attempts: int
+    groups: list[StickerGroupUsage]  # most used first
 
 
 class StickerEnabledIn(BaseModel):
@@ -86,6 +102,7 @@ def _group_count() -> ScalarSelect[int]:
 async def list_stickers(
     kind: StickerKind | None = None,
     status: StickerStatus | None = None,
+    include_failed: bool = Query(False, description="without a status filter, also list failed stickers"),
     enabled: bool | None = None,
     flagged: bool | None = None,
     group_id: int | None = None,
@@ -99,6 +116,8 @@ async def list_stickers(
         cond.append(Sticker.kind == kind)
     if status is not None:
         cond.append(Sticker.status == status)
+    elif not include_failed:
+        cond.append(Sticker.status != "failed")
     if enabled is not None:
         cond.append(Sticker.enabled.is_(enabled))
     if group_id is not None:
@@ -124,6 +143,32 @@ async def list_stickers(
         )
         items = [_out(st, n) for st, n in rows.all()]
     return Page[StickerOut](items=items, total=total)
+
+
+@router.get("/{sticker_id}")
+async def get_sticker(sticker_id: int) -> StickerDetail:
+    async with get_session() as s:
+        st = await s.get(Sticker, sticker_id)
+        if st is None:
+            raise not_found("表情包")
+        rows = (
+            await s.execute(
+                select(StickerUsage.group_id, Group.name, StickerUsage.count, StickerUsage.last_seen)
+                .outerjoin(Group, Group.group_id == StickerUsage.group_id)
+                .where(StickerUsage.sticker_id == sticker_id)
+                .order_by(StickerUsage.count.desc(), StickerUsage.group_id)
+            )
+        ).all()
+    groups = [StickerGroupUsage(group_id=g, group_name=name or "", count=n, last_seen=at) for g, name, n, at in rows]
+    return StickerDetail(
+        **_out(st, len(groups)).model_dump(),
+        ref=st.ref,
+        emoji_id=st.emoji_id,
+        package_id=st.package_id,
+        key=st.key,
+        tag_attempts=st.tag_attempts,
+        groups=groups,
+    )
 
 
 @router.get("/{sticker_id}/image", response_class=Response, responses={200: {"content": {"image/*": {}}}})

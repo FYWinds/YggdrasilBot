@@ -3141,6 +3141,18 @@
             }
           },
           {
+            "name": "include_failed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "without a status filter, also list failed stickers",
+              "default": false,
+              "title": "Include Failed"
+            },
+            "description": "without a status filter, also list failed stickers"
+          },
+          {
             "name": "enabled",
             "in": "query",
             "required": false,
@@ -3249,6 +3261,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_StickerOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stickers/{sticker_id}": {
+      "get": {
+        "tags": [
+          "stickers"
+        ],
+        "summary": "Get Sticker",
+        "operationId": "get_sticker",
+        "parameters": [
+          {
+            "name": "sticker_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Sticker Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StickerDetail"
                 }
               }
             }
@@ -6416,6 +6470,205 @@
         ],
         "title": "StatusCount"
       },
+      "StickerDetail": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/StickerKind"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StickerStatus"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "usage": {
+            "type": "string",
+            "title": "Usage"
+          },
+          "ocr_text": {
+            "type": "string",
+            "title": "Ocr Text"
+          },
+          "emotions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Emotions"
+          },
+          "unsafe_category": {
+            "type": "string",
+            "title": "Unsafe Category"
+          },
+          "tagged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagged At"
+          },
+          "seen_count": {
+            "type": "integer",
+            "title": "Seen Count"
+          },
+          "group_count": {
+            "type": "integer",
+            "title": "Group Count"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen"
+          },
+          "ref": {
+            "type": "string",
+            "title": "Ref"
+          },
+          "emoji_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emoji Id"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "tag_attempts": {
+            "type": "integer",
+            "title": "Tag Attempts"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/StickerGroupUsage"
+            },
+            "type": "array",
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "summary",
+          "status",
+          "error",
+          "mime",
+          "size_bytes",
+          "width",
+          "height",
+          "frames",
+          "description",
+          "usage",
+          "ocr_text",
+          "emotions",
+          "unsafe_category",
+          "tagged_at",
+          "seen_count",
+          "group_count",
+          "enabled",
+          "first_seen",
+          "last_seen",
+          "ref",
+          "emoji_id",
+          "package_id",
+          "key",
+          "tag_attempts",
+          "groups"
+        ],
+        "title": "StickerDetail"
+      },
       "StickerEnabledIn": {
         "properties": {
           "enabled": {
@@ -6428,6 +6681,35 @@
           "enabled"
         ],
         "title": "StickerEnabledIn"
+      },
+      "StickerGroupUsage": {
+        "properties": {
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id"
+          },
+          "group_name": {
+            "type": "string",
+            "title": "Group Name"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_id",
+          "group_name",
+          "count",
+          "last_seen"
+        ],
+        "title": "StickerGroupUsage"
       },
       "StickerKind": {
         "type": "string",

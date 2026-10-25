@@ -67,8 +67,8 @@ class Sticker(Base):
     """A sticker seen in groups, one row per distinct sticker.
 
     ``kind = 'image'``: a custom sticker (an image segment with ``sub_type`` 1). ``ref`` is the md5 QQ uses as its file
-    name; the image is saved on first sight (QQ links expire within hours) and the ``sticker`` task describes, tags and
-    moderates it. ``kind = 'mface'``: a QQ market face, ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
+    name; the image is saved on first sight (QQ links die when the rkey rotates) and the ``sticker`` task describes,
+    tags and moderates it. ``kind = 'mface'``: a QQ market face, ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
     """
 
     __tablename__ = "stickers"
@@ -93,7 +93,7 @@ class Sticker(Base):
     usage: Mapped[str] = mapped_column(Text, default="")  # when it fits to send
     ocr_text: Mapped[str] = mapped_column(Text, default="")
     emotions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
-    unsafe_category: Mapped[str] = mapped_column(Text, default="")  # set when moderation disabled it
+    unsafe_category: Mapped[str] = mapped_column(Text, default="")  # moderation flag from tagging; "" = safe
     tag_attempts: Mapped[int] = mapped_column(default=0)
     tagged_at: Mapped[datetime | None]
     seen_count: Mapped[int] = mapped_column(default=1)

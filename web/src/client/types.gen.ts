@@ -1838,6 +1838,114 @@ export type StatusCount = {
 };
 
 /**
+ * StickerDetail
+ */
+export type StickerDetail = {
+    /**
+     * Id
+     */
+    id: number;
+    kind: StickerKind;
+    /**
+     * Summary
+     */
+    summary: string;
+    status: StickerStatus;
+    /**
+     * Error
+     */
+    error: string;
+    /**
+     * Mime
+     */
+    mime: string;
+    /**
+     * Size Bytes
+     */
+    size_bytes: number | null;
+    /**
+     * Width
+     */
+    width: number | null;
+    /**
+     * Height
+     */
+    height: number | null;
+    /**
+     * Frames
+     */
+    frames: number | null;
+    /**
+     * Description
+     */
+    description: string;
+    /**
+     * Usage
+     */
+    usage: string;
+    /**
+     * Ocr Text
+     */
+    ocr_text: string;
+    /**
+     * Emotions
+     */
+    emotions: Array<string>;
+    /**
+     * Unsafe Category
+     */
+    unsafe_category: string;
+    /**
+     * Tagged At
+     */
+    tagged_at: string | null;
+    /**
+     * Seen Count
+     */
+    seen_count: number;
+    /**
+     * Group Count
+     */
+    group_count: number;
+    /**
+     * Enabled
+     */
+    enabled: boolean;
+    /**
+     * First Seen
+     */
+    first_seen: string;
+    /**
+     * Last Seen
+     */
+    last_seen: string;
+    /**
+     * Ref
+     */
+    ref: string;
+    /**
+     * Emoji Id
+     */
+    emoji_id: string | null;
+    /**
+     * Package Id
+     */
+    package_id: string | null;
+    /**
+     * Key
+     */
+    key: string;
+    /**
+     * Tag Attempts
+     */
+    tag_attempts: number;
+    /**
+     * Groups
+     */
+    groups: Array<StickerGroupUsage>;
+};
+
+/**
  * StickerEnabledIn
  */
 export type StickerEnabledIn = {
@@ -1845,6 +1953,28 @@ export type StickerEnabledIn = {
      * Enabled
      */
     enabled: boolean;
+};
+
+/**
+ * StickerGroupUsage
+ */
+export type StickerGroupUsage = {
+    /**
+     * Group Id
+     */
+    group_id: number;
+    /**
+     * Group Name
+     */
+    group_name: string;
+    /**
+     * Count
+     */
+    count: number;
+    /**
+     * Last Seen
+     */
+    last_seen: string;
 };
 
 export type StickerKind = 'image' | 'mface';
@@ -4147,6 +4277,12 @@ export type ListStickersData = {
          */
         status?: StickerStatus | null;
         /**
+         * Include Failed
+         *
+         * without a status filter, also list failed stickers
+         */
+        include_failed?: boolean;
+        /**
          * Enabled
          */
         enabled?: boolean | null;
@@ -4195,6 +4331,36 @@ export type ListStickersResponses = {
 };
 
 export type ListStickersResponse = ListStickersResponses[keyof ListStickersResponses];
+
+export type GetStickerData = {
+    body?: never;
+    path: {
+        /**
+         * Sticker Id
+         */
+        sticker_id: number;
+    };
+    query?: never;
+    url: '/stickers/{sticker_id}';
+};
+
+export type GetStickerErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetStickerError = GetStickerErrors[keyof GetStickerErrors];
+
+export type GetStickerResponses = {
+    /**
+     * Successful Response
+     */
+    200: StickerDetail;
+};
+
+export type GetStickerResponse = GetStickerResponses[keyof GetStickerResponses];
 
 export type StickerImageData = {
     body?: never;
