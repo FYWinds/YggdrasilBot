@@ -77,7 +77,7 @@ Chromium page pool, typically in well under a second.
 
 - **Moderation**: an optional Qwen3Guard classifier checks requests and replies. Suspicious replies are held for a superuser's review instead of being sent.
 - **Guardrails in code**: per-user and per-group concurrency limits with bounded queues, a daily token budget per group, usage limits per run, SSRF-guarded fetching, untrusted content fenced in prompts, and action tools only handed to a run once the speaker is allowed to use them.
-- **Dashboard**: providers and model routes, groups and per-group settings, triggers (with a live tester), versioned prompts, stickers, search providers, memory browser, review queue, sandbox workspaces and jobs, and invocation history with tool calls, token usage and latency. Every configuration change is audited.
+- **Dashboard**: providers and model routes, groups and per-group settings, triggers (with a live tester), versioned prompts, stickers, search providers, memory browser, review queue, sandbox workspaces and a searchable, permanent history of background jobs with their full event logs, and invocation history with tool calls, token usage and latency. Every configuration change is audited.
 - **Observability**: OpenTelemetry traces, metrics and logs, with invocations linked to their traces.
 - **Any model**: OpenAI- and Anthropic-compatible providers, a model route per task (chat, tldr, vision, memory, moderation, embeddings, ...) with fallbacks; model capabilities come from models.dev.
 

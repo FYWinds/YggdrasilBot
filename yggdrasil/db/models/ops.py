@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, Float, ForeignKey, Identity, Index, Text, func
+from sqlalchemy import ARRAY, Float, ForeignKey, Identity, Index, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yggdrasil.db.base import Base
@@ -102,3 +102,28 @@ class BotEvent(Base):
     status: Mapped[str | None] = mapped_column(Text)
     handled_by: Mapped[str | None] = mapped_column(Text)  # qq:<id> | email | auto
     handled_at: Mapped[datetime | None]
+
+
+class SandboxJob(Base):
+    """A finished background job (``yggdrasil.sandbox.jobs``), kept for good: running jobs live in Redis and are
+    archived here once their report is settled. ``record`` is the job's Redis hash (``Job.to_hash``), ``events`` its
+    event log oldest first (``[{"at": epoch, "text": ...}]``)."""
+
+    __tablename__ = "sandbox_jobs"
+    __table_args__ = (
+        Index("ix_sandbox_jobs_created", text("created_at DESC")),
+        Index("ix_sandbox_jobs_group_created", "group_id", text("created_at DESC")),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    group_id: Mapped[int]
+    user_id: Mapped[int]
+    kind: Mapped[str] = mapped_column(Text)  # command | agent
+    workspace: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)  # succeeded | failed | timeout | cancelled
+    created_at: Mapped[datetime]
+    ended_at: Mapped[datetime | None]
+    record: Mapped[dict[str, Any]]
+    events: Mapped[list[Any]]
+    archived_at: Mapped[datetime] = mapped_column(server_default=func.now())

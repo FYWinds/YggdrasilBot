@@ -24,7 +24,7 @@ from yggdrasil.db.models.memory import (
     UserProfile,
     UserProfileFact,
 )
-from yggdrasil.db.models.ops import BotEvent, Invocation, ModerationResult, ReviewItem
+from yggdrasil.db.models.ops import BotEvent, Invocation, ModerationResult, ReviewItem, SandboxJob
 
 __all__ = [
     "Admin",
@@ -46,6 +46,7 @@ __all__ = [
     "PromptVersion",
     "Provider",
     "ReviewItem",
+    "SandboxJob",
     "SearchProvider",
     "SettingsDoc",
     "Sticker",

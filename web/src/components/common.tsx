@@ -216,6 +216,12 @@ export function OptionSelect({
   );
 }
 
+/** Display name of a group by id: its configured name, else the number. */
+export function useGroupName(): (id: number) => string {
+  const groups = useQuery(listGroupsOptions());
+  return (id) => groups.data?.find((g) => g.group_id === id)?.name || String(id);
+}
+
 export function GroupSelect({
   value,
   onChange,

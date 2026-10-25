@@ -21,6 +21,7 @@ from yggdrasil.sandbox.jobs import (
     ACTIVE_KEY,
     START_MARGIN_S,
     Job,
+    JobEvent,
     JobOps,
     JobRunner,
     Output,
@@ -203,6 +204,20 @@ class Reports:
         return f"inv-report-{len(self.jobs)}"
 
 
+class Archive:
+    """Collects archived jobs; ``fail`` makes the next N archive calls raise (database down)."""
+
+    def __init__(self) -> None:
+        self.stored: dict[str, tuple[Job, list[JobEvent]]] = {}
+        self.fail = 0
+
+    async def __call__(self, job: Job, events: list[JobEvent]) -> None:
+        if self.fail:
+            self.fail -= 1
+            raise RuntimeError("database down")
+        self.stored[job.id] = (job, events)
+
+
 @pytest.fixture
 def clock() -> Clock:
     return Clock()
@@ -224,7 +239,12 @@ def tools() -> dict[str, Any]:
 
 
 def make_runner(
-    pod: Pod, redis: fakeredis.FakeAsyncRedis, reports: Reports, clock: Clock, tools: dict[str, Any]
+    pod: Pod,
+    redis: fakeredis.FakeAsyncRedis,
+    reports: Reports,
+    clock: Clock,
+    tools: dict[str, Any],
+    archive: Archive | None = None,
 ) -> JobRunner:
     settings = Settings(tools=ToolSettings(**tools))
     return JobRunner(
@@ -232,6 +252,7 @@ def make_runner(
         redis=lambda: redis,  # pyright: ignore[reportArgumentType, reportReturnType]
         ops=lambda backend: FakeOps(pod),
         report=reports,
+        archive=archive or Archive(),
         settings=lambda gid: settings,
         link_domain=lambda: "example.com",
         clock=clock,
@@ -239,10 +260,20 @@ def make_runner(
 
 
 @pytest.fixture
+def archive() -> Archive:
+    return Archive()
+
+
+@pytest.fixture
 def runner(
-    pod: Pod, fake_redis: fakeredis.FakeAsyncRedis, reports: Reports, clock: Clock, tools: dict[str, Any]
+    pod: Pod,
+    fake_redis: fakeredis.FakeAsyncRedis,
+    reports: Reports,
+    clock: Clock,
+    tools: dict[str, Any],
+    archive: Archive,
 ) -> JobRunner:
-    return make_runner(pod, fake_redis, reports, clock, tools)
+    return make_runner(pod, fake_redis, reports, clock, tools, archive)
 
 
 @pytest.fixture
@@ -312,6 +343,25 @@ async def test_command_job_runs_and_reports(
     assert await fake_redis.ttl(job_key(job.id)) > 0
     assert [j.id for j in await runner.for_group(GROUP)] == [job.id]
     assert [e.text for e in await runner.events(job.id)][::-1][:1] == ["已启动"]
+
+
+async def test_a_settled_job_is_archived_with_its_whole_event_log(
+    runner: JobRunner, pod: Pod, fake_redis: fakeredis.FakeAsyncRedis, archive: Archive
+) -> None:
+    job = await runner.start_command(REQ, FakeBackend(pod), workspace=WS, script="make", title="编译")
+    for i in range(60):  # more than the 40 the log used to keep
+        await runner._event(job, f"步骤 {i}")  # pyright: ignore[reportPrivateUsage]
+    archive.fail = 1
+    pod.finish(job.dir, 0, b"ok\n")
+    await _until(runner, job.id)
+    assert job.id not in archive.stored
+    assert await fake_redis.sismember(ACTIVE_KEY, job.id)  # a failed archive keeps the job polled
+
+    await runner.tick(wait=True)
+    stored, events = archive.stored[job.id]
+    assert (stored.status, stored.report) == ("succeeded", "done")
+    assert [e.text for e in events] == ["已启动", *[f"步骤 {i}" for i in range(60)], "已完成"]  # oldest first
+    assert not await fake_redis.sismember(ACTIVE_KEY, job.id)
 
 
 @pytest.mark.parametrize("tools", [{"sandbox_max_jobs": 2}])

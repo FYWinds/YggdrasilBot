@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillGroup, cancelJob, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteSearchProvider, deleteTrigger, destroyAllWorkspaces, destroyWorkspace, getGlobalSettings, getGroupSettings, getInvocation, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getSticker, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listJobs, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickers, listTopics, listTriggers, listWorkspaces, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, stickerImage, testProvider, testSearchProvider, testTrigger, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
-import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CancelJobData, CancelJobError, CancelJobResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, DestroyAllWorkspacesData, DestroyAllWorkspacesResponse, DestroyWorkspaceData, DestroyWorkspaceError, DestroyWorkspaceResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetStickerData, GetStickerError, GetStickerResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListJobsData, ListJobsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, ListWorkspacesData, ListWorkspacesResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, StickerImageData, StickerImageError, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
+import { activatePromptVersion, addAdmin, archiveSmallTopics, archiveTopic, backfillGroup, cancelJob, createEmbedSpace, createGlossaryTerm, createPromptVersion, createProvider, createSearchProvider, createTrigger, decideEvent, decideReview, deleteGlossaryTerm, deleteGroup, deleteProfile, deleteProfileFact, deleteProvider, deleteRoute, deleteSearchProvider, deleteTrigger, destroyAllWorkspaces, destroyWorkspace, getGlobalSettings, getGroupSettings, getInvocation, getJob, getMe, getProfile, getPrompt, getSettingsSchema, getStats, getSticker, getTriggerMeta, listAdmins, listDigests, listEmbedSpaces, listEvents, listGlossary, listGroups, listInvocations, listJobs, listPipelines, listProfiles, listPrompts, listProviders, listReviews, listRoutes, listSearchProviders, listStickers, listTopics, listTriggers, listWorkspaces, lockGlossaryTerm, type Options, previewPrompt, putGlobalSettings, putGroupSettings, reembedEmbedSpace, refreshProviderModels, removeAdmin, resetPrompt, setProviderAliases, setStickerEnabled, stickerImage, testProvider, testSearchProvider, testTrigger, updateGlossaryTerm, updateProvider, updateSearchProvider, updateTrigger, upsertGroup, upsertRoute } from '../sdk.gen';
+import type { ActivatePromptVersionData, ActivatePromptVersionError, ActivatePromptVersionResponse, AddAdminData, AddAdminError, AddAdminResponse, ArchiveSmallTopicsData, ArchiveSmallTopicsError, ArchiveSmallTopicsResponse, ArchiveTopicData, ArchiveTopicError, ArchiveTopicResponse, BackfillGroupData, BackfillGroupError, BackfillGroupResponse, CancelJobData, CancelJobError, CancelJobResponse, CreateEmbedSpaceData, CreateEmbedSpaceError, CreateEmbedSpaceResponse, CreateGlossaryTermData, CreateGlossaryTermError, CreateGlossaryTermResponse, CreatePromptVersionData, CreatePromptVersionError, CreatePromptVersionResponse, CreateProviderData, CreateProviderError, CreateProviderResponse, CreateSearchProviderData, CreateSearchProviderError, CreateSearchProviderResponse, CreateTriggerData, CreateTriggerError, CreateTriggerResponse, DecideEventData, DecideEventError, DecideEventResponse, DecideReviewData, DecideReviewError, DecideReviewResponse, DeleteGlossaryTermData, DeleteGlossaryTermError, DeleteGlossaryTermResponse, DeleteGroupData, DeleteGroupError, DeleteGroupResponse, DeleteProfileData, DeleteProfileError, DeleteProfileFactData, DeleteProfileFactError, DeleteProfileFactResponse, DeleteProfileResponse, DeleteProviderData, DeleteProviderError, DeleteProviderResponse, DeleteRouteData, DeleteRouteError, DeleteRouteResponse, DeleteSearchProviderData, DeleteSearchProviderError, DeleteSearchProviderResponse, DeleteTriggerData, DeleteTriggerError, DeleteTriggerResponse, DestroyAllWorkspacesData, DestroyAllWorkspacesResponse, DestroyWorkspaceData, DestroyWorkspaceError, DestroyWorkspaceResponse, GetGlobalSettingsData, GetGlobalSettingsResponse, GetGroupSettingsData, GetGroupSettingsError, GetGroupSettingsResponse, GetInvocationData, GetInvocationError, GetInvocationResponse, GetJobData, GetJobError, GetJobResponse, GetMeData, GetMeResponse, GetProfileData, GetProfileError, GetProfileResponse, GetPromptData, GetPromptError, GetPromptResponse, GetSettingsSchemaData, GetSettingsSchemaResponse, GetStatsData, GetStatsResponse, GetStickerData, GetStickerError, GetStickerResponse, GetTriggerMetaData, GetTriggerMetaResponse, ListAdminsData, ListAdminsResponse, ListDigestsData, ListDigestsError, ListDigestsResponse, ListEmbedSpacesData, ListEmbedSpacesResponse, ListEventsData, ListEventsError, ListEventsResponse, ListGlossaryData, ListGlossaryError, ListGlossaryResponse, ListGroupsData, ListGroupsResponse, ListInvocationsData, ListInvocationsError, ListInvocationsResponse, ListJobsData, ListJobsError, ListJobsResponse, ListPipelinesData, ListPipelinesResponse, ListProfilesData, ListProfilesError, ListProfilesResponse, ListPromptsData, ListPromptsResponse, ListProvidersData, ListProvidersResponse, ListReviewsData, ListReviewsError, ListReviewsResponse, ListRoutesData, ListRoutesResponse, ListSearchProvidersData, ListSearchProvidersResponse, ListStickersData, ListStickersError, ListStickersResponse, ListTopicsData, ListTopicsError, ListTopicsResponse, ListTriggersData, ListTriggersResponse, ListWorkspacesData, ListWorkspacesResponse, LockGlossaryTermData, LockGlossaryTermError, LockGlossaryTermResponse, PreviewPromptData, PreviewPromptError, PreviewPromptResponse, PutGlobalSettingsData, PutGlobalSettingsError, PutGlobalSettingsResponse, PutGroupSettingsData, PutGroupSettingsError, PutGroupSettingsResponse, ReembedEmbedSpaceData, ReembedEmbedSpaceError, ReembedEmbedSpaceResponse, RefreshProviderModelsData, RefreshProviderModelsError, RefreshProviderModelsResponse, RemoveAdminData, RemoveAdminError, RemoveAdminResponse, ResetPromptData, ResetPromptError, ResetPromptResponse, SetProviderAliasesData, SetProviderAliasesError, SetProviderAliasesResponse, SetStickerEnabledData, SetStickerEnabledError, SetStickerEnabledResponse, StickerImageData, StickerImageError, TestProviderData, TestProviderError, TestProviderResponse, TestSearchProviderData, TestSearchProviderError, TestSearchProviderResponse, TestTriggerData, TestTriggerError, TestTriggerResponse, UpdateGlossaryTermData, UpdateGlossaryTermError, UpdateGlossaryTermResponse, UpdateProviderData, UpdateProviderError, UpdateProviderResponse, UpdateSearchProviderData, UpdateSearchProviderError, UpdateSearchProviderResponse, UpdateTriggerData, UpdateTriggerError, UpdateTriggerResponse, UpsertGroupData, UpsertGroupError, UpsertGroupResponse, UpsertRouteData, UpsertRouteError, UpsertRouteResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -1568,9 +1568,9 @@ export const listJobsQueryKey = (options?: Options<ListJobsData>) => createQuery
 /**
  * List Jobs
  *
- * Background jobs of every group (running and finished within the retention), newest first.
+ * Background jobs of every group, newest first: those still running (or reporting) first, then the archive.
  */
-export const listJobsOptions = (options?: Options<ListJobsData>) => queryOptions<ListJobsResponse, DefaultError, ListJobsResponse, ReturnType<typeof listJobsQueryKey>>({
+export const listJobsOptions = (options?: Options<ListJobsData>) => queryOptions<ListJobsResponse, ListJobsError, ListJobsResponse, ReturnType<typeof listJobsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
         const { data } = await listJobs({
             ...options,
@@ -1581,6 +1581,56 @@ export const listJobsOptions = (options?: Options<ListJobsData>) => queryOptions
         return data;
     },
     queryKey: listJobsQueryKey(options)
+});
+
+export const listJobsInfiniteQueryKey = (options?: Options<ListJobsData>): QueryKey<Options<ListJobsData>> => createQueryKey('listJobs', options, true);
+
+/**
+ * List Jobs
+ *
+ * Background jobs of every group, newest first: those still running (or reporting) first, then the archive.
+ */
+export const listJobsInfiniteOptions = (options?: Options<ListJobsData>) => {
+    const opts = infiniteQueryOptions<ListJobsResponse, ListJobsError, InfiniteData<ListJobsResponse>, QueryKey<Options<ListJobsData>>, number | Pick<QueryKey<Options<ListJobsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+    // @ts-ignore
+    {
+        queryFn: async ({ pageParam, queryKey, signal }) => {
+            // @ts-ignore
+            const page: Pick<QueryKey<Options<ListJobsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
+                query: {
+                    offset: pageParam
+                }
+            };
+            const params = createInfiniteParams(queryKey, page);
+            const { data } = await listJobs({
+                ...options,
+                ...params,
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: listJobsInfiniteQueryKey(options)
+    });
+    return opts as Omit<typeof opts, 'initialData'>;
+};
+
+export const getJobQueryKey = (options: Options<GetJobData>) => createQueryKey('getJob', options);
+
+/**
+ * Get Job
+ */
+export const getJobOptions = (options: Options<GetJobData>) => queryOptions<GetJobResponse, GetJobError, GetJobResponse, ReturnType<typeof getJobQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getJob({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getJobQueryKey(options)
 });
 
 /**

@@ -1,15 +1,19 @@
-"""Sandbox workspaces (a few per QQ group, one per topic): list them, destroy one or all; background jobs: list and
-cancel."""
+"""Sandbox workspaces (a few per QQ group, one per topic): list them, destroy one or all; background jobs: list,
+details and cancel (running ones from Redis, finished ones from the permanent archive)."""
 
 from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Ok, Page, change, not_found, unavailable
-from yggdrasil.sandbox import WorkspaceInfo, WorkspaceManager, manager
+from yggdrasil.sandbox import WorkspaceInfo, WorkspaceManager, archive, manager
 from yggdrasil.sandbox.jobs import Job, JobEvent, runner
+
+type JobStatusFilter = Literal["running", "succeeded", "failed", "timeout", "cancelled"]
+_STATUSES: dict[str, tuple[str, ...]] = {"running": ("starting", "running")}
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 
@@ -68,22 +72,25 @@ class JobOut(BaseModel):
     workspace: str
     user_id: int
     title: str
-    spec: str
     status: str
     created_at: datetime
     deadline: datetime
     ended_at: datetime | None
     progress: str
-    result: str
     error: str
     model: str
     usage: JobUsageOut | None
     links: list[JobLinkOut]
-    images: list[str]
     cancel: str
     report: str
+
+
+class JobDetail(JobOut):
+    spec: str  # the script (command) or the task (agent)
+    result: str
+    images: list[str]
     report_invocation: str | None
-    events: list[JobEventOut]
+    events: list[JobEventOut]  # oldest first
 
 
 def _ts(epoch: float) -> datetime:
@@ -112,7 +119,7 @@ def _out(w: WorkspaceInfo) -> WorkspaceOut:
     )
 
 
-def _job_out(job: Job, events: list[JobEvent]) -> JobOut:
+def _job_out(job: Job) -> JobOut:
     u = job.usage
     return JobOut(
         id=job.id,
@@ -121,13 +128,11 @@ def _job_out(job: Job, events: list[JobEvent]) -> JobOut:
         workspace=job.workspace,
         user_id=job.user_id,
         title=job.title,
-        spec=job.spec[:4000],
         status=job.status,
         created_at=_ts(job.created_at),
         deadline=_ts(job.deadline),
         ended_at=_ts(job.ended_at) if job.ended_at is not None else None,
         progress=job.progress,
-        result=job.result[:4000],
         error=job.error,
         model=job.model,
         usage=JobUsageOut(
@@ -139,9 +144,17 @@ def _job_out(job: Job, events: list[JobEvent]) -> JobOut:
         if u
         else None,
         links=[JobLinkOut(port=int(x.get("port", 0)), url=str(x.get("url", ""))) for x in job.links],
-        images=[x.get("path", "") for x in job.images],
         cancel=job.cancel,
         report=job.report,
+    )
+
+
+def _job_detail(job: Job, events: list[JobEvent]) -> JobDetail:
+    return JobDetail(
+        **_job_out(job).model_dump(),
+        spec=job.spec,
+        result=job.result,
+        images=[x.get("path", "") for x in job.images],
         report_invocation=job.report_invocation or None,
         events=[JobEventOut(at=_ts(e.at), text=e.text) for e in events],
     )
@@ -186,13 +199,48 @@ async def destroy_all_workspaces(actor: Actor) -> DestroyedOut:
 
 
 @router.get("/jobs")
-async def list_jobs() -> Page[JobOut]:
-    """Background jobs of every group (running and finished within the retention), newest first."""
-    _manager()
+async def list_jobs(
+    group_id: int | None = None,
+    status: JobStatusFilter | None = None,
+    kind: Literal["command", "agent"] | None = None,
+    q: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> Page[JobOut]:
+    """Background jobs of every group, newest first: those still running (or reporting) first, then the archive."""
+    statuses = _STATUSES.get(status, (status,)) if status else None
+    active = await runner().active()
+    live = [
+        j
+        for j in active
+        if (group_id is None or j.group_id == group_id)
+        and (statuses is None or j.status in statuses)
+        and (kind is None or j.kind == kind)
+        and (not q or archive.matches(j, q))
+    ]
+    shown = live[offset : offset + limit]
+    archived, archived_total = await archive.search(
+        group_id=group_id,
+        statuses=statuses,
+        kind=kind,
+        q=q,
+        exclude={j.id for j in active},
+        limit=limit - len(shown),
+        offset=max(0, offset - len(live)),
+    )
+    return Page[JobOut](items=[_job_out(j) for j in [*shown, *archived]], total=len(live) + archived_total)
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str) -> JobDetail:
     r = runner()
-    jobs = await r.recent(limit=100)
-    items = [_job_out(j, await r.events(j.id, limit=12)) for j in jobs]
-    return Page[JobOut](items=items, total=len(items))
+    job = await r.get(job_id)
+    if job is not None:
+        return _job_detail(job, list(reversed(await r.events(job_id))))
+    archived = await archive.get(job_id)
+    if archived is None:
+        raise not_found("后台任务")
+    return _job_detail(archived.job, archived.events)
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -206,4 +254,4 @@ async def cancel_job(job_id: str, actor: Actor) -> JobOut:
         job = await r.cancel(job_id, by=f"admin:{actor}")
     if job is None:
         raise not_found("后台任务")
-    return _job_out(job, await r.events(job.id, limit=12))
+    return _job_out(job)

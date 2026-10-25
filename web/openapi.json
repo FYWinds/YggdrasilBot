@@ -3511,8 +3511,101 @@
           "sandbox"
         ],
         "summary": "List Jobs",
-        "description": "Background jobs of every group (running and finished within the retention), newest first.",
+        "description": "Background jobs of every group, newest first: those still running (or reporting) first, then the archive.",
         "operationId": "list_jobs",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JobStatusFilter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "command",
+                    "agent"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3520,6 +3613,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_JobOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandbox/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -4357,6 +4502,10 @@
             "type": "integer",
             "title": "User Id"
           },
+          "user_name": {
+            "type": "string",
+            "title": "User Name"
+          },
           "handler": {
             "type": "string",
             "title": "Handler"
@@ -4518,6 +4667,7 @@
           "created_at",
           "group_id",
           "user_id",
+          "user_name",
           "handler",
           "status",
           "request_text",
@@ -4566,6 +4716,10 @@
           "user_id": {
             "type": "integer",
             "title": "User Id"
+          },
+          "user_name": {
+            "type": "string",
+            "title": "User Name"
           },
           "handler": {
             "type": "string",
@@ -4654,6 +4808,7 @@
           "created_at",
           "group_id",
           "user_id",
+          "user_name",
           "handler",
           "status",
           "request_text",
@@ -4667,6 +4822,156 @@
           "error"
         ],
         "title": "InvocationSummary"
+      },
+      "JobDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "group_id": {
+            "type": "integer",
+            "title": "Group Id"
+          },
+          "workspace": {
+            "type": "string",
+            "title": "Workspace"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Deadline"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "progress": {
+            "type": "string",
+            "title": "Progress"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobUsageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/JobLinkOut"
+            },
+            "type": "array",
+            "title": "Links"
+          },
+          "cancel": {
+            "type": "string",
+            "title": "Cancel"
+          },
+          "report": {
+            "type": "string",
+            "title": "Report"
+          },
+          "spec": {
+            "type": "string",
+            "title": "Spec"
+          },
+          "result": {
+            "type": "string",
+            "title": "Result"
+          },
+          "images": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Images"
+          },
+          "report_invocation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Invocation"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/JobEventOut"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "group_id",
+          "workspace",
+          "user_id",
+          "title",
+          "status",
+          "created_at",
+          "deadline",
+          "ended_at",
+          "progress",
+          "error",
+          "model",
+          "usage",
+          "links",
+          "cancel",
+          "report",
+          "spec",
+          "result",
+          "images",
+          "report_invocation",
+          "events"
+        ],
+        "title": "JobDetail"
       },
       "JobEventOut": {
         "properties": {
@@ -4731,10 +5036,6 @@
             "type": "string",
             "title": "Title"
           },
-          "spec": {
-            "type": "string",
-            "title": "Spec"
-          },
           "status": {
             "type": "string",
             "title": "Status"
@@ -4765,10 +5066,6 @@
             "type": "string",
             "title": "Progress"
           },
-          "result": {
-            "type": "string",
-            "title": "Result"
-          },
           "error": {
             "type": "string",
             "title": "Error"
@@ -4794,13 +5091,6 @@
             "type": "array",
             "title": "Links"
           },
-          "images": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Images"
-          },
           "cancel": {
             "type": "string",
             "title": "Cancel"
@@ -4808,24 +5098,6 @@
           "report": {
             "type": "string",
             "title": "Report"
-          },
-          "report_invocation": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Report Invocation"
-          },
-          "events": {
-            "items": {
-              "$ref": "#/components/schemas/JobEventOut"
-            },
-            "type": "array",
-            "title": "Events"
           }
         },
         "type": "object",
@@ -4836,24 +5108,29 @@
           "workspace",
           "user_id",
           "title",
-          "spec",
           "status",
           "created_at",
           "deadline",
           "ended_at",
           "progress",
-          "result",
           "error",
           "model",
           "usage",
           "links",
-          "images",
           "cancel",
-          "report",
-          "report_invocation",
-          "events"
+          "report"
         ],
         "title": "JobOut"
+      },
+      "JobStatusFilter": {
+        "type": "string",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "timeout",
+          "cancelled"
+        ]
       },
       "JobUsageOut": {
         "properties": {

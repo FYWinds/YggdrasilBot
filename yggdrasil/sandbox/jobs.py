@@ -55,7 +55,7 @@ GROUP_PREFIX = "ygg:sandbox:jobs:group:"
 LOCK_PREFIX = "ygg:sandbox:joblock:"
 
 RETENTION_S = 7 * 86400
-"""How long a finished job (record, events) stays visible."""
+"""How long a settled job's Redis record stays (the chat ``jobs`` tool reads it); the archive keeps it for good."""
 POLL_S = 3.0
 LOCK_TTL = 120
 """Seconds a poller holds a job; longer than any single visit (helper commands time out well before)."""
@@ -69,7 +69,7 @@ REPORT_GIVE_UP_S = 3600.0
 REPORT_STALE_S = 1200.0
 """A report marked running this long ago died with its bot process; it is retried."""
 REPORT_ATTEMPTS = 3
-EVENTS_KEEP = 40
+EVENTS_KEEP = 1000  # the whole log of any realistic job; it is archived in full when the job settles
 HEAD_CHARS = 2000
 TAIL_CHARS = 6000
 MAX_SHOW_BYTES = 10 * 1024 * 1024
@@ -474,6 +474,8 @@ class ReportDeferred(Exception):
 
 Reporter = Callable[[Job], Awaitable[str | None]]
 """Runs the report invocation of a finished job; returns its invocation id."""
+Archiver = Callable[[Job, list[JobEvent]], Awaitable[None]]
+"""Stores a settled job for good with its event log (oldest first)."""
 
 
 def _default_workspaces() -> Workspaces:
@@ -494,6 +496,12 @@ async def _default_report(job: Job) -> str | None:
     return await run_report(job)
 
 
+async def _default_archive(job: Job, events: list[JobEvent]) -> None:
+    from yggdrasil.sandbox.archive import archive_job
+
+    await archive_job(job, events)
+
+
 class JobRunner:
     """Starts, lists, cancels and polls background jobs. One per process (``runner()``)."""
 
@@ -504,6 +512,7 @@ class JobRunner:
         redis: Callable[[], Redis] = redis_client,
         ops: Callable[[JobBackend], JobOps] = JobOps,
         report: Reporter = _default_report,
+        archive: Archiver = _default_archive,
         settings: Callable[[int], Settings] = _default_settings,
         link_domain: Callable[[], str | None] | None = None,
         poll_s: float = POLL_S,
@@ -513,6 +522,7 @@ class JobRunner:
         self._redis = redis
         self._ops = ops
         self._report = report
+        self._archive = archive
         self._settings = settings
         self._link_domain = link_domain or _link_domain
         self._poll_s = poll_s
@@ -542,16 +552,11 @@ class JobRunner:
         jobs = [j for j in [await self.get(i) for i in ids] if j is not None]
         return jobs
 
-    async def recent(self, *, limit: int = 100) -> list[Job]:
-        """Every group's jobs (console), newest first."""
-        jobs: list[Job] = []
-        async for key in self._r().scan_iter(match=f"{GROUP_PREFIX}*", count=100):
-            try:
-                gid = int(str(key).removeprefix(GROUP_PREFIX))
-            except ValueError:
-                continue
-            jobs += await self.for_group(gid, limit=limit)
-        return sorted(jobs, key=lambda j: j.created_at, reverse=True)[:limit]
+    async def active(self) -> list[Job]:
+        """Jobs not yet archived (running, or finished with the report still pending), newest first."""
+        ids = cast(set[str], await self._r().smembers(ACTIVE_KEY))  # pyright: ignore[reportGeneralTypeIssues]
+        jobs = [j for j in [await self.get(i) for i in ids] if j is not None]
+        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
     async def events(self, job_id: str, *, limit: int = EVENTS_KEEP) -> list[JobEvent]:
         raw = cast(list[str], await self._r().lrange(events_key(job_id), 0, limit - 1))
@@ -646,8 +651,7 @@ class JobRunner:
             ):
                 job.status, job.error, job.ended_at, job.report = "failed", error[:2000], now, "skipped"
                 await r.hdel(running_key(job.group_id), job.id)  # pyright: ignore[reportGeneralTypeIssues]
-                await r.srem(ACTIVE_KEY, job.id)  # pyright: ignore[reportGeneralTypeIssues]
-                await self._expire(job)
+                await self._settle(job)
         except Exception:
             LOGGER.exception("cleaning up the failed start of sandbox job {} failed", job.id)
 
@@ -806,6 +810,10 @@ class JobRunner:
         self._wake.set()
 
     async def run_forever(self) -> None:
+        try:
+            await self.archive_settled()
+        except Exception:
+            LOGGER.exception("archiving settled sandbox jobs failed")
         while True:
             try:
                 await self.tick()
@@ -1087,8 +1095,7 @@ class JobRunner:
             await self._save(job, "report")
             await self._bill(job)
         if job.report in ("done", "skipped", "failed", ""):
-            await self._r().srem(ACTIVE_KEY, job.id)  # pyright: ignore[reportGeneralTypeIssues]
-            await self._expire(job)
+            await self._settle(job)
             return None
         if job.report != "pending" or now < job.report_at:
             return None
@@ -1118,13 +1125,34 @@ class JobRunner:
             return
         job.report, job.report_invocation = "done", invocation or ""
         await self._save(job, "report", "report_invocation")
-        await self._r().srem(ACTIVE_KEY, job.id)  # pyright: ignore[reportGeneralTypeIssues]
-        await self._expire(job)
+        await self._settle(job)
 
-    async def _expire(self, job: Job) -> None:
+    async def _settle(self, job: Job) -> None:
+        """The report is settled: archive the job for good, then stop polling it; the Redis record stays for
+        ``RETENTION_S``. If archiving fails the job stays active and the next visit tries again."""
+        try:
+            await self._archive(job, list(reversed(await self.events(job.id))))
+        except Exception:
+            LOGGER.exception("archiving sandbox job {} failed", job.id)
+            return
         r = self._r()
+        await r.srem(ACTIVE_KEY, job.id)  # pyright: ignore[reportGeneralTypeIssues]
         await r.expire(job_key(job.id), RETENTION_S)
         await r.expire(events_key(job.id), RETENTION_S)
+
+    async def archive_settled(self) -> int:
+        """Archive settled jobs still only in Redis (those finished before the archive existed); idempotent."""
+        r = self._r()
+        active = cast(set[str], await r.smembers(ACTIVE_KEY))  # pyright: ignore[reportGeneralTypeIssues]
+        n = 0
+        async for key in r.scan_iter(match=f"{GROUP_PREFIX}*", count=100):
+            for job_id in cast(list[str], await r.zrange(key, 0, -1)):
+                job = await self.get(job_id)
+                if job is None or job.id in active or job.status not in TERMINAL:
+                    continue
+                await self._archive(job, list(reversed(await self.events(job.id))))
+                n += 1
+        return n
 
 
 def _link_domain() -> str | None:

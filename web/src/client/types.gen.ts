@@ -510,6 +510,10 @@ export type InvocationDetail = {
      */
     user_id: number;
     /**
+     * User Name
+     */
+    user_name: string;
+    /**
      * Handler
      */
     handler: string;
@@ -616,6 +620,10 @@ export type InvocationSummary = {
      */
     user_id: number;
     /**
+     * User Name
+     */
+    user_name: string;
+    /**
      * Handler
      */
     handler: string;
@@ -659,6 +667,97 @@ export type InvocationSummary = {
      * Error
      */
     error: string | null;
+};
+
+/**
+ * JobDetail
+ */
+export type JobDetail = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: string;
+    /**
+     * Group Id
+     */
+    group_id: number;
+    /**
+     * Workspace
+     */
+    workspace: string;
+    /**
+     * User Id
+     */
+    user_id: number;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Deadline
+     */
+    deadline: string;
+    /**
+     * Ended At
+     */
+    ended_at: string | null;
+    /**
+     * Progress
+     */
+    progress: string;
+    /**
+     * Error
+     */
+    error: string;
+    /**
+     * Model
+     */
+    model: string;
+    usage: JobUsageOut | null;
+    /**
+     * Links
+     */
+    links: Array<JobLinkOut>;
+    /**
+     * Cancel
+     */
+    cancel: string;
+    /**
+     * Report
+     */
+    report: string;
+    /**
+     * Spec
+     */
+    spec: string;
+    /**
+     * Result
+     */
+    result: string;
+    /**
+     * Images
+     */
+    images: Array<string>;
+    /**
+     * Report Invocation
+     */
+    report_invocation: string | null;
+    /**
+     * Events
+     */
+    events: Array<JobEventOut>;
 };
 
 /**
@@ -718,10 +817,6 @@ export type JobOut = {
      */
     title: string;
     /**
-     * Spec
-     */
-    spec: string;
-    /**
      * Status
      */
     status: string;
@@ -742,10 +837,6 @@ export type JobOut = {
      */
     progress: string;
     /**
-     * Result
-     */
-    result: string;
-    /**
      * Error
      */
     error: string;
@@ -759,10 +850,6 @@ export type JobOut = {
      */
     links: Array<JobLinkOut>;
     /**
-     * Images
-     */
-    images: Array<string>;
-    /**
      * Cancel
      */
     cancel: string;
@@ -770,15 +857,9 @@ export type JobOut = {
      * Report
      */
     report: string;
-    /**
-     * Report Invocation
-     */
-    report_invocation: string | null;
-    /**
-     * Events
-     */
-    events: Array<JobEventOut>;
 };
+
+export type JobStatusFilter = 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled';
 
 /**
  * JobUsageOut
@@ -4489,9 +4570,43 @@ export type DestroyAllWorkspacesResponse = DestroyAllWorkspacesResponses[keyof D
 export type ListJobsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Group Id
+         */
+        group_id?: number | null;
+        /**
+         * Status
+         */
+        status?: JobStatusFilter | null;
+        /**
+         * Kind
+         */
+        kind?: 'command' | 'agent' | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+        /**
+         * Offset
+         */
+        offset?: number;
+    };
     url: '/sandbox/jobs';
 };
+
+export type ListJobsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ListJobsError = ListJobsErrors[keyof ListJobsErrors];
 
 export type ListJobsResponses = {
     /**
@@ -4501,6 +4616,36 @@ export type ListJobsResponses = {
 };
 
 export type ListJobsResponse = ListJobsResponses[keyof ListJobsResponses];
+
+export type GetJobData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/sandbox/jobs/{job_id}';
+};
+
+export type GetJobErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetJobError = GetJobErrors[keyof GetJobErrors];
+
+export type GetJobResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobDetail;
+};
+
+export type GetJobResponse = GetJobResponses[keyof GetJobResponses];
 
 export type CancelJobData = {
     body?: never;
