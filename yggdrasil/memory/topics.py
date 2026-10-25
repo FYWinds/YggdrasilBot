@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
+from pydantic_ai.exceptions import IncompleteToolCall
 from sqlalchemy import ColumnElement, and_, delete, exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +35,8 @@ MAX_OPEN_TOPICS = 10
 MAX_DIRTY_PER_RUN = 10
 LINE_MAX_CHARS = 300
 TOPIC_CONTEXT_LINES = 3
+# A window whose ops don't fit in the model's output limit is retried with half the messages, down to this size.
+MIN_WINDOW_MESSAGES = 25
 
 
 class ContinueTopic(BaseModel):
@@ -181,8 +184,8 @@ async def _apply(
     return changed
 
 
-async def _segment_window(group_id: int, force: bool) -> tuple[int, int, int] | None:
-    """Process one window after the watermark. Returns (messages, new, continued) or None if not due."""
+async def _segment_window(group_id: int, force: bool, limit: int) -> tuple[int, int, int] | None:
+    """Process up to ``limit`` messages after the watermark. Returns (messages, new, continued) or None if not due."""
     snap = snapshot()
     mem = snap.settings(group_id).memory
     async with get_session() as session:
@@ -191,11 +194,12 @@ async def _segment_window(group_id: int, force: bool) -> tuple[int, int, int] | 
             select(*VIEW_COLUMNS)
             .where(Message.group_id == group_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
             .order_by(Message.id)
-            .limit(mem.topic_window_messages)
+            .limit(limit)
         )
         loaded = [MessageView(*r) for r in rows]
         window = [v for v in loaded if v.text.strip()]
-        if not loaded or (len(window) < mem.topic_min_new_messages and not force):
+        # A full window is due even with few text messages (e.g. one cut down after a truncated answer).
+        if not loaded or (len(window) < mem.topic_min_new_messages and len(loaded) < limit and not force):
             return None
         open_rows = (
             await session.scalars(
@@ -325,10 +329,21 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
         LOGGER.info("group {}: task {} not configured; only closing idle topics", group_id, TASK)
     else:
         force = bool(idle and pending)
-        for _ in range(MAX_WINDOWS_PER_RUN):
-            done = await _segment_window(group_id, force)
+        limit = mem.topic_window_messages
+        windows = 0
+        while windows < MAX_WINDOWS_PER_RUN:
+            try:
+                done = await _segment_window(group_id, force, limit)
+            except IncompleteToolCall:
+                # Too many messages for the output limit: an unhandled failure would retry the same window forever.
+                if limit <= MIN_WINDOW_MESSAGES:
+                    raise
+                limit = max(MIN_WINDOW_MESSAGES, limit // 2)
+                LOGGER.warning("group {}: topic ops hit the output limit; retrying with {} messages", group_id, limit)
+                continue
             if done is None:
                 break
+            windows += 1
             force = False
             stats["messages"] += done[0]
             stats["new"] += done[1]

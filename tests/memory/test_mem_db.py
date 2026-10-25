@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic_ai.exceptions import IncompleteToolCall
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from sqlalchemy import delete, select, update
@@ -20,7 +21,7 @@ from yggdrasil.db.models import (
     UserProfileFact,
 )
 from yggdrasil.db.session import get_session
-from yggdrasil.memory import glossary, llm, profiles, search
+from yggdrasil.memory import glossary, llm, profiles, search, topics
 from yggdrasil.memory.topics import archive_closed, consolidate_group
 
 SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP = 990003, 990004, 990002
@@ -189,6 +190,49 @@ async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, g
         assert await archive_closed(session, TOPIC_GROUP) == 1
     async with get_session() as session:
         assert await session.scalar(select(Topic.status).where(Topic.id == topic_id)) == "archived"
+
+
+async def test_consolidation_halves_windows_that_overflow_the_output(
+    insert: Insert, group_settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    group_settings({TOPIC_GROUP: {"memory": {"topic_min_new_messages": 3, "topic_window_messages": 8}}})
+    monkeypatch.setattr(topics, "MIN_WINDOW_MESSAGES", 2)
+    m = timedelta(minutes=1)
+    ids = [await insert(TOPIC_GROUP, 1 + i % 2, f"第{i}条", ago=(10 - i) * m) for i in range(8)]
+    fits = 4
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = "".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts)
+        window = [int(i) for i in re.findall(r"^#(\d+) ", prompt, re.M)]
+        if len(window) > fits:
+            raise IncompleteToolCall("Model token limit (16384) exceeded while generating a tool call")
+        op = {"op": "new", "title": "闲聊", "summary": "随便聊", "message_ids": window}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"ops": [op]}))])
+
+    async def watermark() -> int | None:
+        async with get_session() as session:
+            state = await session.get(PipelineState, ("topic", TOPIC_GROUP))
+            return state.last_msg_id if state else None
+
+    # Even the smallest window overflows: the error surfaces and nothing is skipped.
+    fits = 1
+    with llm.override_models(memory_topic=_model(respond)), pytest.raises(IncompleteToolCall):
+        await consolidate_group(TOPIC_GROUP)
+    assert await watermark() in (None, 0)
+
+    # 8 messages overflow; halved windows of 4 fit and cover everything in order.
+    fits = 4
+    with llm.override_models(memory_topic=_model(respond)):
+        stats = await consolidate_group(TOPIC_GROUP)
+    assert (stats["messages"], stats["new"]) == (8, 2)
+    assert await watermark() == ids[-1]
+    async with get_session() as session:
+        spans = (
+            await session.execute(
+                select(Topic.first_msg_id, Topic.last_msg_id).where(Topic.group_id == TOPIC_GROUP).order_by(Topic.id)
+            )
+        ).all()
+    assert [tuple(s) for s in spans] == [(ids[0], ids[3]), (ids[4], ids[7])]
 
 
 async def _topic(group_id: int, msg_ids: list[int], *, closed_ago: timedelta | None) -> int:
