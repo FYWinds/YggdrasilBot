@@ -1,4 +1,4 @@
-"""Sending replies: inline replies, merged forwards with a metadata node, reactions, stickers."""
+"""Sending replies: inline replies, merged forwards with a metadata node, reactions."""
 
 import base64
 import re
@@ -8,10 +8,8 @@ from typing import Any
 
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.core.log import LOGGER
-from yggdrasil.db.models import Sticker
-from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
-from yggdrasil.napcat.api import NapCatAPI, image_seg, markdown_seg, mface_seg, node_seg, reply_seg, text_seg
+from yggdrasil.napcat.api import NapCatAPI, image_seg, markdown_seg, node_seg, reply_seg, text_seg
 from yggdrasil.settings import InteractionSettings
 
 _MD_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
@@ -135,17 +133,6 @@ async def send_text(
         res = await api.send_group_msg(group_id=group_id, message=segments)
         _record_self(group_id, self_id, nickname, res.message_id, segments)
     return res.message_id
-
-
-async def send_sticker(api: NapCatAPI, *, group_id: int, sticker_id: int, self_id: int, nickname: str) -> bool:
-    async with get_session() as session:
-        sticker = await session.get(Sticker, sticker_id)
-    if sticker is None or not sticker.enabled:
-        return False
-    segments = [mface_seg(sticker.emoji_id, sticker.package_id, sticker.key, f"[{sticker.summary}]")]
-    res = await api.send_group_msg(group_id=group_id, message=segments)
-    _record_self(group_id, self_id, nickname, res.message_id, segments)
-    return True
 
 
 def build_nodes(

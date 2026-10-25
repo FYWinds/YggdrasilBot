@@ -30,6 +30,12 @@ class Normalized:
     urls: list[str] = field(default_factory=list)
 
 
+def is_sticker_image(data: dict[str, Any]) -> bool:
+    """Custom stickers arrive as image segments with ``sub_type`` 1 and a summary such as ``[动画表情]``."""
+    summary = str(data.get("summary") or "").strip("[]")
+    return str(data.get("sub_type")) == "1" or bool(summary and summary != "图片")
+
+
 def _card(raw: str) -> tuple[str, str | None]:
     """Title and URL of a json card (mini-program, share link, news)."""
     try:
@@ -106,11 +112,7 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
                 out.attachments.append(Attachment("mface", data))
             case "image":
                 summary = str(data.get("summary") or "").strip("[]")
-                # NapCat reports market faces as images with sub_type 1 and a summary.
-                if summary and summary != "图片":
-                    parts.append(f"[表情包:{summary}]")
-                else:
-                    parts.append("[图片]")
+                parts.append(f"[表情包:{summary or '动画表情'}]" if is_sticker_image(data) else "[图片]")
                 out.attachments.append(Attachment("image", data))
             case "record" | "video":
                 parts.append(f"[{_RECORD_TYPES[kind]}]")

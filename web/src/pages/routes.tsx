@@ -29,6 +29,7 @@ const TASK_LABELS: Record<string, string> = {
   ops: "管理操作",
   agent: "后台 agent",
   vision: "看图",
+  sticker: "表情包打标",
   moderation: "审核",
   embedding: "向量",
   rerank: "重排",

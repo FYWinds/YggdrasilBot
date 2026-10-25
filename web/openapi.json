@@ -3109,6 +3109,38 @@
         "operationId": "list_stickers",
         "parameters": [
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StickerKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StickerStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
             "name": "enabled",
             "in": "query",
             "required": false,
@@ -3122,6 +3154,38 @@
                 }
               ],
               "title": "Enabled"
+            }
+          },
+          {
+            "name": "flagged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flagged"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
             }
           },
           {
@@ -3141,14 +3205,28 @@
             }
           },
           {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "seen",
+                "recent"
+              ],
+              "type": "string",
+              "default": "seen",
+              "title": "Order"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
             "schema": {
               "type": "integer",
-              "maximum": 500,
+              "maximum": 200,
               "minimum": 1,
-              "default": 100,
+              "default": 60,
               "title": "Limit"
             }
           },
@@ -3173,6 +3251,44 @@
                   "$ref": "#/components/schemas/Page_StickerOut_"
                 }
               }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stickers/{sticker_id}/image": {
+      "get": {
+        "tags": [
+          "stickers"
+        ],
+        "summary": "Sticker Image",
+        "operationId": "sticker_image",
+        "parameters": [
+          {
+            "name": "sticker_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Sticker Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "image/*": {}
             }
           },
           "422": {
@@ -6313,35 +6429,132 @@
         ],
         "title": "StickerEnabledIn"
       },
+      "StickerKind": {
+        "type": "string",
+        "enum": [
+          "image",
+          "mface"
+        ]
+      },
       "StickerOut": {
         "properties": {
           "id": {
             "type": "integer",
             "title": "Id"
           },
-          "emoji_id": {
-            "type": "string",
-            "title": "Emoji Id"
-          },
-          "package_id": {
-            "type": "string",
-            "title": "Package Id"
-          },
-          "key": {
-            "type": "string",
-            "title": "Key"
+          "kind": {
+            "$ref": "#/components/schemas/StickerKind"
           },
           "summary": {
             "type": "string",
             "title": "Summary"
           },
+          "status": {
+            "$ref": "#/components/schemas/StickerStatus"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "usage": {
+            "type": "string",
+            "title": "Usage"
+          },
+          "ocr_text": {
+            "type": "string",
+            "title": "Ocr Text"
+          },
+          "emotions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Emotions"
+          },
+          "unsafe_category": {
+            "type": "string",
+            "title": "Unsafe Category"
+          },
+          "tagged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagged At"
+          },
           "seen_count": {
             "type": "integer",
             "title": "Seen Count"
           },
+          "group_count": {
+            "type": "integer",
+            "title": "Group Count"
+          },
           "enabled": {
             "type": "boolean",
             "title": "Enabled"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen"
           },
           "last_seen": {
             "type": "string",
@@ -6352,15 +6565,37 @@
         "type": "object",
         "required": [
           "id",
-          "emoji_id",
-          "package_id",
-          "key",
+          "kind",
           "summary",
+          "status",
+          "error",
+          "mime",
+          "size_bytes",
+          "width",
+          "height",
+          "frames",
+          "description",
+          "usage",
+          "ocr_text",
+          "emotions",
+          "unsafe_category",
+          "tagged_at",
           "seen_count",
+          "group_count",
           "enabled",
+          "first_seen",
           "last_seen"
         ],
         "title": "StickerOut"
+      },
+      "StickerStatus": {
+        "type": "string",
+        "enum": [
+          "fetching",
+          "untagged",
+          "ready",
+          "failed"
+        ]
       },
       "TaskRouteRow": {
         "properties": {

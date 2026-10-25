@@ -24,6 +24,7 @@ from yggdrasil.memory.glossary import define_group, mine_group
 from yggdrasil.memory.profiles import update_group
 from yggdrasil.memory.topics import consolidate_group
 from yggdrasil.runtime import snapshot
+from yggdrasil.stickers.tagging import tag_pending
 from yggdrasil.worker.broker import TIMEZONE, broker
 
 
@@ -116,6 +117,24 @@ async def mine_glossary() -> dict[int, Any]:
 @broker.task(task_name="define_glossary", schedule=_cron("0 5 * * *"))
 async def define_glossary() -> dict[int, Any]:
     return await for_each_group("define_glossary", define_group)
+
+
+@broker.task(task_name="tag_stickers", schedule=_cron("*/5 * * * *"))
+async def tag_stickers() -> dict[str, int]:
+    """Describe, tag and moderate newly collected stickers (task ``sticker``)."""
+    lock = redis_client().lock("ygg:job:tag_stickers", timeout=1800, blocking=False)
+    if not await lock.acquire():
+        LOGGER.info("tag_stickers: previous run still going; skipped")
+        return {}
+    try:
+        stats = await tag_pending()
+    finally:
+        try:
+            await lock.release()
+        except LockError:
+            LOGGER.warning("tag_stickers: lock expired before release")
+    LOGGER.info("tag_stickers: {}", stats)
+    return stats
 
 
 @broker.task(task_name="reembed_space")

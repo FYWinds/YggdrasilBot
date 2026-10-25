@@ -1,10 +1,11 @@
-"""Structured LLM calls for the memory pipelines (tasks ``memory_*``)."""
+"""Structured LLM calls for the background pipelines (tasks ``memory_*``, ``sticker``)."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 from pydantic_ai import Agent
+from pydantic_ai.messages import UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
@@ -48,7 +49,9 @@ def available(task: str) -> bool:
     return True
 
 
-async def run_structured[T](task: str, output_type: type[T], prompt: str) -> T:
+async def run_structured[T](
+    task: str, output_type: type[T], prompt: str | Sequence[UserContent], *, instructions: str | None = None
+) -> T:
     """One agent run with structured output; usage goes to ``ygg.llm.tokens``.
 
     Raises :class:`registry.TaskNotConfigured` when the task has no route.
@@ -60,7 +63,7 @@ async def run_structured[T](task: str, output_type: type[T], prompt: str) -> T:
     else:
         resolved = registry.chat_model(task, default_limits=_DEFAULT_LIMITS)
         model, settings, limits, label = resolved.model, resolved.settings, resolved.limits, resolved.label
-    agent = Agent(model, output_type=output_type, retries=2, name=task)
+    agent = Agent(model, output_type=output_type, instructions=instructions, retries=2, name=task)
     result = await agent.run(prompt, model_settings=settings, usage_limits=limits, event_stream_handler=drain_events)
     usage = result.usage
     registry.record_usage(

@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,10 +12,11 @@ from sqlalchemy.dialects.postgresql import insert
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import MESSAGES_INGESTED
-from yggdrasil.db.models import Message, Sticker, UserAlias
+from yggdrasil.db.models import Message, UserAlias
 from yggdrasil.db.partitions import ensure_month
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
+from yggdrasil.stickers.collect import COLLECTOR, PendingFetch, Sighting, UsageKey, record, sighting
 
 
 @dataclass(slots=True)
@@ -97,7 +99,9 @@ class IngestWriter:
             return len(batch)
 
     async def _write(self, batch: list[IncomingMessage]) -> None:
-        rows, aliases, stickers = [], {}, {}
+        rows, aliases = [], {}
+        stickers: dict[tuple[str, str], Sighting] = {}
+        sticker_usage = Counter[UsageKey]()
         for m in batch:
             segments = _strip_nul(m.segments)
             norm = normalize(segments)
@@ -118,13 +122,12 @@ class IngestWriter:
             )
             if name and not m.is_self:
                 aliases[(m.group_id, m.user_id, name)] = m.sent_at
-            for att in norm.attachments:
-                d = att.data
-                if att.kind == "mface" and d.get("emoji_id") and d.get("emoji_package_id"):
-                    stickers[(str(d["emoji_package_id"]), str(d["emoji_id"]))] = (
-                        str(d.get("key", "")),
-                        str(d.get("summary") or "").strip("[]"),
-                    )
+            if not m.is_self:
+                for segment in segments:
+                    if (s := sighting(segment)) is not None:
+                        stickers[s.kind, s.ref] = s
+                        sticker_usage[s.kind, s.ref, m.group_id] += 1
+        pending: list[PendingFetch] = []
         async with get_session() as session:
             conn = await session.connection()
             for month in {r["sent_at"].replace(day=1, hour=0, minute=0, second=0, microsecond=0) for r in rows}:
@@ -140,20 +143,8 @@ class IngestWriter:
                     )
                 )
             if stickers:
-                stmt = insert(Sticker).values(
-                    [{"package_id": p, "emoji_id": e, "key": k, "summary": s} for (p, e), (k, s) in stickers.items()]
-                )
-                await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=["package_id", "emoji_id"],
-                        set_={
-                            "seen_count": Sticker.seen_count + 1,
-                            "last_seen": func.now(),
-                            "key": stmt.excluded.key,
-                            "summary": stmt.excluded.summary,
-                        },
-                    )
-                )
+                pending = await record(session, stickers, sticker_usage)
+        COLLECTOR.schedule(pending)
 
     async def mark_recalled(self, group_id: int, qq_message_id: int) -> None:
         await self.flush()

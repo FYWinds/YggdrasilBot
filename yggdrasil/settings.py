@@ -80,6 +80,10 @@ class ModerationSettings(BaseModel):
     notify_admins_on_input_block: bool = False
     notify_group_on_review: bool = Field(default=True, description="进入审核时群里先回一句（模型生成）")
     review_expire_minutes: int = Field(default=120, ge=5)
+    disable_unsafe_stickers: bool = Field(
+        default=False,
+        description="表情包打标时被审核判为有风险的直接禁用；关闭时只做标记（全局设置，按群覆盖无效）",
+    )
 
 
 class RateLimitSettings(BaseModel):

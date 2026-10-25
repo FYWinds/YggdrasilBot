@@ -54,6 +54,7 @@ The worker turns the raw message stream into memory the agent can search:
 - **Profiles**: per-member interests and recurring themes, built from closed topics.
 - **Daily digests**: one summary of each day.
 - **Hybrid search**: BM25 with the jieba tokenizer (ParadeDB `pg_search`) plus pgvector embeddings, fused with RRF, over messages, topics, glossary and digests.
+- **Stickers**: custom stickers seen in chat are saved on first sight (QQ image links expire quickly), counted per group, and described, tagged and moderation-flagged by a vision model (`sticker` route). Flagged stickers stay enabled unless `moderation.disable_unsafe_stickers` is on.
 - **Privacy**: members can say `不要记我` / `记得我` / `忘记我` (with an @mention) to opt out, opt back in, or delete what was stored about them.
 
 ### Doing real work: sandbox workspaces
@@ -272,6 +273,7 @@ yggdrasil/
   agent/        chat / tldr agents, context building, tools
   memory/       topics, glossary, profiles, digests, hybrid search
   ingest/       message normalization and storage
+  stickers/     sticker collection and vision tagging
   tools/        web reading and search, documents, rendering client
   sandbox/      workspace manager, background jobs, inner agent
   relay/        LLM relay for agents inside workspaces

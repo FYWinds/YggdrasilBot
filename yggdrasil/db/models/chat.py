@@ -7,7 +7,18 @@ Partitions are created by the migration baseline and kept ahead by the
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Identity, Index, PrimaryKeyConstraint, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    ARRAY,
+    ForeignKey,
+    Identity,
+    Index,
+    LargeBinary,
+    PrimaryKeyConstraint,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yggdrasil.db.base import Base
@@ -53,16 +64,60 @@ class UserAlias(Base):
 
 
 class Sticker(Base):
-    """Market faces seen in groups; the quick-ack model may pick one by summary."""
+    """A sticker seen in groups, one row per distinct sticker.
+
+    ``kind = 'image'``: a custom sticker (an image segment with ``sub_type`` 1). ``ref`` is the md5 QQ uses as its file
+    name; the image is saved on first sight (QQ links expire within hours) and the ``sticker`` task describes, tags and
+    moderates it. ``kind = 'mface'``: a QQ market face, ``ref`` = ``"<package_id>:<emoji_id>"``, sent by id.
+    """
 
     __tablename__ = "stickers"
-    __table_args__ = (UniqueConstraint("package_id", "emoji_id"),)
+    __table_args__ = (UniqueConstraint("kind", "ref"), Index("ix_stickers_status", "status"))
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
-    emoji_id: Mapped[str] = mapped_column(Text)
-    package_id: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)  # image | mface
+    ref: Mapped[str] = mapped_column(Text)
+    emoji_id: Mapped[str | None] = mapped_column(Text)  # mface only
+    package_id: Mapped[str | None] = mapped_column(Text)
     key: Mapped[str] = mapped_column(Text, default="")
-    summary: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")  # QQ's own label: the market face name, "动画表情"
+    # fetching -> untagged -> ready, or failed (see ``error``); market faces are ready at once.
+    status: Mapped[str] = mapped_column(Text, default="ready")
+    error: Mapped[str] = mapped_column(Text, default="")
+    mime: Mapped[str] = mapped_column(Text, default="")
+    size_bytes: Mapped[int | None]
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    frames: Mapped[int | None]  # > 1: animated
+    description: Mapped[str] = mapped_column(Text, default="")
+    usage: Mapped[str] = mapped_column(Text, default="")  # when it fits to send
+    ocr_text: Mapped[str] = mapped_column(Text, default="")
+    emotions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    unsafe_category: Mapped[str] = mapped_column(Text, default="")  # set when moderation disabled it
+    tag_attempts: Mapped[int] = mapped_column(default=0)
+    tagged_at: Mapped[datetime | None]
     seen_count: Mapped[int] = mapped_column(default=1)
     enabled: Mapped[bool] = mapped_column(default=True)
+    first_seen: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_seen: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class StickerBlob(Base):
+    """The original image of a custom sticker (kept as sent, GIFs included); separate so listings stay light."""
+
+    __tablename__ = "sticker_blobs"
+
+    sticker_id: Mapped[int] = mapped_column(ForeignKey("stickers.id", ondelete="CASCADE"), primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class StickerUsage(Base):
+    """How often each group sends a sticker."""
+
+    __tablename__ = "sticker_usage"
+    __table_args__ = (PrimaryKeyConstraint("sticker_id", "group_id"),)
+
+    sticker_id: Mapped[int] = mapped_column(ForeignKey("stickers.id", ondelete="CASCADE"))
+    group_id: Mapped[int]
+    count: Mapped[int] = mapped_column(default=1)
     last_seen: Mapped[datetime] = mapped_column(server_default=func.now())

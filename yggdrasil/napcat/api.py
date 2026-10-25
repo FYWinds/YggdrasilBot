@@ -45,13 +45,6 @@ def image_seg(file: str) -> dict[str, Any]:
     return {"type": "image", "data": {"file": file}}
 
 
-def mface_seg(emoji_id: str, package_id: str, key: str, summary: str = "") -> dict[str, Any]:
-    return {
-        "type": "mface",
-        "data": {"emoji_id": emoji_id, "emoji_package_id": package_id, "key": key, "summary": summary},
-    }
-
-
 def markdown_seg(content: str) -> dict[str, Any]:
     return {"type": "markdown", "data": {"content": content}}
 

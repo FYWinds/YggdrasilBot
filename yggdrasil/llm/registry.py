@@ -35,6 +35,8 @@ TASKS = (
     # Agent tasks inside sandboxes (omp via the LLM relay); Anthropic-format providers only.
     "agent",
     "vision",
+    # Describes, tags and moderates collected stickers (yggdrasil.stickers.tagging).
+    "sticker",
     "moderation",
     "embedding",
     "rerank",
@@ -48,6 +50,7 @@ CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embeddi
 # Agents with tools or structured output (pydantic-ai output tools) need tool calling.
 TASK_NEEDS: dict[str, tuple[str, ...]] = {
     "vision": ("vision",),
+    "sticker": ("vision", "tools"),
     **dict.fromkeys(
         ("chat", "tldr", "ops", "agent", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"),
         ("tools",),
