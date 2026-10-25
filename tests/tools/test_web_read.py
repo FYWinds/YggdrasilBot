@@ -84,6 +84,9 @@ def test_pages_never_exceed_limit_and_keep_content() -> None:
         ("Just a moment...", "Checking if the site connection is secure"),
         ("", "Please complete the CAPTCHA to continue"),
         ("登录", "请登录后查看完整内容"),
+        # Google's cookie-consent page is long; the title alone identifies it.
+        ("继续使用 YouTube 前须知", "我们使用 Cookie 和数据来提供和维护 Google 服务。" * 60),
+        ("Before you continue to YouTube", ""),
     ],
 )
 def test_detects_walls(title: str, text: str) -> None:

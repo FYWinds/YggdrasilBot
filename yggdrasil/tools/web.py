@@ -72,6 +72,9 @@ _WALL_KEYWORDS = (
     "attention required",
     "checking your browser",
     "enable javascript and cookies",
+    # Google's EU cookie-consent interstitial (YouTube channel pages etc.); the browser shares our IP and gets it too.
+    "before you continue to",
+    "继续使用 youtube 前须知",
 )
 # Anti-bot block and error pages that answer with a normal-looking page (often HTTP 200). Same short-page rule as
 # the walls; unlike a wall, a real browser may still get through, so these escalate to the browser tier.
