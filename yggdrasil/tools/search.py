@@ -17,13 +17,14 @@ from yggdrasil.kv import redis_client
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.errors import ToolError
 
-KINDS = ("searxng", "exa")
-DEFAULT_BASE_URLS = {"exa": "https://api.exa.ai"}
+KINDS = ("searxng", "exa", "deepseek")
+DEFAULT_BASE_URLS = {"exa": "https://api.exa.ai", "deepseek": "https://api.deepseek.com"}
 TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 31, "year": 366}
 _SNIPPET_CHARS = 300
-# Exa highlights are query-picked excerpts, worth more room than SearXNG's engine snippets.
-_EXA_SNIPPET_CHARS = 600
+# Exa highlights and DeepSeek summaries are written for models: worth more room than SearXNG's engine snippets.
+_LONG_SNIPPET_CHARS = 600
+_DEEPSEEK_MAX_QUERY = 128
 _TIMEOUT = 15.0
 
 
@@ -103,6 +104,9 @@ async def search_with(
     elif p.kind == "exa":
         request = _exa_request(p, query, n, time_range)
         parse = parse_exa
+    elif p.kind == "deepseek":
+        request = _deepseek_request(p, query, n, time_range)
+        parse = parse_deepseek
     else:
         raise SearchBackendError(f"unknown kind {p.kind!r}")
     request.extensions["timeout"] = httpx.Timeout(_TIMEOUT).as_dict()
@@ -223,8 +227,49 @@ def parse_exa(payload: object, n: int) -> list[SearchHit]:
             SearchHit(
                 title=_clean(item.get("title")) or url,
                 url=url,
-                snippet=_clip(text, _EXA_SNIPPET_CHARS),
+                snippet=_clip(text, _LONG_SNIPPET_CHARS),
                 engine="exa",
+            )
+        )
+        if len(hits) >= n:
+            break
+    return hits
+
+
+# --- DeepSeek ----------------------------------------------------------------
+
+
+def _deepseek_request(p: SearchProviderInfo, query: str, n: int, time_range: str | None) -> httpx.Request:
+    suffix = ""
+    if time_range:
+        start = datetime.now(UTC) - timedelta(days=_TIME_RANGE_DAYS[time_range])
+        suffix = f" after:{start:%Y-%m-%d}"  # its query syntax; there is no date field
+    body = {"query": query[: _DEEPSEEK_MAX_QUERY - len(suffix)] + suffix, "count": n}
+    headers = {"Authorization": f"Bearer {p.api_key or ''}"}
+    return httpx.Request("POST", p.base_url + "/v1/tools/search", json=body, headers=headers)
+
+
+def parse_deepseek(payload: object, n: int) -> list[SearchHit]:
+    results = payload.get("results") if isinstance(payload, dict) else None
+    hits: list[SearchHit] = []
+    seen: set[str] = set()
+    for item in results if isinstance(results, list) else ():
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not _is_web_url(url) or (key := _dedupe_key(url)) in seen:
+            continue
+        seen.add(key)
+        text = _clean(item.get("summary")) or _clean(item.get("snippet"))
+        date = item.get("date")
+        if isinstance(date, str) and len(date) >= 10:
+            text = f"[{date[:10]}] {text}".strip()
+        hits.append(
+            SearchHit(
+                title=_clean(item.get("title")) or url,
+                url=url,
+                snippet=_clip(text, _LONG_SNIPPET_CHARS),
+                engine="deepseek",
             )
         )
         if len(hits) >= n:

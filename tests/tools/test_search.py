@@ -51,9 +51,9 @@ EXA_PAYLOAD = {
 def _provider(
     kind: str, pid: int = 1, *, enabled: bool = True, limit: int | None = None, **params: Any
 ) -> SearchProviderInfo:
-    base = {"searxng": "http://searxng:8080", "exa": "https://api.exa.ai"}[kind]
+    base = {"searxng": "http://searxng:8080", "exa": "https://api.exa.ai", "deepseek": "https://api.deepseek.com"}
     return SearchProviderInfo(
-        pid, f"{kind}{pid}", kind, base, "k" if kind == "exa" else None, enabled, pid, limit, params
+        pid, f"{kind}{pid}", kind, base[kind], None if kind == "searxng" else "k", enabled, pid, limit, params
     )
 
 
@@ -116,6 +116,43 @@ async def test_exa_request_and_parse() -> None:
     assert hits[0].snippet == "[2026-10-09] 本文介绍了 Python 3.15 的新增特性。 … lazy import ..."
     assert hits[1].title == "https://github.com/python/cpython"  # falls back to the URL
     assert len(hits[1].snippet) == 600
+
+
+async def test_deepseek_request_and_parse() -> None:
+    seen: list[httpx.Request] = []
+    payload = {
+        "results": [
+            {
+                "title": "DeepSeek V4 发布",
+                "url": "https://example.com/v4",
+                "snippet": "short",
+                "summary": "DeepSeek 发布了 V4\n模型。",
+                "date": "2026-06-01T00:00:00+00:00",
+            },
+            {"title": "dup", "url": "http://www.example.com/v4/", "summary": "same page"},
+            {"title": "", "url": "https://example.org/x", "snippet": "only a snippet", "date": None},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=payload)
+
+    providers = [_provider("deepseek")]
+    async with _client(handler) as client:
+        hits = await web_search("q" * 200, providers, n=5, time_range="week", client=client, reserve=_always)
+
+    request = seen[0]
+    body = json.loads(request.content)
+    assert (request.url.path, request.headers["authorization"], body["count"]) == ("/v1/tools/search", "Bearer k", 5)
+    # The date filter is query syntax, and the whole query stays within the API's 128 characters.
+    query, _, date = body["query"].partition(" after:")
+    assert (query, len(body["query"])) == ("q" * (128 - len(" after:") - len(date)), 128)
+    assert date.startswith("20")
+    assert [(h.title, h.snippet) for h in hits] == [
+        ("DeepSeek V4 发布", "[2026-06-01] DeepSeek 发布了 V4 模型。"),
+        ("https://example.org/x", "only a snippet"),
+    ]
 
 
 async def test_pool_falls_through_failure_and_empty_in_priority_order() -> None:

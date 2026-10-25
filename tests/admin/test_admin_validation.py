@@ -198,8 +198,9 @@ async def test_search_provider_key_rules_and_default_endpoint(
 ) -> None:
     name = f"pytest-{uuid.uuid4().hex[:8]}"
     secret = f"exa-{uuid.uuid4().hex}"
-    keyless = await client.post("/api/search-providers", json={"name": name, "kind": "exa"})
-    assert keyless.status_code == 422
+    for keyed in ("exa", "deepseek"):
+        keyless = await client.post("/api/search-providers", json={"name": name, "kind": keyed})
+        assert keyless.status_code == 422
     no_url = await client.post("/api/search-providers", json={"name": name, "kind": "searxng"})
     assert no_url.status_code == 422
 

@@ -5994,7 +5994,8 @@
         "type": "string",
         "enum": [
           "searxng",
-          "exa"
+          "exa",
+          "deepseek"
         ]
       },
       "SearchProviderIn": {

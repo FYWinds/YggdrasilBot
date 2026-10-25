@@ -19,7 +19,9 @@ from yggdrasil.tools.search import DEFAULT_BASE_URLS, SearchBackendError, monthl
 
 router = APIRouter(prefix="/search-providers", tags=["search"])
 
-type SearchKind = Literal["searxng", "exa"]
+type SearchKind = Literal["searxng", "exa", "deepseek"]
+
+_KEYED = {"exa": "Exa", "deepseek": "DeepSeek"}
 
 
 class SearchProviderOut(BaseModel):
@@ -40,7 +42,8 @@ class SearchProviderOut(BaseModel):
 class SearchProviderIn(BaseModel):
     name: str = Field(min_length=1)
     kind: SearchKind
-    # Empty uses the kind's public endpoint (exa: https://api.exa.ai); searxng needs its own.
+    # Empty uses the kind's public endpoint (exa: https://api.exa.ai, deepseek: https://api.deepseek.com);
+    # searxng needs its own.
     base_url: str = Field(default="", pattern=r"^(https?://.*)?$")
     # Empty / omitted keeps the stored key on update.
     api_key: str | None = None
@@ -119,8 +122,8 @@ def _apply(p: SearchProvider, body: SearchProviderIn) -> None:
         p.api_key_enc = None
     elif body.api_key:
         p.api_key_enc = encrypt(body.api_key.strip())
-    if body.kind == "exa" and not p.api_key_enc:
-        raise unprocessable("Exa 需要 API key")
+    if body.kind in _KEYED and not p.api_key_enc:
+        raise unprocessable(f"{_KEYED[body.kind]} 需要 API key")
 
 
 def _detail(p: SearchProvider, body: SearchProviderIn) -> dict[str, Any]:

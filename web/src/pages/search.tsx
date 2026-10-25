@@ -60,6 +60,13 @@ const KINDS: {
     limit: 1300,
   },
   {
+    value: "deepseek",
+    label: "DeepSeek（也给 read_url 远程抓取用）",
+    url: "留空使用 https://api.deepseek.com",
+    params: {},
+    limit: null,
+  },
+  {
     value: "searxng",
     label: "SearXNG",
     url: "自建实例地址，例如 http://searxng:8080",
@@ -264,7 +271,7 @@ function SearchProviderDialog({
             hint={
               provider?.api_key_masked
                 ? `当前 ${provider.api_key_masked}；留空保持不变`
-                : form.kind === "exa"
+                : form.kind === "exa" || form.kind === "deepseek"
                   ? "必填"
                   : "可留空"
             }
@@ -305,7 +312,7 @@ function SearchProviderDialog({
           </div>
           <Field
             label="参数"
-            hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}'
+            hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek：不需要参数'
           >
             <JsonEditor
               rows={3}
