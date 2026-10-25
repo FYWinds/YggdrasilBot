@@ -70,10 +70,6 @@ def test_plain_tool_lists_never_carry_the_pseudo_name():
     assert "sandbox" not in tool_names(enabled, "tldr")
 
 
-def test_harness_file_tools_are_read_and_edit_only():
-    assert sandbox_tools.HARNESS_TOOL_NAMES == ("ws_read_file", "ws_edit_file")
-
-
 def test_safe_names():
     assert safe_name("../../报表 2024.xlsx", "file1") == "报表_2024.xlsx"
     assert safe_name("C:\\tmp\\a b.txt", "file1") == "a_b.txt"

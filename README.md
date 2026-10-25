@@ -246,9 +246,10 @@ uv run alembic upgrade head && uv run pytest -q
 ```
 
 The tests run against real services; set `POSTGRES_*`, `REDIS_URL` and `YGG_SECRET_KEY` to disposable
-instances. Sandbox conformance tests also need a sandboxd container (`sandbox/Dockerfile`, target
-`sandboxd-test`) and `YGG_TEST_SANDBOXD_REST` / `_GRPC` / `_TOKEN`; render tests need `YGG_TEST_RENDER_URL`.
-They are skipped otherwise. CI (`.github/workflows/ci.yaml`) runs all of it.
+instances. Bot-side sandbox tests use an in-memory sandboxd. The tests of the sandbox image itself (in-sandbox
+helpers, backend conformance) need a sandboxd container (`sandbox/Dockerfile`, target `sandboxd-test`) and
+`YGG_TEST_SANDBOXD_REST` / `_GRPC` / `_TOKEN`; render tests need `YGG_TEST_RENDER_URL`. They are skipped otherwise.
+CI (`.github/workflows/ci.yaml`) runs the image tests in the `sandbox-v*` release job, everything else on every push.
 
 After changing the admin API, regenerate the dashboard client:
 

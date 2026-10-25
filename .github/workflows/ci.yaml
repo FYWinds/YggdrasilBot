@@ -42,37 +42,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --locked
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      # Test sandbox (target `sandboxd-test` of sandbox/Dockerfile: sandboxd, Python + ipykernel and the /opt/ygg
-      # helpers) for the sandbox conformance and in-sandbox helper tests.
-      - name: Build sandbox test image
-        uses: docker/build-push-action@v6
-        with:
-          context: sandbox
-          file: sandbox/Dockerfile
-          target: sandboxd-test
-          load: true
-          tags: ygg-sbx-test:ci
-          cache-from: type=gha,scope=sandboxd-test
-          cache-to: type=gha,mode=max,scope=sandboxd-test
-      - name: Start sandboxd
-        run: |
-          token="$(openssl rand -hex 32)"
-          echo "::add-mask::$token"
-          digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
-          docker run -d --name ygg-sbx-test -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 \
-            ygg-sbx-test:ci --root-dir=/workspace "--auth-token-sha256=$digest"
-          for _ in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:18080/v1/health && break
-            sleep 1
-          done
-          curl -fsS http://127.0.0.1:18080/v1/health
-          {
-            echo "YGG_TEST_SANDBOXD_REST=http://127.0.0.1:18080"
-            echo "YGG_TEST_SANDBOXD_GRPC=127.0.0.1:19090"
-            echo "YGG_TEST_SANDBOXD_TOKEN=$token"
-          } >> "$GITHUB_ENV"
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run basedpyright
@@ -120,7 +89,9 @@ jobs:
           cache-from: type=gha,scope=bot
           cache-to: type=gha,mode=max,scope=bot
 
-  # Sandbox workspace image (sandbox/), only on sandbox-vX.Y.Z tags.
+  # Sandbox workspace image (sandbox/), only on sandbox-vX.Y.Z tags. The tests that need a real sandboxd (in-sandbox
+  # helpers, backend conformance) run here against this commit's image instead of on every push: the image only
+  # changes with these tags, and the bot-side sandbox tests use an in-memory sandboxd.
   sandbox:
     needs: check
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sandbox-v')
@@ -130,7 +101,35 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
       - uses: docker/setup-buildx-action@v3
+      # Target `sandboxd-test`: sandboxd, Python + ipykernel and the /opt/ygg helpers.
+      - name: Build sandbox test image
+        uses: docker/build-push-action@v6
+        with:
+          context: sandbox
+          file: sandbox/Dockerfile
+          target: sandboxd-test
+          load: true
+          tags: ygg-sbx-test:ci
+          cache-from: type=gha,scope=sandboxd-test
+          cache-to: type=gha,mode=max,scope=sandboxd-test
+      - name: Test against sandboxd
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+          docker run -d --name ygg-sbx-test -p 127.0.0.1:18080:8080 -p 127.0.0.1:19090:9090 \
+            ygg-sbx-test:ci --root-dir=/workspace "--auth-token-sha256=$digest"
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/v1/health && break
+            sleep 1
+          done
+          export YGG_TEST_SANDBOXD_REST=http://127.0.0.1:18080 YGG_TEST_SANDBOXD_GRPC=127.0.0.1:19090
+          export YGG_TEST_SANDBOXD_TOKEN="$token"
+          export YGG_SECRET_KEY="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          uv run pytest -q tests/sandbox/test_helpers_*.py tests/sandbox/test_sandbox_conformance.py
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}

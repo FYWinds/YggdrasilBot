@@ -1,41 +1,49 @@
-"""WorkspaceManager / Session flows against a real sandboxd, with a fake Kubernetes API and in-process Redis.
-
-Needs the same YGG_TEST_SANDBOXD_* variables as the conformance suite; skipped otherwise. The fake API answers
-SandboxClaim / Sandbox / Service / IngressRoute calls and reports every claim as Ready on pod IP 127.0.0.1,
-which the manager maps onto the local sandboxd.
-"""
+"""WorkspaceManager / Session flows with a fake Kubernetes API, in-process Redis and an in-memory sandboxd (files
+per claim): what is checked here is the manager's bookkeeping, not sandboxd itself."""
 
 import re
 import time
 from typing import Any
 
 import fakeredis
+import httpx
 import pytest
 
-from tests.sandbox.helpers import HAVE_SANDBOXD, NO_SANDBOXD, SANDBOXD_TOKEN, FakeKube
+from tests.sandbox.helpers import FakeKube, MemorySandboxd
 from yggdrasil.sandbox import SandboxError, WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint
 from yggdrasil.sandbox.k8s import KubeClient
 from yggdrasil.sandbox.state import ws_key
 from yggdrasil.settings import ToolSettings
 
-pytestmark = pytest.mark.skipif(not HAVE_SANDBOXD, reason=NO_SANDBOXD)
-
 GROUP = 10001
 WS = "notes"
 
 
 @pytest.fixture
-def mgr(sandboxd: Endpoint, kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> WorkspaceManager:
-    return WorkspaceManager(
-        token=SANDBOXD_TOKEN,
+def pods(monkeypatch: pytest.MonkeyPatch) -> MemorySandboxd:
+    pods = MemorySandboxd()
+    pods.install(monkeypatch)
+    return pods
+
+
+@pytest.fixture
+def mgr(pods: MemorySandboxd, kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> WorkspaceManager:
+    manager = WorkspaceManager(
+        token="test",
         namespace="ns",
         warmpool="pool",
         link_domain="links.example.com",
         kube=kube_client,
         redis=lambda: fake_redis,
-        endpoint=lambda _ip: sandboxd,
+        endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
     )
+
+    async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
+        return True
+
+    manager._healthy = healthy  # pyright: ignore[reportAttributeAccessIssue]
+    return manager
 
 
 def _cfg(**kw: Any) -> ToolSettings:
@@ -54,8 +62,7 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
     assert opened.created
     assert not session.used
     assert kube.claims() == []
-    result = await session.backend.run("echo hi > in-ws.txt && pwd", shell=True)
-    assert result.stdout == "/workspace\n"
+    await session.put_bytes("in-ws.txt", b"hi\n")
     assert session.used
     [claim] = kube.claims()
     name = claim["metadata"]["name"]
@@ -153,7 +160,7 @@ async def test_reset_defers_while_others_use_it(mgr: WorkspaceManager, kube: Fak
     await c.put_bytes("data/x.txt", b"x")
     assert "已清空" in await c.reset()
     assert kube.claims() == []
-    # The session goes on with a fresh pod (the local sandboxd is shared, so only the claim is new).
+    # The session goes on with a fresh pod.
     await c.backend.working_dir()
     [fresh] = kube.claims()
     info = await mgr.get(GROUP, WS)
