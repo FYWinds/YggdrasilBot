@@ -300,13 +300,22 @@ Each image is released by its own git tag; one commit may carry several:
 
 ## Acknowledgements
 
-Built on [NoneBot2](https://github.com/nonebot/nonebot2), [pydantic-ai](https://github.com/pydantic/pydantic-ai),
-[ParadeDB](https://github.com/paradedb/paradedb), [pgvector](https://github.com/pgvector/pgvector),
-[taskiq](https://github.com/taskiq-python/taskiq), [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox),
-[gVisor](https://github.com/google/gvisor), [llama.cpp](https://github.com/ggml-org/llama.cpp),
-[Playwright](https://github.com/microsoft/playwright), [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright),
-[nodriver](https://github.com/ultrafunkamsterdam/nodriver), [curl_cffi](https://github.com/lexiforest/curl_cffi),
-[markitdown](https://github.com/microsoft/markitdown) and [trafilatura](https://github.com/adbar/trafilatura).
+YggdrasilBot is built on these open-source projects. Thanks to everyone who writes and maintains them.
+
+| Area | Projects |
+|---|---|
+| QQ access | [SnowLuma](https://github.com/SnowLuma/SnowLuma), [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot v11 endpoints) |
+| Bot framework | [NoneBot2](https://github.com/nonebot/nonebot2), [nonebot-plugin-alconna](https://github.com/nonebot/plugin-alconna) |
+| Agents | [pydantic-ai](https://github.com/pydantic/pydantic-ai) |
+| Storage and search | [PostgreSQL](https://www.postgresql.org), [ParadeDB](https://github.com/paradedb/paradedb), [pgvector](https://github.com/pgvector/pgvector), [SQLAlchemy](https://github.com/sqlalchemy/sqlalchemy), [Alembic](https://github.com/sqlalchemy/alembic) |
+| Background jobs | [taskiq](https://github.com/taskiq-python/taskiq), [Redis](https://github.com/redis/redis) |
+| Local models | [llama.cpp](https://github.com/ggml-org/llama.cpp), [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding), [Qwen3Guard](https://github.com/QwenLM/Qwen3Guard) |
+| Reading the web | [curl_cffi](https://github.com/lexiforest/curl_cffi), [trafilatura](https://github.com/adbar/trafilatura), [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright), [nodriver](https://github.com/ultrafunkamsterdam/nodriver) |
+| Documents | [markitdown](https://github.com/microsoft/markitdown), [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) |
+| Rendering | [Playwright](https://github.com/microsoft/playwright), [markdown-it](https://github.com/markdown-it/markdown-it), [Shiki](https://github.com/shikijs/shiki), [KaTeX](https://github.com/KaTeX/KaTeX), [Mermaid](https://github.com/mermaid-js/mermaid), [DOMPurify](https://github.com/cure53/DOMPurify) |
+| Sandboxes | [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), [gVisor](https://github.com/google/gvisor) |
+| Dashboard | [React](https://github.com/facebook/react), [Vite](https://github.com/vitejs/vite), [shadcn/ui](https://github.com/shadcn-ui/ui), [TanStack Query](https://github.com/TanStack/query) and [Router](https://github.com/TanStack/router), [Hey API](https://github.com/hey-api/hey-api) |
+| Tooling | [uv](https://github.com/astral-sh/uv), [ruff](https://github.com/astral-sh/ruff), [basedpyright](https://github.com/DetachHead/basedpyright), [loguru](https://github.com/Delgan/loguru) |
 
 ## License
 
