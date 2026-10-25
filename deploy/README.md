@@ -111,7 +111,8 @@ nothing below is k3s-specific except where noted (Traefik, the Service CIDR for 
 - **An LLM provider** with an OpenAI-compatible (`/v1/chat/completions`) or Anthropic-compatible
   (`/v1/messages`) API. Every chat-like task needs **tool calling**; vision-capable models get images directly.
   Background agents inside workspaces (`delegate`) need an Anthropic-format provider.
-- **Optional:** an [Exa](https://exa.ai) API key or the bundled SearXNG for web search; Grafana + an
+- **Optional:** an [Exa](https://exa.ai) or [DeepSeek](https://platform.deepseek.com) API key, or the bundled
+  SearXNG, for web search (a DeepSeek key also lets `read_url` fetch pages your IP cannot reach); Grafana + an
   OpenTelemetry collector for traces.
 
 ## 3. Images
@@ -279,8 +280,10 @@ Everything that changes at runtime lives in the database and takes effect immedi
 
    Then create an **embedding space** for the embedding model and activate it. The worker embeds the stored
    memory into it; switching spaces later re-embeds everything in the background.
-3. **Search.** Add web search providers: Exa (API key, monthly quota) and/or SearXNG
-   (`http://yggdrasil-searxng:8080`).
+3. **Search.** Add web search providers: Exa (API key, monthly quota), DeepSeek (API key) and/or SearXNG
+   (`http://yggdrasil-searxng:8080`). The highest-priority enabled DeepSeek provider also serves `read_url`'s
+   remote tier (the `remote_fetch` setting): pages the bot and browser cannot read are fetched through the
+   DeepSeek Fetch API, billed per successful fetch and counted against that provider's monthly limit.
 4. **Groups.** The bot only acts in enabled groups. Enable one, then adjust its settings: persona, reply style,
    rate limits, memory thresholds, enabled tools. Unset keys inherit the global settings.
 5. **Triggers.** The defaults: @mention, reply to the bot, or the bot's name starts a chat; `tldr` / `太长不看`

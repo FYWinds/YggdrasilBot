@@ -113,6 +113,8 @@ def _chat_lines(msgs: "Sequence[MessageView]", people: People) -> str:
 @_tool("read_url")
 async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> str:
     """读取网页正文（支持分页）。参数可以是 URL 或 url#N / card#N 句柄。"""
+    from yggdrasil.runtime import snapshot
+    from yggdrasil.tools.remote_fetch import remote_fetcher
     from yggdrasil.tools.web import read_url as _read
 
     url = url_or_handle
@@ -127,6 +129,7 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
         max_chars=cfg.read_url_max_chars,
         page=page,
         browser_url=APP_CONFIG.browser_url if cfg.browser_fallback else None,
+        remote=remote_fetcher(snapshot().search_providers) if cfg.remote_fetch else None,
     )
     more = f"（第 {res.page}/{res.pages} 页，可用 page 参数翻页）" if res.pages > 1 else ""
     return f"标题：{res.title}\n地址：{res.final_url}{more}\n\n{res.text}"

@@ -276,6 +276,69 @@ async def test_plain_http_sends_js_challenges_but_not_captchas_to_the_browser(
             await web._fetch_generic("https://example.com/a", "http://browser", 5)
 
 
+@pytest.fixture
+def local(monkeypatch: pytest.MonkeyPatch) -> Callable[[Extracted | Exception], None]:
+    """Make the local tiers (``_fetch``) return or raise the given outcome."""
+
+    def install(outcome: Extracted | Exception) -> None:
+        async def fetch(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(web, "_fetch", fetch)
+
+    return install
+
+
+def _remote(answer: Extracted | None, calls: list[str]) -> web.RemoteFetch:
+    async def fetch(url: str) -> Extracted | None:
+        calls.append(url)
+        return answer
+
+    return fetch
+
+
+REMOTE_PAGE = Extracted("https://example.com/a", "远程", "远程正文。" * 100, "remote:deepseek")
+
+
+async def test_remote_reads_what_the_local_tiers_could_not(local: Callable[..., None]) -> None:
+    local(web.Unreadable("网站拒绝了自动访问"))
+    calls: list[str] = []
+    assert await web._read("https://example.com/a", None, _remote(REMOTE_PAGE, calls), 5) is REMOTE_PAGE
+    assert calls == ["https://example.com/a"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, Extracted("https://example.com/a", "安全验证", "请完成验证码", "remote:deepseek")],
+)
+async def test_remote_without_content_or_with_a_wall_keeps_the_local_error(
+    local: Callable[..., None], answer: Extracted | None
+) -> None:
+    local(web.Unreadable("网站拒绝了自动访问"))
+    with pytest.raises(web.Unreadable, match="拒绝"):
+        await web._read("https://example.com/a", None, _remote(answer, []), 5)
+
+
+async def test_definitive_errors_never_go_remote(local: Callable[..., None]) -> None:
+    local(ToolError("这是图片链接，不是网页，请用看图工具查看"))
+    calls: list[str] = []
+    with pytest.raises(ToolError, match="图片"):
+        await web._read("https://example.com/a.png", None, _remote(REMOTE_PAGE, calls), 5)
+    assert calls == []
+
+
+async def test_remote_replaces_a_rendered_shell_but_not_a_short_adapter_answer(local: Callable[..., None]) -> None:
+    calls: list[str] = []
+    local(Extracted("https://example.com/a", "米游社", "Loading...\n\n数据加载中", "browser"))
+    assert await web._read("https://example.com/a", None, _remote(REMOTE_PAGE, calls), 5) is REMOTE_PAGE
+    post = Extracted("https://t.me/c/1", "频道", "频道：c\n\n短消息", "telegram")
+    local(post)
+    assert await web._read("https://t.me/c/1", None, _remote(REMOTE_PAGE, calls), 5) is post
+    assert calls == ["https://example.com/a"]
+
+
 @pytest.mark.parametrize(
     ("status", "ctype"),
     [(200, "image/png"), (200, "video/mp4"), (200, "application/x-msdownload"), (404, "text/html")],

@@ -138,12 +138,24 @@ class Extracted:
     capped: bool = False
 
 
+class Unreadable(ToolError):
+    """The page could not be read from here (wall, block page, HTTP error, network failure, nothing rendered);
+    unlike other tool errors (not a web page, file too large, gone per an official API), a remote fetcher may
+    still get it."""
+
+
+type RemoteFetch = Callable[[str], Awaitable[Extracted | None]]
+"""Fetch a URL from elsewhere (``yggdrasil.tools.remote_fetch``); ``None`` when it has nothing either."""
+
+
 type AdapterResult = Extracted | str | None
 """An adapter returns the content, a rewritten URL to restart with, or ``None`` to use the generic path."""
 type AdapterFn = Callable[[httpx.AsyncClient, httpx.URL], Awaitable[AdapterResult]]
 
 _ADAPTERS: dict[str, AdapterFn] = {}
-_cache: OrderedDict[tuple[str, bool], tuple[float, Extracted]] = OrderedDict()
+type _CacheKey = tuple[str, bool, bool]
+"""(url, browser tier on, remote tier on)."""
+_cache: OrderedDict[_CacheKey, tuple[float, Extracted]] = OrderedDict()
 
 
 def site_adapter(*hosts: str) -> Callable[[AdapterFn], AdapterFn]:
@@ -163,6 +175,7 @@ async def read_url(
     max_chars: int = 16000,
     page: int = 1,
     browser_url: str | None = None,
+    remote: RemoteFetch | None = None,
     timeout: float = 20,  # noqa: ASYNC109 - per-request network timeout, not a cancel scope
 ) -> PageResult:
     """Read ``url`` and return page ``page`` of its text split into ``max_chars`` pages."""
@@ -171,11 +184,11 @@ async def read_url(
     if page < 1:
         raise ToolError("页码从 1 开始")
     target = await check_url(url)
-    key = (target, browser_url is not None)
+    key = (target, browser_url is not None, remote is not None)
     extracted = _cache_get(key)
     with TRACER.start_as_current_span("tool.read_url") as span:
         if extracted is None:
-            extracted = await _fetch(target, browser_url, timeout)
+            extracted = await _read(target, browser_url, remote, timeout)
             _cache_put(key, extracted)
         span.set_attribute("ygg.read_url.via", extracted.via)
     pages = paginate(extracted.text, max_chars)
@@ -191,6 +204,38 @@ async def read_url(
         truncated=page < len(pages) or extracted.capped,
         via=extracted.via,
     )
+
+
+async def _read(url: str, browser_url: str | None, remote: RemoteFetch | None, timeout_s: float) -> Extracted:
+    """The local tiers, then ``remote`` when they could not read the page or only got a shell."""
+    try:
+        local = await _fetch(url, browser_url, timeout_s)
+    except Unreadable:
+        if remote is None or (fetched := await _remote(remote, url)) is None:
+            raise
+        return fetched
+    generic = local.via == "http" or local.via.startswith("browser")  # adapters' short answers are complete
+    if remote is not None and generic and len(local.text) < _MIN_TEXT_CHARS:
+        fetched = await _remote(remote, url)
+        if fetched is not None and len(fetched.text) > len(local.text):
+            return fetched
+    return local
+
+
+async def _remote(remote: RemoteFetch, url: str) -> Extracted | None:
+    try:
+        fetched = await remote(url)
+    except Exception as exc:
+        LOGGER.warning("remote fetch failed for {}: {!r}", httpx.URL(url).host, exc)
+        return None
+    if (
+        fetched is None
+        or not fetched.text
+        or detect_wall(fetched.title, fetched.text)
+        or _is_challenge(fetched.title, fetched.text)
+    ):
+        return None  # the remote copy is a wall / block page too
+    return fetched
 
 
 def paginate(text: str, max_chars: int) -> list[str]:
@@ -254,12 +299,12 @@ def _match_short_page(keywords: tuple[str, ...], title: str, text: str) -> str |
 
 def _raise_if_wall(extracted: Extracted) -> None:
     if keyword := detect_wall(extracted.title, extracted.text):
-        raise ToolError(f"该页面需要人机验证或登录（检测到「{keyword}」），无法读取")
+        raise Unreadable(f"该页面需要人机验证或登录（检测到「{keyword}」），无法读取")
 
 
 def _raise_if_blocked(extracted: Extracted) -> None:
     if keyword := detect_block(extracted.title, extracted.text):
-        raise ToolError(f"网站拒绝了自动访问（检测到「{keyword}」），无法读取")
+        raise Unreadable(f"网站拒绝了自动访问（检测到「{keyword}」），无法读取")
 
 
 def extract_html(html: str, url: str) -> tuple[str, str]:
@@ -325,9 +370,9 @@ async def _fetch(url: str, browser_url: str | None, timeout_s: float) -> Extract
     except httpx.TooManyRedirects as exc:
         raise ToolError("重定向次数过多") from exc
     except (httpx.TimeoutException, CurlTimeout) as exc:
-        raise ToolError("网页加载超时") from exc
+        raise Unreadable("网页加载超时") from exc
     except (httpx.HTTPError, CurlRequestError) as exc:
-        raise ToolError("网页无法访问") from exc
+        raise Unreadable("网页无法访问") from exc
 
 
 @dataclass(slots=True)
@@ -348,7 +393,7 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     if body is None:
         if status in _BROWSER_RETRY_STATUSES and browser_url:
             return await _render_or_raise(final_url, browser_url, timeout_s, None)
-        raise ToolError(f"网页返回错误（HTTP {status}）")
+        raise Unreadable(f"网页返回错误（HTTP {status}）")
 
     if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
         if body.capped:
@@ -369,7 +414,7 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     _raise_if_wall(extracted)
     _raise_if_blocked(extracted)
     if not text:
-        raise ToolError("页面没有可读取的正文")
+        raise Unreadable("页面没有可读取的正文")
     return extracted
 
 
@@ -447,7 +492,7 @@ async def _render_or_raise(url: str, browser_url: str, timeout_s: float, fallbac
             return rendered
     if fallback is not None and fallback.text:
         return fallback
-    raise ToolError("网页渲染失败，无法读取" if rendered is None else "页面没有可读取的正文")
+    raise Unreadable("网页渲染失败，无法读取" if rendered is None else "页面没有可读取的正文")
 
 
 async def render_page(url: str, browser_url: str, engine: str, *, timeout: float = 20) -> tuple[str, str]:  # noqa: ASYNC109
@@ -467,7 +512,7 @@ async def render_page(url: str, browser_url: str, engine: str, *, timeout: float
     return str(data["final_url"]), str(data["html"])
 
 
-def _cache_get(key: tuple[str, bool]) -> Extracted | None:
+def _cache_get(key: _CacheKey) -> Extracted | None:
     entry = _cache.get(key)
     if entry is None:
         return None
@@ -479,7 +524,7 @@ def _cache_get(key: tuple[str, bool]) -> Extracted | None:
     return extracted
 
 
-def _cache_put(key: tuple[str, bool], extracted: Extracted) -> None:
+def _cache_put(key: _CacheKey, extracted: Extracted) -> None:
     _cache[key] = (time.monotonic(), extracted)
     _cache.move_to_end(key)
     while len(_cache) > _CACHE_SIZE:

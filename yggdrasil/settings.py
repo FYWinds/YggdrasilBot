@@ -147,6 +147,11 @@ class ToolSettings(BaseModel):
     )
     read_url_max_chars: int = 16000
     browser_fallback: bool = True
+    remote_fetch: bool = Field(
+        default=True,
+        description="read_url 在本地抓取和浏览器都读不到（或只拿到空壳）时，"
+        "交给搜索源里优先级最高的 DeepSeek 远程抓取；按成功次数计费，计入该搜索源的月度额度",
+    )
     file_max_mb: int = 30
     file_max_pages: int = 40
     search_results: int = 6
