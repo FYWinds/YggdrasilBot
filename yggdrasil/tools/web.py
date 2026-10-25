@@ -7,12 +7,14 @@ raise :class:`ToolError` instead of returning junk; we never try to defeat captc
 """
 
 import asyncio
+import json
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import unquote
 
 import httpx
@@ -829,3 +831,95 @@ def parse_telegram_embed(html: str, final_url: str) -> Extracted | None:
     if not found:
         return None
     return Extracted(final_url, f"{owner} 的 Telegram 消息" if owner else "Telegram 消息", "\n".join(lines), "telegram")
+
+
+_YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YT_ID_PATHS = frozenset({"shorts", "live", "embed"})
+_YT_INITIAL_DATA = "var ytInitialData = "
+_YT_MAX_CHAPTERS = 100
+
+
+@site_adapter("www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be")
+async def _youtube_video(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    vid = _youtube_video_id(url)
+    if vid is None:
+        return None
+    resp = await client.get(f"https://www.youtube.com/watch?v={vid}&hl=zh-CN")
+    if resp.status_code != 200:
+        return None
+    return parse_youtube_watch(resp.text, f"https://www.youtube.com/watch?v={vid}")
+
+
+def _youtube_video_id(url: httpx.URL) -> str | None:
+    segments = [s for s in url.path.split("/") if s]
+    if url.host.lower() == "youtu.be":
+        vid = segments[0] if segments else ""
+    elif url.path == "/watch":
+        vid = url.params.get("v", "")
+    else:
+        vid = segments[1] if len(segments) >= 2 and segments[0] in _YT_ID_PATHS else ""
+    return vid if _YT_ID_RE.match(vid) else None
+
+
+def parse_youtube_watch(html: str, final_url: str) -> Extracted | None:
+    """Metadata, description and chapters from a watch page's ``ytInitialData``, or ``None`` without them.
+
+    Datacenter IPs get the page but not the player data (a "confirm you're not a bot" check), so duration and
+    captions are out of reach; ``ytInitialData`` still carries everything shown below the video.
+    """
+    start = html.find(_YT_INITIAL_DATA)
+    if start < 0:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html, start + len(_YT_INITIAL_DATA))
+    except ValueError:
+        return None
+    primary = next(_find_key(data, "videoPrimaryInfoRenderer"), None) or {}
+    title = _yt_text(primary.get("title"))
+    if not title:
+        return None  # unavailable video, or a layout we do not know: the generic path takes over
+    secondary = next(_find_key(data, "videoSecondaryInfoRenderer"), None) or {}
+    owner = (secondary.get("owner") or {}).get("videoOwnerRenderer") or {}
+    lines = []
+    if channel := _yt_text(owner.get("title")):
+        subscribers = _yt_text(owner.get("subscriberCountText"))
+        lines.append(f"频道：{channel}（{subscribers}）" if subscribers else f"频道：{channel}")
+    if date := _yt_text(primary.get("dateText")):
+        lines.append(f"发布时间：{date}")
+    if views := _yt_text(((primary.get("viewCount") or {}).get("videoViewCountRenderer") or {}).get("viewCount")):
+        lines.append(f"播放：{views}")
+    if description := _yt_text(secondary.get("attributedDescription")).strip():
+        lines += ["", "简介：", description]
+    # The same markers appear in several panels; keep the first occurrence of each.
+    chapters = list(
+        dict.fromkeys(
+            f"{_yt_text(m.get('timeDescription'))} {_yt_text(m.get('title'))}".strip()
+            for m in _find_key(data, "macroMarkersListItemRenderer")
+            if isinstance(m, dict)
+        )
+    )
+    if chapters:
+        lines += ["", f"章节（共 {len(chapters)} 个）：", *chapters[:_YT_MAX_CHAPTERS]]
+    lines += ["", "（只有页面信息，没有字幕，无法得知视频里具体说了什么）"]
+    return Extracted(final_url, title, "\n".join(lines), "youtube")
+
+
+def _find_key(node: object, key: str) -> Iterator[Any]:
+    """Every value stored under ``key`` anywhere in a JSON tree, depth first."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == key:
+                yield v
+            yield from _find_key(v, key)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _find_key(v, key)
+
+
+def _yt_text(node: object) -> str:
+    """Text of a YouTube text object: ``simpleText``, ``runs`` or ``content`` (attributed text)."""
+    if not isinstance(node, dict):
+        return ""
+    if isinstance(text := node.get("simpleText") or node.get("content"), str):
+        return text
+    return "".join(str(r.get("text", "")) for r in node.get("runs") or () if isinstance(r, dict))

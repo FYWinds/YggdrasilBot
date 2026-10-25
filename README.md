@@ -39,7 +39,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 
 | Input | How |
 |---|---|
-| Links | `read_url`: fast HTTP extraction with a browser TLS fingerprint (curl_cffi) and site adapters (bilibili, GitHub, Hacker News, Telegram, ...), then a real Chrome for JavaScript-only or blocked pages, then (optionally) the DeepSeek Fetch API for pages neither can read from your IP, such as many Chinese platforms. Login walls, captchas and anti-bot block pages come back as a clear error, not a hallucinated summary. |
+| Links | `read_url`: fast HTTP extraction with a browser TLS fingerprint (curl_cffi) and site adapters (bilibili, GitHub, YouTube, Hacker News, Telegram, ...), then a real Chrome for JavaScript-only or blocked pages, then (optionally) the DeepSeek Fetch API for pages neither can read from your IP, such as many Chinese platforms. Login walls, captchas and anti-bot block pages come back as a clear error, not a hallucinated summary. |
 | Files | PDF, Office documents, text and code via markitdown and pypdfium2. Scanned PDFs are sent to vision models as page images. |
 | Images | Vision models see the original; otherwise a vision route describes and transcribes it (OCR fallback). Images from earlier in the chat can be opened by message id, and expired QQ image links are re-signed transparently. |
 | Chat-log forwards | Expanded recursively, nested forwards included. |
