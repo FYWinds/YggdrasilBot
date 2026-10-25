@@ -11,10 +11,9 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import BinaryContent
 from sqlalchemy import select, update
 
-from yggdrasil.agent.media import fit_image, media_type
+from yggdrasil.agent.media import model_image
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Sticker, StickerBlob
 from yggdrasil.db.session import get_session
@@ -56,12 +55,12 @@ async def tag_pending(limit: int = BATCH) -> dict[str, int]:
             blob = await session.scalar(select(StickerBlob.data).where(StickerBlob.sticker_id == sticker_id))
         if blob is None:
             continue
-        image = await asyncio.to_thread(fit_image, blob)
+        image = await asyncio.to_thread(model_image, blob)
         try:
             tags = await llm.run_structured(
                 TASK,
                 StickerTags,
-                ["给这张表情包打标签。", BinaryContent(data=image, media_type=media_type(image))],
+                [f"给这张表情包打标签。{image.note}", image.content],
                 instructions=instructions,
             )
         except Exception as exc:

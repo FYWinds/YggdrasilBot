@@ -344,7 +344,7 @@ async def test_py_without_vision_describes_images_and_forgets_a_dead_kernel(monk
     monkeypatch.setattr(sandbox_tools, "sees_images", lambda _task: False)
     seen: list[int] = []
 
-    async def vision(_ctx: Any, images: list[bytes], _question: str) -> str:
+    async def vision(_ctx: Any, images: list[Any], _question: str) -> str:
         seen.append(len(images))
         return "一张红色方块"
 

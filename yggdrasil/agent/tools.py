@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.deps import Deps, Handle
-from yggdrasil.agent.media import load_image, media_bytes, media_type
+from yggdrasil.agent.media import ModelImage, load_image, media_bytes, media_type
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
@@ -76,11 +76,12 @@ def _handle(ctx: RunContext[Deps], key: str, *kinds: str) -> Handle:
     return h
 
 
-async def _vision(ctx: RunContext[Deps], images: list[bytes], question: str) -> str:
+async def _vision(ctx: RunContext[Deps], images: list[ModelImage], question: str) -> str:
     resolved = chat_model("vision")
     agent = Agent(resolved.model, instructions=render("vision_system"), name="vision")
     content: list[Any] = [question or "描述这张图片，并完整转写其中的文字。"]
-    content += [BinaryContent(data=img, media_type=media_type(img)) for img in images]
+    for img in images:
+        content += [img.note, img.content] if img.note else [img.content]
     result = await agent.run(content, model_settings=resolved.settings, event_stream_handler=drain_events)
     usage = result.usage
     ctx.deps.vision_tokens.append((resolved.label, usage.input_tokens or 0, usage.output_tokens or 0))
@@ -169,7 +170,8 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
         )
     text = doc.text
     if doc.scanned_pages:
-        text = await _vision(ctx, doc.scanned_pages, "这是扫描版文档的页面，请按顺序完整转写文字，保留结构。")
+        pages = [ModelImage(page) for page in doc.scanned_pages]
+        text = await _vision(ctx, pages, "这是扫描版文档的页面，请按顺序完整转写文字，保留结构。")
     return f"{header}\n\n{text}"
 
 
@@ -213,14 +215,14 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
     h = ctx.deps.handles.get(handle) or await _history_image(ctx, handle)
     if h.kind != "image":
         raise ToolError(f"{handle} 不是图片")
-    blob = await load_image(ctx.deps.api, ctx.deps.group_id, h)
+    img = await load_image(ctx.deps.api, ctx.deps.group_id, h)
     if sees_images(ctx.deps.task):
         return ToolReturn(
             return_value=f"{handle} 的原图附在下一条消息里，直接看图。",
-            content=[f"{handle}：", BinaryContent(data=blob, media_type=media_type(blob))],
+            content=[f"{handle}{img.note}：", img.content],
         )
     try:
-        return "（以下是另一个模型写的图片描述）\n" + await _vision(ctx, [blob], question)
+        return "（以下是另一个模型写的图片描述）\n" + await _vision(ctx, [img], question)
     except TaskNotConfigured:
         result = await ctx.deps.api.ocr_image(image=str(h.data.get("url") or h.data.get("file")))
         return "（无视觉模型，以下为 OCR 结果）\n" + "\n".join(t.text for t in result.texts)

@@ -4,12 +4,13 @@ There is no dedicated image guard model: the ``vision`` route classifies the ima
 Fails closed: any error or unparsable answer counts as unsafe.
 """
 
+import asyncio
 import re
 from dataclasses import dataclass
 
-from pydantic_ai import Agent, BinaryContent
+from pydantic_ai import Agent
 
-from yggdrasil.agent.media import media_type
+from yggdrasil.agent.media import model_image
 from yggdrasil.core.log import LOGGER
 from yggdrasil.llm.registry import chat_model
 from yggdrasil.llm.streaming import drain_events
@@ -44,9 +45,10 @@ async def check_image(blob: bytes) -> ImageVerdict:
         LOGGER.warning("image moderation unavailable: {}", e)
         return ImageVerdict(False, "error")
     try:
+        image = await asyncio.to_thread(model_image, blob)  # an animation is checked frame by frame
         agent = Agent(resolved.model, instructions=render("image_moderation"), name="image_moderation")
         result = await agent.run(
-            ["审核这张图片。", BinaryContent(data=blob, media_type=media_type(blob))],
+            [f"审核这张图片。{image.note}", image.content],
             model_settings=resolved.settings,
             event_stream_handler=drain_events,
         )

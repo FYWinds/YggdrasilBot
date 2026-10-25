@@ -10,7 +10,7 @@ from uuid import UUID
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic_ai import Agent, BinaryContent, Tool
+from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -19,7 +19,7 @@ from sqlalchemy import update
 from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import load_images, media_type
+from yggdrasil.agent.media import load_images
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, tool_names, tools_for
@@ -179,8 +179,8 @@ class Invocator:
             return ctx.prompt
         keys = "、".join(key for key, _ in loaded)
         prompt: list[UserContent] = [ctx.prompt, f"下面直接附上了 {keys} 的原图：直接看图，不用再调用 view_image。"]
-        for key, blob in loaded:
-            prompt += [f"{key}：", BinaryContent(data=blob, media_type=media_type(blob))]
+        for key, img in loaded:
+            prompt += [f"{key}{img.note}：", img.content]
         return prompt
 
     # --- bookkeeping -------------------------------------------------------

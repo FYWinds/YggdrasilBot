@@ -41,7 +41,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 |---|---|
 | Links | `read_url`: fast HTTP extraction with a browser TLS fingerprint (curl_cffi) and site adapters (bilibili, GitHub, YouTube, Hacker News, Telegram, ...), then a real Chrome for JavaScript-only or blocked pages, then (optionally) the DeepSeek Fetch API for pages neither can read from your IP, such as many Chinese platforms. Login walls, captchas and anti-bot block pages come back as a clear error, not a hallucinated summary. |
 | Files | PDF, Office documents, text and code via markitdown and pypdfium2. Scanned PDFs are sent to vision models as page images. |
-| Images | Vision models see the original; otherwise a vision route describes and transcribes it (OCR fallback). Images from earlier in the chat can be opened by message id, and expired QQ image links are re-signed transparently. |
+| Images | Vision models see the original; otherwise a vision route describes and transcribes it (OCR fallback). Animated GIF/WebP stickers become one sheet of up to 16 frames, sampled where the picture changes (every 0.1–0.3 s), because models only read an animation's first frame. Images from earlier in the chat can be opened by message id, and expired QQ image links are re-signed transparently. |
 | Chat-log forwards | Expanded recursively, nested forwards included. |
 | Cards, replies, mentions | Normalized into readable text with stable `名字(QQ号)` labels. |
 

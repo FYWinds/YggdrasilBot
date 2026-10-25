@@ -28,7 +28,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from PIL import Image
-from pydantic_ai import BinaryContent, RunContext, Tool, ToolReturn
+from pydantic_ai import RunContext, Tool, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.capabilities.abstract import ValidatedToolArgs, WrapToolExecuteHandler
 from pydantic_ai.messages import ToolCallPart
@@ -37,7 +37,7 @@ from pydantic_ai.workspaces import WorkspaceError
 from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import fit_image, media_bytes, media_type
+from yggdrasil.agent.media import ModelImage, fit_image, media_bytes, model_image
 from yggdrasil.agent.tools import MAX_IMAGES, ToolResult, _handle, _tool, _vision, reserve_images, sandbox_requested
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
@@ -312,13 +312,13 @@ async def _apply_effects(ctx: RunContext[Deps], session: Session, effects: list[
     return lines
 
 
-async def _images(session: Session, paths: list[Any]) -> list[bytes]:
-    out: list[bytes] = []
+async def _images(session: Session, paths: list[Any]) -> list[ModelImage]:
+    out: list[ModelImage] = []
     for path in paths[:PY_MAX_IMAGES]:
         try:
             with _sandbox_errors():
                 blob = await session.get_bytes(str(path), max_bytes=IMAGE_MAX_BYTES)
-            out.append(await asyncio.to_thread(fit_image, blob))
+            out.append(await asyncio.to_thread(model_image, blob))
         except ToolError as e:
             LOGGER.warning("py image {} unreadable: {}", path, e)
     return out
@@ -372,7 +372,7 @@ async def py(
         )
         content: list[Any] = []
         for i, img in enumerate(images, 1):
-            content += [f"图 {i}：", BinaryContent(data=img, media_type=media_type(img))]
+            content += [f"图 {i}{img.note}：", img.content]
         return ToolReturn(return_value="\n".join(parts), content=content)
     try:
         described = await _vision(
