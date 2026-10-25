@@ -12,6 +12,8 @@ name = "yggdrasil-bot"
 version = "0.0.0"
 description = "QQ group-chat LLM bot: TL;DR, replies and background memory"
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.13, <3.14"
 authors = [{ name = "FYWinds", email = "i@windis.cn" }]
 dependencies = [

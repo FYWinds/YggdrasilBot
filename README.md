@@ -307,3 +307,8 @@ Built on [NoneBot2](https://github.com/nonebot/nonebot2), [pydantic-ai](https://
 [Playwright](https://github.com/microsoft/playwright), [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright),
 [nodriver](https://github.com/ultrafunkamsterdam/nodriver), [curl_cffi](https://github.com/lexiforest/curl_cffi),
 [markitdown](https://github.com/microsoft/markitdown) and [trafilatura](https://github.com/adbar/trafilatura).
+
+## License
+
+[GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version as a network service,
+you must offer its users the corresponding source.
