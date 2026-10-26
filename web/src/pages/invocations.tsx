@@ -138,26 +138,54 @@ export function InvocationsPage() {
   );
 }
 
-type ReplyDoc = { title?: string; sections?: { content?: string }[]; sources?: { url?: string; label?: string }[] };
+type ReplyDoc = {
+  mode?: string;
+  title?: string | null;
+  sections?: { content?: string }[];
+  sources?: { url?: string | null; label?: string }[];
+  silent_reason?: string | null;
+  messages?: unknown[];
+  text?: string | null; // ops replies
+};
 
+/** A stored chat / tldr / ops reply as readable text; anything unrecognised falls back to the raw JSON. */
 function Reply({ reply }: { reply: Record<string, unknown> }) {
   const r = reply as ReplyDoc;
-  if (!Array.isArray(r.sections)) return <Pre value={reply} />;
+  const sections = Array.isArray(r.sections) ? r.sections.filter((s) => s.content?.trim()) : [];
+  const messages = [...(Array.isArray(r.messages) ? r.messages : []), r.text].filter(
+    (m): m is string => typeof m === "string" && !!m,
+  );
+  const sources = Array.isArray(r.sources) ? r.sources : [];
+  if (!r.silent_reason && !r.title && !sections.length && !messages.length && !sources.length) {
+    return <Pre value={reply} />;
+  }
   return (
     <div className="grid gap-2 rounded-lg bg-muted p-3">
+      {r.silent_reason && (
+        <p className="whitespace-pre-wrap">
+          <span className="text-muted-foreground">{r.mode === "silent" ? "不回复：" : "原因："}</span>
+          {r.silent_reason}
+        </p>
+      )}
       {r.title && <div className="font-medium">{r.title}</div>}
-      {r.sections.map((s, i) => (
+      {[...messages, ...sections.map((s) => s.content)].map((text, i) => (
         <p key={i} className="whitespace-pre-wrap">
-          {s.content}
+          {text}
         </p>
       ))}
-      {!!r.sources?.length && (
+      {!!sources.length && (
         <div className="grid gap-0.5 text-xs">
-          {r.sources.map((s, i) => (
-            <a key={i} href={s.url} target="_blank" rel="noreferrer" className="truncate underline">
-              {s.label || s.url}
-            </a>
-          ))}
+          {sources.map((s, i) =>
+            s.url ? (
+              <a key={i} href={s.url} target="_blank" rel="noreferrer" className="truncate underline">
+                {s.label || s.url}
+              </a>
+            ) : (
+              <span key={i} className="truncate">
+                {s.label}
+              </span>
+            ),
+          )}
         </div>
       )}
     </div>
