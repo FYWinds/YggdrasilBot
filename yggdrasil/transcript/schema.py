@@ -43,7 +43,16 @@ class ToolCallPart(BaseModel):
     chars: int = 0
 
 
-Part = Annotated[TextPart | ThinkingPart | ImagePart | ToolCallPart, Field(discriminator="type")]
+class OutputPart(BaseModel):
+    """The run's structured output when the model returned it as text (native or prompted output mode) instead of
+    calling ``final_result``. Not stored: the admin API sets it when it reads a transcript."""
+
+    type: Literal["output"] = "output"
+    value: dict[str, Any]
+    chars: int = 0
+
+
+Part = Annotated[TextPart | ThinkingPart | ImagePart | ToolCallPart | OutputPart, Field(discriminator="type")]
 
 
 class Usage(BaseModel):

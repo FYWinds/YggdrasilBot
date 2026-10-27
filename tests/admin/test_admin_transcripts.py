@@ -2,6 +2,7 @@
 served from the kept bytes once QQ links expire), the pipeline's moderation and ending woven in; older invocations
 fall back to their request."""
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -10,11 +11,12 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, PromptedOutput, RunContext
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import delete
 
+from yggdrasil.agent.schema import BotReply
 from yggdrasil.db.models import Invocation, Message, ModerationResult, TranscriptBlob, UserAlias
 from yggdrasil.db.session import get_session
 from yggdrasil.transcript import store
@@ -111,6 +113,7 @@ async def test_transcript_renders_the_messages_tools_read(client: httpx.AsyncCli
     assert entries[0]["text"].startswith("输入审核：Safe")
     assert entries[-1]["text"] == "已发出合并转发"
     assert entries[3]["display"] == {"kind": "qq_messages", "message_ids": [seeded.message]}
+    assert entries[4]["parts"] == [{"type": "text", "text": "是一只鹈鹕。", "chars": 6}]  # a plain answer stays text
     # The message as it was stored, its image served from the bytes the run loaded (the QQ link has expired),
     # and the poster labelled by their latest card.
     msg = body["messages"][str(seeded.message)]
@@ -124,6 +127,26 @@ async def test_transcript_renders_the_messages_tools_read(client: httpx.AsyncCli
     assert blob.headers["content-type"] == "image/png"
     assert blob.content == seeded.image
     assert (await client.get("/api/transcripts/blobs/" + "0" * 64)).status_code == 404
+
+
+async def test_an_answer_written_as_text_reads_as_the_answer(client: httpx.AsyncClient, seeded: Seeded) -> None:
+    # Some providers return the structured output as the response text (prompted / native output mode) instead of
+    # calling final_result; the console must still get the reply, not a JSON blob.
+    reply = {"mode": "forward", "title": "鹈鹕", "sections": [{"content": "是一只鹈鹕。"}], "sources": []}
+    recorder = TranscriptRecorder()
+    agent = Agent(
+        FunctionModel(lambda _m, _i: ModelResponse(parts=[TextPart(json.dumps(reply, ensure_ascii=False))])),
+        output_type=PromptedOutput(BotReply),
+        deps_type=TraceNotes,
+        capabilities=[recorder],
+    )
+    await agent.run("那张图是什么", deps=TraceNotes())
+    await store.save_invocation(seeded.invocation, recorder, TraceNotes(), GROUP)
+
+    body = (await client.get(f"/api/invocations/{seeded.invocation}/transcript")).json()
+    answer = [e for e in body["entries"] if e["kind"] == "assistant"][-1]
+    assert [p["type"] for p in answer["parts"]] == ["output"]
+    assert answer["parts"][0]["value"] == reply
 
 
 async def test_an_older_invocation_falls_back_to_its_request(client: httpx.AsyncClient, seeded: Seeded) -> None:

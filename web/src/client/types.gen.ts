@@ -290,7 +290,7 @@ export type Entry = {
     /**
      * Parts
      */
-    parts?: Array<TextPart | ThinkingPart | ImagePart | ToolCallPart>;
+    parts?: Array<TextPart | ThinkingPart | ImagePart | ToolCallPart | OutputPart>;
     /**
      * Display
      */
@@ -1256,6 +1256,29 @@ export type OpsReply = {
      * mode=reply 时发出的文字，纯文本，简短
      */
     text?: string | null;
+};
+
+/**
+ * OutputPart
+ *
+ * The run's structured output when the model returned it as text (native or prompted output mode) instead of
+ * calling ``final_result``. Not stored: the admin API sets it when it reads a transcript.
+ */
+export type OutputPart = {
+    /**
+     * Type
+     */
+    type?: 'output';
+    /**
+     * Value
+     */
+    value: {
+        [key: string]: unknown;
+    };
+    /**
+     * Chars
+     */
+    chars?: number;
 };
 
 /**

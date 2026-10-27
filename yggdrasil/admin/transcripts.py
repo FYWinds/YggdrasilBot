@@ -6,25 +6,37 @@ else the original QQ link) and falls back to a few synthetic entries for runs re
 """
 
 import copy
+import json
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select, tuple_
 
 from yggdrasil.admin.common import not_found
+from yggdrasil.agent.schema import BotReply, OpsReply
 from yggdrasil.db.models import Sticker, StickerBlob, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.stickers.collect import sighting
 from yggdrasil.transcript import store
 from yggdrasil.transcript.notes import image_key
-from yggdrasil.transcript.schema import Entry, QQContextDisplay, QQForwardDisplay, QQMessage
+from yggdrasil.transcript.schema import (
+    Entry,
+    OutputPart,
+    Part,
+    QQContextDisplay,
+    QQForwardDisplay,
+    QQMessage,
+    TextPart,
+    ToolCallPart,
+)
 
 router = APIRouter(prefix="/transcripts", tags=["transcripts"])
 
 BLOB_URL = "/api/transcripts/blobs/{}"
 STICKER_URL = "/api/stickers/{}/image"
+_REPLY: TypeAdapter[BotReply | OpsReply] = TypeAdapter(BotReply | OpsReply)
 
 
 class BotOut(BaseModel):
@@ -103,6 +115,32 @@ def _merge(items: list[Entry], events: list[Entry]) -> list[Entry]:
     return out
 
 
+def _mark_output(items: list[Entry]) -> None:
+    """Show the run's answer as an answer when the model returned it as text.
+
+    In pydantic-ai's native and prompted output modes the model writes the structured output as the text of its last
+    response instead of calling ``final_result``. Every transcribed pydantic-ai agent answers with a ``BotReply`` or
+    ``OpsReply``, so a last response with no tool calls whose text is such an object is that answer.
+    """
+    last = next((e for e in reversed(items) if e.kind == "assistant"), None)
+    if last is None or any(isinstance(p, ToolCallPart) for p in last.parts):
+        return
+    texts = [p for p in last.parts if isinstance(p, TextPart)]
+    if not texts or any(p.text is None for p in texts):  # metadata mode: nothing to read
+        return
+    raw = "".join(p.text or "" for p in texts).strip()
+    if raw.startswith("```"):  # prompted output may fence the JSON
+        raw = raw.strip("`").removeprefix("json").strip()
+    try:
+        value = json.loads(raw)
+        _REPLY.validate_python(value)
+    except (ValueError, ValidationError):
+        return
+    parts: list[Part] = [p for p in last.parts if not isinstance(p, TextPart)]
+    parts.append(OutputPart(value=value, chars=sum(p.chars for p in texts)))
+    last.parts = parts
+
+
 async def build(
     row: Transcript | None, *, events: list[Entry], fallback: list[Entry], live: bool = False
 ) -> TranscriptOut:
@@ -111,6 +149,8 @@ async def build(
             available=False, source="none", content="full", live=live, entries=_merge(fallback, events)
         )
     items = [Entry.model_validate(e) for e in row.entries]
+    if row.source == "pydantic-ai":
+        _mark_output(items)
     context = row.context or {}
     messages = {k: QQMessage.model_validate(v) for k, v in (context.get("messages") or {}).items()}
     # Every QQ message the page will show, for one sticker lookup.

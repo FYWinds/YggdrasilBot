@@ -34,7 +34,7 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
 from nonebot.adapters.onebot.v11 import Message as OneBotMessage
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel
-from pydantic_ai import Agent, BinaryContent, ModelRetry, RunContext, ToolReturn
+from pydantic_ai import Agent, BinaryContent, ModelRetry, PromptedOutput, RunContext, ToolReturn
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -643,6 +643,7 @@ class Run:
     error: str | None = None
     prompt: str = ""  # report runs: the job summary they are given
     user_id: int = 0  # private / report runs without a trigger line
+    text_output: bool = False  # the model writes the output as text (prompted / native mode), not final_result
 
 
 def _reply(title: str, *sections: str, sources: list[SourceRef] | None = None) -> BotReply:
@@ -824,6 +825,7 @@ RUNS: list[Run] = [
         group_id=GAME,
         quoted=True,
         output_verdict=SAFE,
+        text_output=True,
     ),
     Run(
         "g_meta",
@@ -876,7 +878,9 @@ def _model(run: Run, turns: list[Turn], model: str) -> FunctionModel:
             ToolCallPart(name, args, tool_call_id=f"call_{run.key}_{idx}_{j}")
             for j, (name, args) in enumerate(turn.calls)
         ]
-        if turn.output is not None:
+        if turn.output is not None and run.text_output:
+            parts.append(TextPart(turn.output.model_dump_json(exclude_defaults=True)))
+        elif turn.output is not None:
             out = turn.output.model_dump(mode="json", exclude_defaults=True)
             parts.append(ToolCallPart(info.output_tools[0].name, out, tool_call_id=f"call_{run.key}_{idx}_out"))
         written = len(turn.think) + len(turn.say) + sum(len(json.dumps(a, ensure_ascii=False)) for _, a in turn.calls)
@@ -1048,9 +1052,10 @@ async def _invoke(run: Run, chats: dict[int, Chat], report_job: Job | None = Non
         instructions, prompt = await _prompt(run, chat, trigger, notes)
         keys = chat.keys if chat else {}
         turns = [replace(t, calls=[(n, _resolve_args(a, keys)) for n, a in t.calls]) for t in run.turns]
+        output_type = OpsReply if run.handler == "ops" else BotReply
         agent: Agent[SeedDeps, Any] = Agent(
             _model(run, turns, model),
-            output_type=OpsReply if run.handler == "ops" else BotReply,
+            output_type=PromptedOutput(output_type) if run.text_output else output_type,
             deps_type=SeedDeps,
             instructions=instructions,
             tools=OPS_TOOLS if run.handler == "ops" else CHAT_TOOLS,

@@ -574,15 +574,20 @@ function ToolCard({ call, entry }: { call?: ToolCallPart; entry?: Entry }) {
   );
 }
 
-function FinalResult({ call, entry }: { call: ToolCallPart; entry?: Entry }) {
+/** The run's structured answer: `final_result` arguments, or the text the model wrote it as (an `output` part). */
+function Answer({ value, chars }: { value?: Record<string, unknown> | null; chars?: number }) {
   const { bot } = useTranscript();
+  return value ? (
+    <ReplyView reply={value as BotReply | OpsReply} botName={bot?.name} botId={bot?.user_id} defaultOpen />
+  ) : (
+    <Missing chars={chars} what="回复" />
+  );
+}
+
+function FinalResult({ call, entry }: { call: ToolCallPart; entry?: Entry }) {
   return (
     <>
-      {call.args ? (
-        <ReplyView reply={call.args as BotReply | OpsReply} botName={bot?.name} botId={bot?.user_id} defaultOpen />
-      ) : (
-        <Missing chars={call.chars} what="回复" />
-      )}
+      <Answer value={call.args} chars={call.chars} />
       {entry && entry.outcome !== "ok" && (
         <Trace>
           <ToolCard call={call} entry={entry} />
@@ -640,6 +645,7 @@ function AssistantEntry({ entry, results }: { entry: Entry; results: Map<string,
           }
           if (b.type === "thinking") return <Thinking key={i} part={b} />;
           if (b.type === "tool_call") return <FinalResult key={i} call={b} entry={results.get(b.id)} />;
+          if (b.type === "output") return <Answer key={i} value={b.value} chars={b.chars} />;
           if (b.type === "image") return <Images key={i} items={partImages([b])} />;
           if (b.type !== "text") return null;
           return (

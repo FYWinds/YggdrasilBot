@@ -4321,12 +4321,16 @@
                 },
                 {
                   "$ref": "#/components/schemas/ToolCallPart"
+                },
+                {
+                  "$ref": "#/components/schemas/OutputPart"
                 }
               ],
               "discriminator": {
                 "propertyName": "type",
                 "mapping": {
                   "image": "#/components/schemas/ImagePart",
+                  "output": "#/components/schemas/OutputPart",
                   "text": "#/components/schemas/TextPart",
                   "thinking": "#/components/schemas/ThinkingPart",
                   "tool_call": "#/components/schemas/ToolCallPart"
@@ -6001,6 +6005,32 @@
         ],
         "title": "OpsReply",
         "description": "The structured answer of the ops agent (``yggdrasil.ops.agent``)."
+      },
+      "OutputPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "output",
+            "title": "Type",
+            "default": "output"
+          },
+          "value": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Value"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "OutputPart",
+        "description": "The run's structured output when the model returned it as text (native or prompted output mode) instead of\ncalling ``final_result``. Not stored: the admin API sets it when it reads a transcript."
       },
       "PageDisplay": {
         "properties": {
