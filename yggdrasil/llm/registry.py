@@ -1,10 +1,12 @@
-"""Task → model resolution against the runtime config, plus embedding/rerank clients.
+"""Task → model resolution against the runtime config, plus embedding/rerank/image clients.
 
 Chat models use the provider's ``api_format``: OpenAI Chat Completions or the Anthropic
 Messages API (new-api serves both; its Claude channels only support tool calling via the
 latter). Embeddings, rerank and model listing always use OpenAI-compatible routes.
 """
 
+import base64
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +25,7 @@ from pydantic_ai.usage import UsageLimits
 
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.metrics import LLM_REQUESTS, LLM_TOKENS
-from yggdrasil.llm.catalog import ModelCaps
+from yggdrasil.llm.catalog import UPSTREAM_PREFIX, ModelCaps
 from yggdrasil.llm.streaming import MeteredModel
 from yggdrasil.runtime import ProviderInfo, Route, Snapshot, snapshot
 
@@ -44,13 +46,16 @@ TASKS = (
     "memory_glossary",
     "memory_profile",
     "memory_digest",
+    # Image generation (yggdrasil.tools.image), a direct POST {base}/images in OpenRouter's shape.
+    "image",
 )
-CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embedding", "rerank"))
+CHAT_TASKS = tuple(t for t in TASKS if t not in ("agent", "moderation", "embedding", "rerank", "image"))
 # Capabilities a route's models must have; checked on save when the catalog knows the model.
 # Agents with tools or structured output (pydantic-ai output tools) need tool calling.
 TASK_NEEDS: dict[str, tuple[str, ...]] = {
     "vision": ("vision",),
     "sticker": ("vision", "tools"),
+    "image": ("image_output",),
     **dict.fromkeys(
         ("chat", "tldr", "ops", "agent", "memory_topic", "memory_glossary", "memory_profile", "memory_digest"),
         ("tools",),
@@ -165,10 +170,11 @@ _VENDORS = {
 
 
 def display_name(p: ProviderInfo, model: str) -> str:
-    """The model as users may see it: the models.dev match, never our provider or gateway prefixes."""
+    """The model as users may see it: the catalog match, never our provider or gateway prefixes."""
     if caps := p.caps.get(model):
-        vendor, _, name = caps.catalog_id.partition("/")
-        return f"{_VENDORS.get(vendor, vendor.capitalize())}/{name}"
+        vendor, sep, name = caps.catalog_id.removeprefix(UPSTREAM_PREFIX).partition("/")
+        if sep:
+            return f"{_VENDORS.get(vendor, vendor.capitalize())}/{name}"
     return model.rsplit("/", 1)[-1]
 
 
@@ -279,3 +285,74 @@ async def rerank(
         results = resp.json().get("results", [])
     LLM_REQUESTS.add(1, {"task": "rerank", "model": r.model})
     return sorted(((int(x["index"]), float(x["relevance_score"])) for x in results), key=lambda t: -t[1])
+
+
+class ImageError(Exception):
+    """The image API refused or failed; the message is the provider's own explanation."""
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedImages:
+    images: list[tuple[bytes, str]]  # (bytes, media type)
+    model: str  # route label, provider/model
+    input_tokens: int
+    output_tokens: int
+    cost: float | None  # USD, when the provider reports it
+
+
+async def generate_images(
+    prompt: str,
+    *,
+    references: Sequence[tuple[bytes, str]] = (),
+    aspect_ratio: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> GeneratedImages:
+    """OpenRouter's ``POST {base}/images`` (text to image, or edits with reference images) for the ``image`` route.
+
+    The route's ``params`` go into the request body as-is (``quality``, ``resolution``, ``output_format``, ...).
+    """
+    snap = snapshot()
+    r = route("image", snap)
+    p = _provider(snap, r.provider_id, "image")
+    body: dict[str, Any] = {**r.params, "model": r.model, "prompt": prompt, "n": 1}
+    if aspect_ratio:
+        body["aspect_ratio"] = aspect_ratio
+    if references:
+        body["input_references"] = [
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
+            for data, mime in references
+        ]
+    headers = {"User-Agent": APP_CONFIG.llm_user_agent, **p.headers}
+    if p.api_key:
+        headers["Authorization"] = f"Bearer {p.api_key}"
+    label = f"{p.name}/{r.model}"
+    try:
+        if client is not None:
+            resp = await client.post(f"{p.base_url}/images", json=body, headers=headers)
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as own:
+                resp = await own.post(f"{p.base_url}/images", json=body, headers=headers)
+    except httpx.HTTPError as e:
+        raise ImageError(f"请求失败：{type(e).__name__}") from e
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if resp.status_code >= 400 or not isinstance(data, dict):
+        error = data.get("error") if isinstance(data, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        raise ImageError(f"{resp.status_code} {message or resp.text[:300] or resp.reason_phrase}")
+    images = [
+        (base64.b64decode(item["b64_json"]), str(item.get("media_type") or "image/png"))
+        for item in data.get("data") or []
+        if isinstance(item, dict) and item.get("b64_json")
+    ]
+    if not images:
+        raise ImageError("没有返回图片")
+    usage = data.get("usage") or {}
+    input_tokens, output_tokens = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+    record_usage("image", r.model, input_tokens=input_tokens, output_tokens=output_tokens)
+    cost = usage.get("cost")
+    return GeneratedImages(
+        images, label, input_tokens, output_tokens, float(cost) if isinstance(cost, int | float) else None
+    )

@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
@@ -296,3 +296,165 @@ async def _route(task: str) -> tuple[int, str] | None:
     async with get_session() as s:
         r = await s.get(TaskRoute, task)
         return (r.provider_id, r.model) if r else None
+
+
+def _arch_model(mid: str, inputs: list[str], outputs: list[str], params: list[str], **extra: object) -> dict:
+    return {
+        "id": mid,
+        "architecture": {"input_modalities": inputs, "output_modalities": outputs},
+        "supported_parameters": params,
+        **extra,
+    }
+
+
+_OR_TEXT = [
+    _arch_model(
+        "openai/gpt-x",
+        ["text", "image", "file"],
+        ["text"],
+        ["tools", "include_reasoning"],
+        context_length=400000,
+        top_provider={"max_completion_tokens": 128000},
+    ),
+    _arch_model("acme/plain", ["text"], ["text"], ["temperature"], context_length=None, top_provider=None),
+    _arch_model("google/gemini-img", ["text", "image"], ["text", "image"], ["tools"]),
+]
+_OR_IMAGE = [
+    _arch_model("google/gemini-img", ["text", "image"], ["text", "image"], ["tools"]),
+    _arch_model("openai/gpt-image-z", ["text", "image"], ["image"], []),
+]
+
+
+def _mock_upstream(monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], dict]) -> list[httpx.Request]:
+    """Answer every outgoing (non-ASGI) request with ``handler``'s JSON; returns the seen requests."""
+    seen: list[httpx.Request] = []
+
+    async def upstream(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=handler(request))
+
+    async def _load() -> Catalog:
+        return _CATALOG
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", upstream)
+    monkeypatch.setattr(providers_api, "load_catalog", _load)
+    return seen
+
+
+async def _snapshot_route(task: str) -> dict | None:
+    async with get_session() as s:
+        r = await s.get(TaskRoute, task)
+        if r is None:
+            return None
+        keys = ("provider_id", "model", "params", "fallback_provider_id", "fallback_model", "limits")
+        return {k: getattr(r, k) for k in keys}
+
+
+async def _restore_route(task: str, snap: dict | None) -> None:
+    async with get_session() as s:
+        r = await s.get(TaskRoute, task)
+        if snap is None:
+            if r is not None:
+                await s.delete(r)
+            return
+        if r is None:
+            r = TaskRoute(task=task)
+            s.add(r)
+        for k, v in snap.items():
+            setattr(r, k, v)
+
+
+async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
+    client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _mock_upstream(
+        monkeypatch,
+        lambda r: {"data": _OR_IMAGE if r.url.params.get("output_modalities") == "image" else _OR_TEXT},
+    )
+    name = f"pytest-{uuid.uuid4().hex[:8]}"
+    resp = await client.post(
+        "/api/providers", json={"name": name, "base_url": "https://router.example.com/api/v1", "api_key": "sk-test"}
+    )
+    pid = resp.json()["id"]
+    image_before = await _snapshot_route("image")
+    try:
+        aliased = await client.put(
+            f"/api/providers/{pid}/aliases", json={"aliases": {"acme/plain": "anthropic/claude-x"}}
+        )
+        assert aliased.status_code == 200, aliased.text
+
+        res = await client.post(f"/api/providers/{pid}/refresh-models")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert [(r.url.path, r.url.params.get("output_modalities")) for r in seen] == [
+            ("/api/v1/models", None),
+            ("/api/v1/models", "image"),
+        ]
+        assert all(r.headers["authorization"] == "Bearer sk-test" for r in seen)
+        assert body["probe"]["model_count"] == 4
+        provider = body["provider"]
+        assert provider["models"] == ["acme/plain", "google/gemini-img", "openai/gpt-image-z", "openai/gpt-x"]
+        caps = provider["model_caps"]
+        assert caps["openai/gpt-x"] == {
+            "catalog_id": "upstream:openai/gpt-x",
+            "vision": True,
+            "pdf": True,
+            "tools": True,
+            "reasoning": True,
+            "context": 400000,
+            "output": 128000,
+            "image_output": False,
+        }
+        assert caps["openai/gpt-image-z"]["image_output"] is True
+        assert caps["openai/gpt-image-z"]["tools"] is False
+        assert caps["google/gemini-img"]["image_output"] is True
+        # The alias still wins over what the provider reports.
+        assert caps["acme/plain"]["catalog_id"] == "anthropic/claude-x"
+
+        # Dropping the alias falls back to the stored upstream caps, not to "unknown".
+        unaliased = await client.put(f"/api/providers/{pid}/aliases", json={"aliases": {}})
+        plain = unaliased.json()["provider"]["model_caps"]["acme/plain"]
+        assert (plain["catalog_id"], plain["tools"], plain["context"]) == ("upstream:acme/plain", False, None)
+
+        no_image = await client.put("/api/routes/image", json={"provider_id": pid, "model": "openai/gpt-x"})
+        assert no_image.status_code == 422
+        assert "出图" in no_image.text
+        assert "上游 /models" in no_image.text
+        image_only_chat = await client.put("/api/routes/chat", json={"provider_id": pid, "model": "openai/gpt-image-z"})
+        assert image_only_chat.status_code == 422
+        assert "工具调用" in image_only_chat.text
+        ok = await client.put("/api/routes/image", json={"provider_id": pid, "model": "openai/gpt-image-z"})
+        assert ok.status_code == 200, ok.text
+    finally:
+        await _restore_route("image", image_before)
+        async with get_session() as s:
+            await s.execute(delete(Provider).where(Provider.id == pid))
+
+
+async def test_refresh_plain_openai_upstream_single_call_without_upstream_caps(
+    client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _mock_upstream(monkeypatch, lambda _r: {"object": "list", "data": [{"id": "gw/claude-x"}, {"id": "other"}]})
+    name = f"pytest-{uuid.uuid4().hex[:8]}"
+    resp = await client.post("/api/providers", json={"name": name, "base_url": "https://gw.example.com/v1"})
+    pid = resp.json()["id"]
+    try:
+        async with get_session() as s:
+            row = await s.get(Provider, pid)
+            assert row is not None
+            row.upstream_caps = {
+                "gone": {"catalog_id": "upstream:gone", "vision": True, "pdf": False, "tools": True, "reasoning": False}
+            }
+        res = await client.post(f"/api/providers/{pid}/refresh-models")
+        assert res.status_code == 200, res.text
+        assert len(seen) == 1
+        provider = res.json()["provider"]
+        assert provider["models"] == ["gw/claude-x", "other"]
+        assert {k: v["catalog_id"] for k, v in provider["model_caps"].items()} == {"gw/claude-x": "anthropic/claude-x"}
+        async with get_session() as s:
+            row = await s.get(Provider, pid)
+            assert row is not None
+            assert row.upstream_caps == {}
+    finally:
+        async with get_session() as s:
+            await s.execute(delete(Provider).where(Provider.id == pid))

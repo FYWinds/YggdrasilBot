@@ -135,6 +135,36 @@ async def send_text(
     return res.message_id
 
 
+async def send_image(
+    api: NapCatAPI,
+    *,
+    group_id: int | None,
+    user_id: int,
+    reply_to: int | None,
+    images: list[bytes],
+    text: str,
+    self_id: int,
+    nickname: str,
+) -> int:
+    """Images (with an optional line of text) as one plain message, replying to the trigger."""
+    segments = [reply_seg(reply_to)] if reply_to else []
+    if text:
+        segments.append(text_seg(text))
+    segments += [image_seg("base64://" + base64.b64encode(png).decode()) for png in images]
+    if group_id is None:
+        return (await api.send_private_msg(user_id=user_id, message=segments)).message_id
+    res = await api.send_group_msg(group_id=group_id, message=segments)
+    # Record the message as QQ stored it (image segments with file and url, not our base64), so a later reply to it
+    # can load the picture again (e.g. "make it bluer").
+    try:
+        stored = [s.model_dump() for s in (await api.get_msg(message_id=res.message_id)).segments]
+    except Exception as e:
+        LOGGER.warning("get_msg after sending images failed: {}", e)
+        stored = [s if s["type"] != "image" else text_seg("[图片]") for s in segments]
+    _record_self(group_id, self_id, nickname, res.message_id, stored)
+    return res.message_id
+
+
 def build_nodes(
     reply: BotReply,
     meta_text: str | None,

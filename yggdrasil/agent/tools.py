@@ -6,25 +6,30 @@ suite lives in ``agent/sandbox_tools.py``.
 """
 
 import asyncio
+import io
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from PIL import Image
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.deps import Deps, Handle
-from yggdrasil.agent.media import ModelImage, load_image, media_bytes, media_type
+from yggdrasil.agent.media import ModelImage, fit_image, load_image, media_bytes, media_type
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
+from yggdrasil.delivery.send import send_image
 from yggdrasil.ingest.normalize import normalize
-from yggdrasil.llm.registry import TaskNotConfigured, chat_model, sees_images
+from yggdrasil.llm.registry import ImageError, TaskNotConfigured, chat_model, generate_images, sees_images
 from yggdrasil.llm.streaming import drain_events
+from yggdrasil.moderation.image import ImageVerdict, check_image
 from yggdrasil.people import People, clean_name, resolve
 from yggdrasil.prompts import render
+from yggdrasil.settings import Settings
 from yggdrasil.tools import render as renderer
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.transcript.schema import ForwardNode, Hit, HitsDisplay, PageDisplay, QQForwardDisplay
@@ -399,6 +404,33 @@ def reserve_images(deps: Deps, wanted: int) -> int:
     return held
 
 
+def _decode_image(blob: bytes) -> bytes:
+    try:
+        with Image.open(io.BytesIO(blob)) as img:
+            img.verify()
+    except (OSError, ValueError, Image.DecompressionBombError) as e:
+        raise ToolError("这个文件不是能发的图片（支持 PNG、JPEG、GIF、WebP 等）") from e
+    return fit_image(blob)
+
+
+def needs_image_check(settings: Settings) -> bool:
+    """Images the bot sends (workspace show, generated) follow the group's output moderation switch."""
+    return settings.moderation.enabled and settings.moderation.check_output
+
+
+async def screen_image(deps: Deps, blob: bytes, *, check: Any = None) -> bytes:
+    """An image the bot is about to send: decoded, fitted, and moderated when the group moderates output."""
+    image = await asyncio.to_thread(_decode_image, blob)
+    if needs_image_check(deps.settings):
+        verdict: ImageVerdict = await (check or check_image)(image)
+        if verdict.model:
+            deps.vision_tokens.append((verdict.model, verdict.input_tokens, verdict.output_tokens))
+        if not verdict.safe:
+            reason = "审核没通过" if verdict.category != "error" else "审核出错"
+            raise ToolError(f"这张图{reason}（{verdict.category}），不能发；不要在正文里描述它的内容")
+    return image
+
+
 async def _attach_render(ctx: RunContext[Deps], kind: renderer.Kind, source: str, caption: str) -> str:
     if not APP_CONFIG.render_url:
         raise ToolError("没有配置渲染服务")
@@ -450,6 +482,60 @@ async def render_html(ctx: RunContext[Deps], html: str, caption: str = "") -> st
     return await _attach_render(ctx, "html", html, caption)
 
 
+MAX_REFERENCES = 4
+type AspectRatio = Literal["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9"]
+
+
+@_tool("generate_image")
+async def generate_image(
+    ctx: RunContext[Deps],
+    prompt: str,
+    references: list[str] | None = None,
+    aspect_ratio: AspectRatio = "auto",
+    text: str = "",
+) -> str:
+    """画图：按描述生成一张图，或参照群里的图改图。画好后直接作为一条图片消息回复到群里，不进合并转发。
+    prompt 写清画面内容、风格、构图和图里要出现的文字；用户说得简单时按他的意思补全细节，不要改变意图。
+    references 是参考图（最多 4 张）：img#N 句柄，或聊天记录里的消息编号 #N（有多张时 #N/2 取第 2 张）；
+    “把这张图改成……”时传被引用的那张。aspect_ratio 是画幅，用户没要求就用 auto。text 是随图发的一句话，可以留空。
+    生成要几十秒。发出后没有别的要说就选 mode=done，不要在合并转发里再描述这张图。"""
+    deps = ctx.deps
+    if len(references or []) > MAX_REFERENCES:
+        raise ToolError(f"参考图最多 {MAX_REFERENCES} 张")
+    refs: list[tuple[bytes, str]] = []
+    for ref in references or []:
+        h = deps.handles.get(ref) or await _history_image(ctx, ref)
+        if h.kind != "image":
+            raise ToolError(f"{ref} 不是图片")
+        img = await load_image(deps.api, deps.group_id, h)
+        deps.notes.image(img.data, img.content.media_type, segment=h.data)
+        refs.append((img.data, img.content.media_type))
+    try:
+        result = await generate_images(
+            prompt, references=refs, aspect_ratio=None if aspect_ratio == "auto" else aspect_ratio
+        )
+    except ImageError as e:
+        raise ToolError(f"画图失败：{e}") from e
+    deps.vision_tokens.append((result.model, result.input_tokens, result.output_tokens))
+    pictures = [await screen_image(deps, data) for data, _ in result.images]
+    caption = text.strip()
+    message_id = await send_image(
+        deps.api,
+        group_id=deps.group_id,
+        user_id=deps.user_id,
+        reply_to=deps.trigger_message_id,
+        images=pictures,
+        text=caption,
+        self_id=deps.self_id,
+        nickname=deps.bot_nickname,
+    )
+    for picture in pictures:
+        deps.notes.shown(ctx.tool_call_id, [(picture, caption)], mime=media_type(picture))
+    deps.actions.append(f"image {message_id}")
+    cost = f"（花费 ${result.cost:.3f}）" if result.cost is not None else ""
+    return f"图已经发到群里了{cost}。没有别的要说就选 mode=done。"
+
+
 ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
     "read_url": read_url,
     "web_search": web_search,
@@ -464,6 +550,7 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
     "render_mermaid": render_mermaid,
     "render_markdown": render_markdown,
     "render_html": render_html,
+    "generate_image": generate_image,
 }
 
 
@@ -473,7 +560,7 @@ ALL_TOOLS: dict[str, Callable[..., Awaitable[ToolResult]]] = {
 SANDBOX = "sandbox"
 _HANDLER_EXCLUDED: dict[str, frozenset[str]] = {
     "chat": frozenset({"recent_chat"}),
-    "tldr": frozenset({"get_profile", SANDBOX}),
+    "tldr": frozenset({"get_profile", "generate_image", SANDBOX}),
 }
 
 

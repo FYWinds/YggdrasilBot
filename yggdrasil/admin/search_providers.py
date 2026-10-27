@@ -1,4 +1,4 @@
-"""Web search providers (the pool behind ``web_search``): CRUD, this month's usage, test query."""
+"""Web search providers (the pool behind ``web_search``): CRUD, this month's usage, test query, balance."""
 
 import time
 from datetime import datetime
@@ -10,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from yggdrasil.admin.auth import Actor
-from yggdrasil.admin.common import Ok, change, conflict, not_found, unprocessable
+from yggdrasil.admin.common import Ok, change, conflict, not_found, unavailable, unprocessable
 from yggdrasil.crypto import decrypt, encrypt, mask
 from yggdrasil.db.models import SearchProvider
 from yggdrasil.db.session import get_session
+from yggdrasil.llm.balance import BalanceError, BalanceOut, BalanceUnsupported, deepseek_balance
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.search import DEFAULT_BASE_URLS, SearchBackendError, monthly_usage, reserve_quota, search_with
 
@@ -208,3 +209,23 @@ async def test_search_provider(provider_id: int, body: SearchTestIn) -> SearchTe
         latency_ms=int((time.perf_counter() - started) * 1000),
         hits=[SearchTestHit(title=h.title, url=h.url, snippet=h.snippet) for h in hits],
     )
+
+
+@router.get("/{provider_id}/balance")
+async def get_search_provider_balance(provider_id: int) -> BalanceOut:
+    """Account balance of a DeepSeek search provider (always read from api.deepseek.com)."""
+    async with get_session() as s:
+        p = await s.get(SearchProvider, provider_id)
+        if p is None:
+            raise not_found("搜索源")
+    if p.kind != "deepseek":
+        raise unprocessable("只有 DeepSeek 搜索源支持余额查询")
+    key = _key(p)
+    if p.api_key_enc and key is None:
+        raise unprocessable("无法解密已存储的 key")
+    try:
+        return await deepseek_balance(key)
+    except BalanceUnsupported as e:
+        raise unprocessable(str(e)) from e
+    except BalanceError as e:
+        raise unavailable(str(e)) from e

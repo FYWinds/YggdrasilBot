@@ -10,11 +10,9 @@ import json
 import os
 import sys
 
-import httpx
 from sqlalchemy import select
 
-from yggdrasil.config import APP_CONFIG
-from yggdrasil.crypto import decrypt, encrypt, mask
+from yggdrasil.crypto import encrypt, mask
 from yggdrasil.db.models import Admin, ConfigAudit, Group, Provider, TaskRoute
 from yggdrasil.db.session import dispose_engine, get_session
 from yggdrasil.llm.registry import TASKS
@@ -59,23 +57,22 @@ async def provider_add(args: argparse.Namespace) -> None:
 
 
 async def provider_refresh(args: argparse.Namespace) -> None:
+    from datetime import UTC, datetime
+
+    from yggdrasil.admin.providers import apply_caps, fetch_models
+    from yggdrasil.llm.catalog import load_catalog
+
     async with get_session() as session:
         p = await session.scalar(select(Provider).where(Provider.name == args.name))
         if p is None:
             raise SystemExit(f"no provider {args.name}")
-        headers = {"User-Agent": APP_CONFIG.llm_user_agent}
-        if p.api_key_enc:
-            headers["Authorization"] = f"Bearer {decrypt(p.api_key_enc)}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(f"{p.base_url}/models", headers=headers)
-            resp.raise_for_status()
-        p.models = sorted(m["id"] for m in resp.json().get("data", []))
-        from datetime import UTC, datetime
-
-        from yggdrasil.llm.catalog import load_catalog
-
+        probe, ids, upstream = await fetch_models(p)
+        if not probe.ok:
+            raise SystemExit(f"GET {p.base_url}/models failed ({probe.status_code}): {probe.error}")
+        p.models = ids
+        p.upstream_caps = upstream
         p.models_fetched_at = datetime.now(UTC)
-        p.model_caps = (await load_catalog()).resolve(p.models, p.model_aliases or {})
+        apply_caps(p, await load_catalog())
         _out(p.name, json.dumps(p.models, ensure_ascii=False), f"caps={len(p.model_caps)}")
     await _publish(f"provider {args.name} models")
 

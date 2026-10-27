@@ -29,6 +29,10 @@ class Provider(Base, TimestampMixin):
     model_aliases: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
     # model id -> yggdrasil.llm.catalog.ModelCaps, refreshed with the model list / on alias edits
     model_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
+    # model id -> ModelCaps as the provider's own /models reports them (OpenRouter); used for unaliased ids
+    upstream_caps: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default="{}")
+    # optional key used only to read the account balance (OpenRouter management key); Fernet like api_key_enc
+    balance_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
 
 
 class SearchProvider(Base, TimestampMixin):

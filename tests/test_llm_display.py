@@ -15,6 +15,14 @@ def test_display_name_shows_catalog_match_without_provider_or_gateway_prefix():
     assert display_name(p, "cvp/some-unlisted-model") == "some-unlisted-model"
 
 
+def test_display_name_of_upstream_caps_drops_the_source_marker():
+    caps = ModelCaps(catalog_id="upstream:openai/gpt-x", vision=True, pdf=True, tools=True, reasoning=True)
+    bare = ModelCaps(catalog_id="upstream:house-model", vision=False, pdf=False, tools=True, reasoning=False)
+    p = _provider({"openai/gpt-x": caps, "house-model": bare})
+    assert display_name(p, "openai/gpt-x") == "OpenAI/gpt-x"
+    assert display_name(p, "house-model") == "house-model"
+
+
 def test_run_speed_skips_short_and_burst_delivered_requests():
     stats = RunStats(
         [

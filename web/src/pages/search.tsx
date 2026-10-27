@@ -5,11 +5,14 @@ import { toast } from "sonner";
 import {
   createSearchProviderMutation,
   deleteSearchProviderMutation,
+  getSearchProviderBalanceQueryKey,
   listSearchProvidersOptions,
   testSearchProviderMutation,
   updateSearchProviderMutation,
 } from "@/client/@tanstack/react-query.gen";
+import { getSearchProviderBalance } from "@/client/sdk.gen";
 import type { SearchKind, SearchProviderIn, SearchProviderOut, SearchTestHit } from "@/client/types.gen";
+import { BALANCE_QUERY, BalanceView, balanceResult } from "@/components/balance";
 import {
   ApiKeyField,
   ConfirmButton,
@@ -108,6 +111,7 @@ export function SearchPage() {
               <TableHead>地址</TableHead>
               <TableHead>Key</TableHead>
               <TableHead>本月用量</TableHead>
+              <TableHead>余额</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
@@ -127,6 +131,13 @@ export function SearchPage() {
                 <TableCell className="tabular-nums">
                   {p.used_this_month}
                   <span className="text-muted-foreground"> / {p.monthly_limit ?? "不限"}</span>
+                </TableCell>
+                <TableCell>
+                  {p.kind === "deepseek" ? (
+                    <BalanceCell provider={p} />
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </TableCell>
                 <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
                 <TableCell>
@@ -156,6 +167,18 @@ export function SearchPage() {
       {testing && <TestDialog provider={testing} onClose={() => setTesting(null)} />}
     </div>
   );
+}
+
+/** Lazily fetched DeepSeek account balance (disabled providers are not queried). */
+function BalanceCell({ provider }: { provider: SearchProviderOut }) {
+  const path = { provider_id: provider.id };
+  const balance = useQuery({
+    queryKey: getSearchProviderBalanceQueryKey({ path }),
+    queryFn: ({ signal }) => balanceResult(getSearchProviderBalance({ path, signal })),
+    enabled: provider.enabled,
+    ...BALANCE_QUERY,
+  });
+  return <BalanceView query={balance} enabled={provider.enabled} />;
 }
 
 function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderOut | null; onClose: () => void }) {

@@ -16,7 +16,6 @@ moderation and link objects, and appends the outcome to the tool result.
 """
 
 import asyncio
-import io
 import json
 import re
 import secrets
@@ -27,7 +26,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from PIL import Image
 from pydantic_ai import RunContext, Tool, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.capabilities.abstract import ValidatedToolArgs, WrapToolExecuteHandler
@@ -37,12 +35,21 @@ from pydantic_ai.workspaces import WorkspaceError
 from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import ModelImage, fit_image, media_bytes, model_image
-from yggdrasil.agent.tools import MAX_IMAGES, ToolResult, _handle, _tool, _vision, reserve_images, sandbox_requested
+from yggdrasil.agent.media import ModelImage, media_bytes, model_image
+from yggdrasil.agent.tools import (
+    MAX_IMAGES,
+    ToolResult,
+    _handle,
+    _tool,
+    _vision,
+    reserve_images,
+    sandbox_requested,
+    screen_image,
+)
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
-from yggdrasil.moderation.image import ImageVerdict, check_image
+from yggdrasil.moderation.image import check_image
 from yggdrasil.sandbox import SandboxError, Session
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.tools.errors import ToolError
@@ -406,34 +413,13 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     return f"{handle} 已放到 {path}（{len(blob)} 字节）"
 
 
-def _decode_image(blob: bytes) -> bytes:
-    try:
-        with Image.open(io.BytesIO(blob)) as img:
-            img.verify()
-    except (OSError, ValueError, Image.DecompressionBombError) as e:
-        raise ToolError("这个文件不是能发的图片（支持 PNG、JPEG、GIF、WebP 等）") from e
-    return fit_image(blob)
-
-
-def needs_image_check(settings: Settings) -> bool:
-    """Workspace images follow the group's output moderation switch."""
-    return settings.moderation.enabled and settings.moderation.check_output
-
-
 async def attach_image(
     deps: Deps, blob: bytes, caption: str, *, check: Any = check_image, call_id: str | None = None
 ) -> str:
     """Moderate (when the group moderates output) and queue one image for the reply's forward message."""
     reserve_images(deps, 1)
     try:
-        image = await asyncio.to_thread(_decode_image, blob)
-        if needs_image_check(deps.settings):
-            verdict: ImageVerdict = await check(image)
-            if verdict.model:
-                deps.vision_tokens.append((verdict.model, verdict.input_tokens, verdict.output_tokens))
-            if not verdict.safe:
-                reason = "审核没通过" if verdict.category != "error" else "审核出错"
-                raise ToolError(f"这张图{reason}（{verdict.category}），不能发；不要在正文里描述它的内容")
+        image = await screen_image(deps, blob, check=check)
     finally:
         deps.images_reserved -= 1
     deps.images.append((image, caption.strip()))

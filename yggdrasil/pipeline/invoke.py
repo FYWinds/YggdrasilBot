@@ -303,6 +303,7 @@ class Invocator:
             self.handler,
             recall_target=recall_target,
             self_id=ident.self_id,
+            bot_nickname=ident.nickname,
             on_slow_tool=self._mark_slow,
             trigger_message_id=self.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,

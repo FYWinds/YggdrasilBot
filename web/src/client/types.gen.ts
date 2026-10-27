@@ -116,6 +116,49 @@ export type ArchiveSmallOut = {
 };
 
 /**
+ * BalanceAmount
+ */
+export type BalanceAmount = {
+    /**
+     * Label
+     */
+    label: string;
+    /**
+     * Currency
+     */
+    currency?: string | null;
+    /**
+     * Value
+     */
+    value?: number | null;
+};
+
+export type BalanceKind = 'deepseek' | 'openrouter' | 'new-api';
+
+/**
+ * BalanceOut
+ */
+export type BalanceOut = {
+    kind: BalanceKind;
+    /**
+     * Available
+     */
+    available: boolean | null;
+    /**
+     * Amounts
+     */
+    amounts: Array<BalanceAmount>;
+    /**
+     * Note
+     */
+    note?: string | null;
+    /**
+     * Fetched At
+     */
+    fetched_at: string;
+};
+
+/**
  * BotOut
  */
 export type BotOut = {
@@ -1184,6 +1227,10 @@ export type ModelCaps = {
      * Output
      */
     output?: number | null;
+    /**
+     * Image Output
+     */
+    image_output?: boolean;
 };
 
 /**
@@ -1712,6 +1759,14 @@ export type ProviderIn = {
      */
     clear_api_key?: boolean;
     /**
+     * Balance Key
+     */
+    balance_key?: string | null;
+    /**
+     * Clear Balance Key
+     */
+    clear_balance_key?: boolean;
+    /**
      * Headers
      */
     headers?: {
@@ -1747,6 +1802,10 @@ export type ProviderOut = {
      * Api Key Masked
      */
     api_key_masked: string | null;
+    /**
+     * Balance Key Masked
+     */
+    balance_key_masked: string | null;
     /**
      * Headers
      */
@@ -3247,6 +3306,36 @@ export type TestProviderResponses = {
 
 export type TestProviderResponse = TestProviderResponses[keyof TestProviderResponses];
 
+export type GetProviderBalanceData = {
+    body?: never;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/providers/{provider_id}/balance';
+};
+
+export type GetProviderBalanceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetProviderBalanceError = GetProviderBalanceErrors[keyof GetProviderBalanceErrors];
+
+export type GetProviderBalanceResponses = {
+    /**
+     * Successful Response
+     */
+    200: BalanceOut;
+};
+
+export type GetProviderBalanceResponse = GetProviderBalanceResponses[keyof GetProviderBalanceResponses];
+
 export type RefreshProviderModelsData = {
     body?: never;
     path: {
@@ -3439,6 +3528,36 @@ export type TestSearchProviderResponses = {
 };
 
 export type TestSearchProviderResponse = TestSearchProviderResponses[keyof TestSearchProviderResponses];
+
+export type GetSearchProviderBalanceData = {
+    body?: never;
+    path: {
+        /**
+         * Provider Id
+         */
+        provider_id: number;
+    };
+    query?: never;
+    url: '/search-providers/{provider_id}/balance';
+};
+
+export type GetSearchProviderBalanceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetSearchProviderBalanceError = GetSearchProviderBalanceErrors[keyof GetSearchProviderBalanceErrors];
+
+export type GetSearchProviderBalanceResponses = {
+    /**
+     * Successful Response
+     */
+    200: BalanceOut;
+};
+
+export type GetSearchProviderBalanceResponse = GetSearchProviderBalanceResponses[keyof GetSearchProviderBalanceResponses];
 
 export type ListRoutesData = {
     body?: never;

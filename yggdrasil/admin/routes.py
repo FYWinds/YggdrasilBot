@@ -12,10 +12,10 @@ from yggdrasil.admin.common import Ok, change, not_found, unavailable, unprocess
 from yggdrasil.db.base import EMBED_DIM
 from yggdrasil.db.models import EmbedSpace, Provider, TaskRoute
 from yggdrasil.db.session import get_session
-from yggdrasil.llm.catalog import ModelCaps
+from yggdrasil.llm.catalog import UPSTREAM_PREFIX, ModelCaps
 from yggdrasil.llm.registry import TASK_NEEDS, TASKS
 
-_NEED_LABELS = {"vision": "看图", "tools": "工具调用", "reasoning": "思考"}
+_NEED_LABELS = {"vision": "看图", "tools": "工具调用", "reasoning": "思考", "image_output": "出图"}
 _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 
 router = APIRouter(tags=["routes"])
@@ -92,7 +92,8 @@ def _missing_caps(task: str, p: Provider, model: str, extra: tuple[str, ...] = (
     missing = [_NEED_LABELS[n] for n in (*TASK_NEEDS.get(task, ()), *extra) if not getattr(caps, n)]
     if not missing:
         return None
-    return f"{p.name}/{model}（models.dev: {caps.catalog_id}）不支持{'、'.join(missing)}，不能用于 {task}"
+    source = "上游 /models" if caps.catalog_id.startswith(UPSTREAM_PREFIX) else f"models.dev: {caps.catalog_id}"
+    return f"{p.name}/{model}（{source}）不支持{'、'.join(missing)}，不能用于 {task}"
 
 
 @router.put("/routes/{task}")

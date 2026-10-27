@@ -175,12 +175,18 @@ function RouteDialog({
   const save = useMutation({ ...upsertRouteMutation(), onSuccess: onClose });
   const providerOptions = providers.map((p) => ({ value: String(p.id), label: p.name }));
   const limits = form.limits ?? {};
+  // The image task is one POST /images: no thinking, fallback or UsageLimits; params go into the request body.
+  const image = row.task === "image";
   return (
     <FormDialog
       open
       onOpenChange={(o) => !o && onClose()}
       title={TASK_LABELS[row.task] ?? row.task}
-      description={`任务 ${row.task} 用哪个 provider 的哪个模型、调用参数和 UsageLimits。`}
+      description={
+        image
+          ? "画图用哪个 provider 的哪个模型（OpenRouter 的 /images 接口），参数原样放进请求体。"
+          : `任务 ${row.task} 用哪个 provider 的哪个模型、调用参数和 UsageLimits。`
+      }
       onSubmit={() => save.mutate({ path: { task: row.task }, body: form })}
       pending={save.isPending}
       submitDisabled={!form.model || !form.provider_id || !paramsValid}
@@ -194,37 +200,54 @@ function RouteDialog({
             options={providerOptions}
           />
         </Field>
-        <Field label="模型" hint="「思考」默认不传，由模型决定；开启后更慢、更贵。兜底模型用同一个设置。">
+        <Field label="模型" hint={image ? undefined : "「思考」默认不传，由模型决定；开启后更慢、更贵。兜底模型用同一个设置。"}>
           <ModelSelector
+            task={row.task}
             provider={providers.find((p) => p.id === form.provider_id)}
             value={form.model}
             onChange={(model) => setForm({ ...form, model })}
-            effort={{
-              value: thinkingOf(form.params),
-              onChange: (v) => {
-                const { thinking: _, ...rest } = form.params ?? {};
-                setForm({ ...form, params: v === null ? rest : { ...rest, thinking: v } });
-              },
-            }}
+            effort={
+              image
+                ? undefined
+                : {
+                    value: thinkingOf(form.params),
+                    onChange: (v) => {
+                      const { thinking: _, ...rest } = form.params ?? {};
+                      setForm({ ...form, params: v === null ? rest : { ...rest, thinking: v } });
+                    },
+                  }
+            }
           />
         </Field>
-        <Field label="兜底 Provider">
-          <OptionSelect
-            value={form.fallback_provider_id == null ? null : String(form.fallback_provider_id)}
-            onChange={(v) => setForm({ ...form, fallback_provider_id: v === null ? null : Number(v) })}
-            noneLabel="无"
-            options={providerOptions}
-          />
-        </Field>
-        <Field label="兜底模型">
-          <ModelSelector
-            provider={providers.find((p) => p.id === form.fallback_provider_id)}
-            value={form.fallback_model ?? ""}
-            onChange={(m) => setForm({ ...form, fallback_model: m || null })}
-          />
-        </Field>
+        {!image && (
+          <>
+            <Field label="兜底 Provider">
+              <OptionSelect
+                value={form.fallback_provider_id == null ? null : String(form.fallback_provider_id)}
+                onChange={(v) => setForm({ ...form, fallback_provider_id: v === null ? null : Number(v) })}
+                noneLabel="无"
+                options={providerOptions}
+              />
+            </Field>
+            <Field label="兜底模型">
+              <ModelSelector
+                task={row.task}
+                provider={providers.find((p) => p.id === form.fallback_provider_id)}
+                value={form.fallback_model ?? ""}
+                onChange={(m) => setForm({ ...form, fallback_model: m || null })}
+              />
+            </Field>
+          </>
+        )}
       </div>
-      <Field label="参数" hint="temperature、max_tokens、top_p、timeout、seed、extra_body…">
+      <Field
+        label="参数"
+        hint={
+          image
+            ? "quality（auto、low、medium、high…）、resolution、output_format、background…"
+            : "temperature、max_tokens、top_p、timeout、seed、extra_body…"
+        }
+      >
         <JsonEditor
           rows={5}
           value={form.params}
@@ -232,7 +255,7 @@ function RouteDialog({
           onChange={(v) => isPlainObject(v) && setForm({ ...form, params: v })}
         />
       </Field>
-      <div className="grid grid-cols-3 gap-3">
+      <div className={image ? "hidden" : "grid grid-cols-3 gap-3"}>
         <Field label="request_limit">
           <NumberInput
             value={limits.request_limit}
@@ -341,7 +364,12 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
             />
           </Field>
           <Field label="模型" className="w-80">
-            <ModelSelector provider={providers.find((p) => p.id === providerId)} value={model} onChange={setModel} />
+            <ModelSelector
+              task="embedding"
+              provider={providers.find((p) => p.id === providerId)}
+              value={model}
+              onChange={setModel}
+            />
           </Field>
           <PendingButton type="submit" className="mt-7" pending={create.isPending} disabled={!providerId || !model}>
             {!create.isPending && <PlusIcon data-icon="inline-start" />}

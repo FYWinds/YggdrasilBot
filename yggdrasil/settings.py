@@ -130,7 +130,8 @@ class ToolSettings(BaseModel):
             "render_html",
             "sandbox",
         ],
-        description="启用的工具；sandbox 表示整套工作区工具（sh、py、文件读改、后台任务等，只在群聊 chat 生效）",
+        description="启用的工具；sandbox 表示整套工作区工具（sh、py、文件读改、后台任务等，只在群聊 chat 生效）；"
+        "generate_image 画图（需要配置 image 路由，按张计费，默认不开）",
     )
     slow_tools: list[str] = Field(
         default_factory=lambda: [
@@ -142,6 +143,7 @@ class ToolSettings(BaseModel):
             "render_mermaid",
             "render_markdown",
             "render_html",
+            "generate_image",
             "sh",
             "py",
             "sandbox_put",

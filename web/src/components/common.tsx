@@ -747,24 +747,32 @@ export function DateRangePicker({
 
 /**
  * Write-only API key input for provider forms: shows the stored key's last four characters and, when one is stored,
- * a checkbox to clear it. `onChange` gets the changed form keys.
+ * a checkbox to clear it. `onChange` gets the changed form keys; forms with a second key map them.
  */
 export function ApiKeyField({
+  label = "API key",
+  clearLabel = "清除已存储的 key",
   masked,
   value,
   clear,
   emptyHint,
+  note,
   onChange,
 }: {
+  label?: string;
+  clearLabel?: string;
   masked?: string | null;
   value: string;
   clear: boolean;
   emptyHint: string;
+  /** Shown after the stored-key / empty hint either way. */
+  note?: string;
   onChange: (patch: { api_key?: string; clear_api_key?: boolean }) => void;
 }) {
+  const hint = masked ? `当前 ${masked}；留空保持不变` : emptyHint;
   return (
     <>
-      <Field label="API key" hint={masked ? `当前 ${masked}；留空保持不变` : emptyHint}>
+      <Field label={label} hint={note ? `${hint}。${note}` : hint}>
         <Input
           type="password"
           autoComplete="off"
@@ -774,7 +782,7 @@ export function ApiKeyField({
         />
       </Field>
       {masked && (
-        <Field label="清除已存储的 key" orientation="horizontal">
+        <Field label={clearLabel} orientation="horizontal">
           <Checkbox checked={clear} onCheckedChange={(c) => onChange({ clear_api_key: c === true })} />
         </Field>
       )}

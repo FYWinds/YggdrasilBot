@@ -1,17 +1,20 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ListIcon, PencilIcon, PlusIcon, RefreshCwIcon, ServerIcon, ZapIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   createProviderMutation,
   deleteProviderMutation,
+  getProviderBalanceQueryKey,
   listProvidersOptions,
   refreshProviderModelsMutation,
   setProviderAliasesMutation,
   testProviderMutation,
   updateProviderMutation,
 } from "@/client/@tanstack/react-query.gen";
+import { getProviderBalance } from "@/client/sdk.gen";
 import type { ProviderIn, ProviderOut, ProviderProbe } from "@/client/types.gen";
+import { BALANCE_QUERY, BalanceView, balanceResult } from "@/components/balance";
 import { CapBadges } from "@/components/model-caps";
 import {
   ApiKeyField,
@@ -83,6 +86,7 @@ export function ProvidersPage() {
               <TableHead>Base URL</TableHead>
               <TableHead>Key</TableHead>
               <TableHead>模型</TableHead>
+              <TableHead>余额</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
@@ -101,11 +105,14 @@ export function ProvidersPage() {
                 <TableCell className="font-mono text-xs">{p.base_url}</TableCell>
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell>
-                  <Hint content={`${p.models.join("\n")}\n\n更新于 ${fmtTime(p.models_fetched_at)}`}>
+                  <Hint content={modelsHint(p)}>
                     <Button variant="link" size="sm" className="h-auto p-0" onClick={() => setModelsOf(p.id)}>
                       {p.models.length} 个
                     </Button>
                   </Hint>
+                </TableCell>
+                <TableCell>
+                  <BalanceCell provider={p} />
                 </TableCell>
                 <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
                 <TableCell>
@@ -166,6 +173,8 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
     base_url: provider?.base_url ?? "",
     api_key: "",
     clear_api_key: false,
+    balance_key: "",
+    clear_balance_key: false,
     headers: provider?.headers ?? {},
     enabled: provider?.enabled ?? true,
     api_format: provider?.api_format === "anthropic" ? "anthropic" : "openai",
@@ -173,7 +182,7 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
   const create = useMutation({ ...createProviderMutation(), onSuccess: onClose });
   const update = useMutation({ ...updateProviderMutation(), onSuccess: onClose });
   const submit = () => {
-    const body = { ...form, api_key: form.api_key || null };
+    const body = { ...form, api_key: form.api_key || null, balance_key: form.balance_key || null };
     if (provider) update.mutate({ path: { provider_id: provider.id }, body });
     else create.mutate({ body });
   };
@@ -210,6 +219,22 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
         emptyHint="可留空（本地服务）"
         onChange={(patch) => setForm({ ...form, ...patch })}
       />
+      <ApiKeyField
+        label="余额查询 key（可选）"
+        clearLabel="清除已存储的余额查询 key"
+        masked={provider?.balance_key_masked}
+        value={form.balance_key ?? ""}
+        clear={!!form.clear_balance_key}
+        emptyHint="只用于查询余额，可留空"
+        note="OpenRouter 填管理 key（management key）显示账户余额；不填则显示 API key 自身的额度与用量"
+        onChange={({ api_key, clear_api_key }) =>
+          setForm({
+            ...form,
+            ...(api_key !== undefined && { balance_key: api_key }),
+            ...(clear_api_key !== undefined && { clear_balance_key: clear_api_key }),
+          })
+        }
+      />
       <Field label="额外请求头" hint='JSON 对象，例如 {"X-Foo": "bar"}'>
         <JsonEditor
           rows={3}
@@ -224,11 +249,41 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
   );
 }
 
-/** Per-model capabilities (models.dev) and aliases for ids the automatic match can't resolve. */
+/** Lazily fetched balance of one provider (disabled providers are not queried). */
+function BalanceCell({ provider }: { provider: ProviderOut }) {
+  const path = { provider_id: provider.id };
+  const balance = useQuery({
+    queryKey: getProviderBalanceQueryKey({ path }),
+    queryFn: ({ signal }) => balanceResult(getProviderBalance({ path, signal })),
+    enabled: provider.enabled,
+    ...BALANCE_QUERY,
+  });
+  return <BalanceView query={balance} enabled={provider.enabled} />;
+}
+
+// Model ids shown in the list's hover hint; the dialog has the full, searchable list.
+const HINT_EXAMPLES = 5;
+// Rows the models dialog renders at once (OpenRouter lists 500+ models); searching narrows the rest.
+const MAX_ROWS = 100;
+
+function modelsHint(p: ProviderOut): string {
+  const more = p.models.length > HINT_EXAMPLES ? `\n…共 ${p.models.length} 个，点开查看全部` : "";
+  return `${p.models.slice(0, HINT_EXAMPLES).join("\n")}${more}\n\n更新于 ${fmtTime(p.models_fetched_at)}`;
+}
+
+/** Per-model capabilities (models.dev or the provider's own /models) and aliases for ids the automatic match misses. */
 function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: () => void }) {
   const [aliases, setAliases] = useState<Record<string, string>>(provider.model_aliases);
   const [extra, setExtra] = useState("");
-  const ids = [...new Set([...provider.models, ...Object.keys(aliases)])].sort();
+  const [search, setSearch] = useState("");
+  const ids = useMemo(
+    () => [...new Set([...provider.models, ...Object.keys(aliases)])].sort(),
+    [provider.models, aliases],
+  );
+  const query = search.trim().toLowerCase();
+  // By id only: matching the aliases would drop a row while its alias is being edited.
+  const matched = useMemo(() => (query ? ids.filter((m) => m.toLowerCase().includes(query)) : ids), [ids, query]);
+  const rows = matched.slice(0, MAX_ROWS);
   const save = useMutation({
     ...setProviderAliasesMutation(),
     onSuccess: (r) => {
@@ -249,12 +304,25 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
       open
       onOpenChange={(o) => !o && onClose()}
       title={`${provider.name} 的模型能力`}
-      description="能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）。匹配不上或匹配错了，就填别名，例如 anthropic/claude-sonnet-5-5。"
+      description="能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）；OpenRouter 这类在 /models 里自带能力的 provider 直接用上游信息。匹配不上或匹配错了，就填别名（优先于两者），例如 anthropic/claude-sonnet-5-5。"
       onSubmit={() => save.mutate({ path: { provider_id: provider.id }, body: { aliases } })}
       pending={save.isPending}
       submitLabel="保存别名"
       className="sm:max-w-4xl"
     >
+      {ids.length > 0 && (
+        <Input
+          aria-label="搜索模型"
+          placeholder={`搜索 ${ids.length} 个模型`}
+          className="font-mono text-xs"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter only filters here instead of submitting the aliases.
+            if (e.key === "Enter") e.preventDefault();
+          }}
+        />
+      )}
       {ids.length ? (
         <Table>
           <TableHeader>
@@ -265,7 +333,7 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
             </TableRow>
           </TableHeader>
           <TableBody>
-            {ids.map((m) => (
+            {rows.map((m) => (
               <TableRow key={m}>
                 <TableCell className="font-mono text-xs">{m}</TableCell>
                 <TableCell>
@@ -282,10 +350,22 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
                 </TableCell>
               </TableRow>
             ))}
+            {!rows.length && (
+              <TableRow>
+                <TableCell colSpan={3} className="text-center text-muted-foreground">
+                  没有匹配「{search.trim()}」的模型
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       ) : (
         <Empty description="先在列表里拉取模型，或在下面添加路由里手填的模型名。">还没有模型</Empty>
+      )}
+      {matched.length > rows.length && (
+        <p className="text-xs text-muted-foreground">
+          只显示前 {rows.length} 个，还有 {matched.length - rows.length} 个，输入以筛选
+        </p>
       )}
       <div className="flex items-end gap-2">
         <Field label="添加不在列表里的模型（路由里手填的）" className="flex-1">

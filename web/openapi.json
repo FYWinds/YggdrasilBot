@@ -250,6 +250,49 @@
         }
       }
     },
+    "/providers/{provider_id}/balance": {
+      "get": {
+        "tags": [
+          "providers"
+        ],
+        "summary": "Get Provider Balance",
+        "description": "Account balance: DeepSeek, OpenRouter (credits with the balance key, else the API key's limit), new-api.",
+        "operationId": "get_provider_balance",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/providers/{provider_id}/refresh-models": {
       "post": {
         "tags": [
@@ -536,6 +579,49 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchTestResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search-providers/{provider_id}/balance": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Get Search Provider Balance",
+        "description": "Account balance of a DeepSeek search provider (always read from api.deepseek.com).",
+        "operationId": "get_search_provider_balance",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceOut"
                 }
               }
             }
@@ -4044,6 +4130,98 @@
         ],
         "title": "ArchiveSmallOut"
       },
+      "BalanceAmount": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "title": "BalanceAmount"
+      },
+      "BalanceKind": {
+        "type": "string",
+        "enum": [
+          "deepseek",
+          "openrouter",
+          "new-api"
+        ]
+      },
+      "BalanceOut": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/BalanceKind"
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/BalanceAmount"
+            },
+            "type": "array",
+            "title": "Amounts"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fetched At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "available",
+          "amounts",
+          "fetched_at"
+        ],
+        "title": "BalanceOut"
+      },
       "BotOut": {
         "properties": {
           "user_id": {
@@ -5894,6 +6072,11 @@
               }
             ],
             "title": "Output"
+          },
+          "image_output": {
+            "type": "boolean",
+            "title": "Image Output",
+            "default": false
           }
         },
         "type": "object",
@@ -6658,6 +6841,22 @@
             "title": "Clear Api Key",
             "default": false
           },
+          "balance_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balance Key"
+          },
+          "clear_balance_key": {
+            "type": "boolean",
+            "title": "Clear Balance Key",
+            "default": false
+          },
           "headers": {
             "additionalProperties": {
               "type": "string"
@@ -6711,6 +6910,17 @@
               }
             ],
             "title": "Api Key Masked"
+          },
+          "balance_key_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balance Key Masked"
           },
           "headers": {
             "additionalProperties": {
@@ -6777,6 +6987,7 @@
           "name",
           "base_url",
           "api_key_masked",
+          "balance_key_masked",
           "headers",
           "enabled",
           "api_format",

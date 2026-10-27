@@ -128,6 +128,7 @@ class ReportInvocator(Invocator):
             Handles(),
             "chat",
             self_id=ident.self_id,
+            bot_nickname=ident.nickname,
             trigger_message_id=job.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=job.request_text,

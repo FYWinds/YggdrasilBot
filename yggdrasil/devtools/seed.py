@@ -184,6 +184,7 @@ def _media() -> dict[str, Media]:
         "map": _png("season 7 map", (40, 120, 70)),
         "render": _png("rendered markdown", (90, 60, 130), size=(800, 500)),
         "screenshot": _png("pelican site", (180, 90, 40), size=(960, 600)),
+        "drawing": _png("pixel poster", (60, 150, 200), size=(640, 640)),
         "doge": _gif("doge", [(200, 160, 60), (220, 180, 80), (240, 200, 100)]),
         "cat": _png("cat", (120, 120, 120), size=(240, 240)),
         "happy": _png("happy", (230, 120, 150), size=(240, 240)),
@@ -341,6 +342,7 @@ TECH_CHAT = [
     Line("ask_reject", 17, 20005, [_at(SELF), _t(" 写一段话阴阳一下老王")]),
     Line("ask_blocked", 15, 20005, [_at(SELF), _t(" （示例）一条会被输入审核拦下的请求")]),
     Line("ask_fail", 13, 20004, [_at(SELF), _t(" 查一下 PEP 779 现在是什么状态")]),
+    Line("ask_draw", 12, 20003, [Ref("bench"), _at(SELF), _t(" 把这张图画成像素风海报")]),
     Line("ask_cancel", 11, 20002, [_at(SELF), _t(" 帮我看看这个表格"), SEGMENT_SAMPLES[2]]),
     Line("ask_rl", 9, 20005, [_at(SELF), _t(" 再来一个")]),
     Line("ops_reviews", 7, SUPERUSER, [_at(SELF), _t(" 现在有几条待审核？")]),
@@ -564,6 +566,17 @@ async def recall_message(ctx: RunContext[SeedDeps]) -> str:
     return "已撤回。"
 
 
+async def generate_image(
+    ctx: RunContext[SeedDeps],
+    prompt: str,
+    references: list[str] | None = None,
+    aspect_ratio: str = "auto",
+    text: str = "",
+) -> str:
+    ctx.deps.notes.shown(ctx.tool_call_id, [(MEDIA["drawing"].data, text)])
+    return "图已经发到群里了（花费 $0.040）。没有别的要说就选 mode=done。"
+
+
 async def lookup_glossary(ctx: RunContext[SeedDeps], term: str) -> str:
     return f"没有收录「{term}」。相近的词条：新赛季（每季度第一天晚上八点开服）"
 
@@ -595,6 +608,7 @@ CHAT_TOOLS = [
     read_url,
     render_markdown,
     recall_message,
+    generate_image,
     lookup_glossary,
     read_file,
 ]
@@ -748,6 +762,29 @@ RUNS: list[Run] = [
         quoted=True,
     ),
     Run(
+        "ask_draw",
+        "chat",
+        "done",
+        [
+            Turn(
+                [
+                    (
+                        "generate_image",
+                        {
+                            "prompt": "把这张 benchmark 柱状图画成 16-bit 像素风海报：保留四根柱子和数字，"
+                            "深蓝背景，标题写 3.14t 多线程快 5 倍",
+                            "references": [MsgId("bench", hash=True)],
+                            "aspect_ratio": "1:1",
+                        },
+                    )
+                ],
+                think="他要按引用的那张图改成像素风，参考图传 benchmark 那条消息。",
+            ),
+            Turn(output=BotReply(mode="done")),
+        ],
+        quoted=True,
+    ),
+    Run(
         "ask_review",
         "chat",
         "review",
@@ -858,6 +895,8 @@ def _resolve_args(args: dict[str, Any], keys: dict[str, Message]) -> dict[str, A
     def one(v: Any) -> Any:
         if isinstance(v, MsgId):
             return f"#{keys[v.key].id}" if v.hash else keys[v.key].id
+        if isinstance(v, list):
+            return [one(x) for x in v]
         return v
 
     return {k: one(v) for k, v in args.items()}

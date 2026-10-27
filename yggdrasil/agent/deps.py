@@ -61,6 +61,7 @@ class Deps:
     # QQ id of the replied-to bot message the speaker may recall (None: no recall tool this run)
     recall_target: int | None = None
     self_id: int = 0  # the bot's QQ id; only used to render its own messages/mentions as {bot_name}(你)
+    bot_nickname: str = ""  # the bot's QQ nickname, for recording messages tools send themselves
     actions: list[str] = field(default_factory=list)  # side effects done by action tools, for mode=done
     tool_counts: Counter[str] = field(default_factory=Counter)
     tool_seconds: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))  # wall time per tool
