@@ -266,7 +266,10 @@ class MemorySettings(BaseModel):
 
 class PrivacySettings(BaseModel):
     log_message_content: bool = False
-    capture_llm_content: bool = Field(default=False, description="trace 里记录提示词和回复原文（排障用）")
+    capture_llm_content: bool = Field(
+        default=True,
+        description="保存提示词、思考、工具参数和结果、图片原文：控制台的对话记录和 trace 都用它；关闭后只记结构和用量",
+    )
 
 
 class EventSettings(BaseModel):

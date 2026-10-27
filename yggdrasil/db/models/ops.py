@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, Float, ForeignKey, Identity, Index, Text, func, text
+from sqlalchemy import ARRAY, Float, ForeignKey, Identity, Index, LargeBinary, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yggdrasil.db.base import Base
@@ -127,3 +127,37 @@ class SandboxJob(Base):
     record: Mapped[dict[str, Any]]
     events: Mapped[list[Any]]
     archived_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Transcript(Base):
+    """The whole conversation of one agent run, for the console (``yggdrasil.transcript``): an invocation's
+    pydantic-ai run, or a background job (omp messages as they arrive, or a command job's script and output).
+
+    ``entries`` is the normalized conversation (``transcript.schema.Entry`` dicts, oldest first); ``context`` holds
+    what the entries point at: QQ message snapshots by id, group cards by QQ number. ``content`` is ``full`` or
+    ``metadata`` (``privacy.capture_llm_content`` off: no text, arguments or images)."""
+
+    __tablename__ = "transcripts"
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    invocation_id: Mapped[UUID | None] = mapped_column(ForeignKey("invocations.id", ondelete="CASCADE"), unique=True)
+    job_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    source: Mapped[str] = mapped_column(Text)  # pydantic-ai | omp
+    content: Mapped[str] = mapped_column(Text)  # full | metadata
+    entries: Mapped[list[Any]] = mapped_column(default=list)
+    context: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    size_bytes: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class TranscriptBlob(Base):
+    """An image a transcript shows (prompt images, tool results, renders), stored once per content hash."""
+
+    __tablename__ = "transcript_blobs"
+
+    sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    mime: Mapped[str] = mapped_column(Text)
+    size: Mapped[int]
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

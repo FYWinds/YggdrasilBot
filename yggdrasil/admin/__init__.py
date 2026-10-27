@@ -22,6 +22,7 @@ from yggdrasil.admin import (
     search_providers,
     settings_api,
     stickers,
+    transcripts,
     triggers,
 )
 from yggdrasil.admin.auth import require_admin
@@ -44,6 +45,7 @@ _ROUTERS = (
     invocations.router,
     stickers.router,
     sandbox_api.router,
+    transcripts.router,
 )
 # Paths the SPA fallback must never shadow.
 _RESERVED = ("api", "onebot")

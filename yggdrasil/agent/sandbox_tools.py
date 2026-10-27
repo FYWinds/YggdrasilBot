@@ -292,7 +292,8 @@ async def _apply_effects(ctx: RunContext[Deps], session: Session, effects: list[
                 path = str(effect.get("path") or "")
                 with _sandbox_errors():
                     blob = await session.get_bytes(path, max_bytes=IMAGE_MAX_BYTES)
-                lines.append(f"show：{await attach_image(ctx.deps, blob, str(effect.get('caption') or ''))}")
+                caption = str(effect.get("caption") or "")
+                lines.append(f"show：{await attach_image(ctx.deps, blob, caption, call_id=ctx.tool_call_id)}")
             elif kind == "publish":
                 port = int(effect.get("port") or 0)
                 with _sandbox_errors():
@@ -419,7 +420,9 @@ def needs_image_check(settings: Settings) -> bool:
     return settings.moderation.enabled and settings.moderation.check_output
 
 
-async def attach_image(deps: Deps, blob: bytes, caption: str, *, check: Any = check_image) -> str:
+async def attach_image(
+    deps: Deps, blob: bytes, caption: str, *, check: Any = check_image, call_id: str | None = None
+) -> str:
     """Moderate (when the group moderates output) and queue one image for the reply's forward message."""
     reserve_images(deps, 1)
     try:
@@ -434,6 +437,7 @@ async def attach_image(deps: Deps, blob: bytes, caption: str, *, check: Any = ch
     finally:
         deps.images_reserved -= 1
     deps.images.append((image, caption.strip()))
+    deps.notes.shown(call_id, [(image, caption.strip())])
     left = MAX_IMAGES - len(deps.images)
     return (
         f"已附上图 {len(deps.images)}（{caption.strip() or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"

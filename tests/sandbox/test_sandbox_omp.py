@@ -27,9 +27,13 @@ class Host:
 
 def _driver(rpc: LocalRpc, host: Host, state: omp.DriverState | None = None) -> omp.OmpDriver:
     events: list[str] = []
+    messages: list[dict[str, Any]] = []
 
     async def on_event(line: str) -> None:
         events.append(line)
+
+    async def on_message(message: dict[str, Any]) -> None:
+        messages.append(message)
 
     driver = omp.OmpDriver(
         state or omp.DriverState(),
@@ -40,8 +44,10 @@ def _driver(rpc: LocalRpc, host: Host, state: omp.DriverState | None = None) -> 
         task="做一个网页",
         tools=omp.host_tools(links=False),
         on_event=on_event,
+        on_message=on_message,
     )
     driver.events = events  # pyright: ignore[reportAttributeAccessIssue]
+    driver.messages = messages  # pyright: ignore[reportAttributeAccessIssue]
     return driver
 
 
@@ -99,6 +105,17 @@ async def test_full_session_with_host_tool_round_trip(tmp_path: Path) -> None:
     assert "开始工作" in events
     assert "bash: ls -la" in events
     assert "bash 出错" in events
+    # Every finished message reaches the transcript, in order, with its content.
+    messages = driver.messages  # pyright: ignore[reportAttributeAccessIssue]
+    assert [m["role"] for m in messages] == ["user", "assistant", "toolResult", "assistant"]
+    assert messages[0]["content"] == "做一个网页"
+    assert messages[1]["content"][1] == {
+        "type": "toolCall",
+        "id": "t1",
+        "name": "bash",
+        "arguments": {"command": "ls -la"},
+    }
+    assert messages[2]["isError"] is True
 
 
 async def test_chunked_final_answer_is_reassembled(tmp_path: Path) -> None:
@@ -127,6 +144,8 @@ async def test_state_survives_a_restart_between_polls(tmp_path: Path) -> None:
     finished = await _run(second)
     assert finished.ok
     assert [c[0] for c in host.calls] == ["show", "progress"]  # host_1 not run twice
+    seen = first.messages + second.messages  # pyright: ignore[reportAttributeAccessIssue]
+    assert [m["role"] for m in seen] == ["user", "assistant", "toolResult", "assistant"]  # none twice
 
 
 async def test_stop_aborts_a_hanging_run_and_collects_the_answer(tmp_path: Path) -> None:
@@ -202,6 +221,7 @@ async def test_a_failed_send_is_retried_on_the_next_poll(tmp_path: Path, kind: s
     host = Host()
     state = omp.DriverState()
     errors = 0
+    transcribed: list[dict[str, Any]] = []
     async with asyncio.timeout(20):
         while True:
             driver = _driver(cast(Any, flaky), host, omp.DriverState.from_json(state.to_json()))
@@ -211,6 +231,7 @@ async def test_a_failed_send_is_retried_on_the_next_poll(tmp_path: Path, kind: s
                 errors += 1
                 finished = None
             state = driver.state  # what the poller saves, also after a failure
+            transcribed += driver.messages  # pyright: ignore[reportAttributeAccessIssue]
             if finished is not None:
                 break
             await asyncio.sleep(0.05)
@@ -220,6 +241,8 @@ async def test_a_failed_send_is_retried_on_the_next_poll(tmp_path: Path, kind: s
     assert {name for name, _ in host.calls} == {"show", "progress"}
     received = [json.loads(line)["type"] for line in log.read_text("utf-8").splitlines()]
     assert received.count("prompt") == (2 if (kind, mode) == ("prompt", "after") else 1)
+    # Re-handling a frame after the failure does not transcribe a message twice.
+    assert [m["role"] for m in transcribed] == ["user", "assistant", "toolResult", "assistant"]
 
 
 async def test_crash_reports_stderr(tmp_path: Path) -> None:

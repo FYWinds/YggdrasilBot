@@ -27,6 +27,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
@@ -38,6 +39,10 @@ from yggdrasil.sandbox import omp
 from yggdrasil.sandbox.backend import DEFAULT_ROOT
 from yggdrasil.sandbox.errors import SandboxError
 from yggdrasil.sandbox.state import keep_key, random_id
+from yggdrasil.transcript.capture import text_part
+from yggdrasil.transcript.notes import Blob
+from yggdrasil.transcript.omp import message_entries
+from yggdrasil.transcript.schema import Entry
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -476,6 +481,8 @@ Reporter = Callable[[Job], Awaitable[str | None]]
 """Runs the report invocation of a finished job; returns its invocation id."""
 Archiver = Callable[[Job, list[JobEvent]], Awaitable[None]]
 """Stores a settled job for good with its event log (oldest first)."""
+Transcriber = Callable[[str, list[Entry], dict[str, Blob], bool], Awaitable[None]]
+"""Appends entries (and the images they show) to a job's transcript: ``(job_id, entries, blobs, full)``."""
 
 
 def _default_workspaces() -> Workspaces:
@@ -502,6 +509,20 @@ async def _default_archive(job: Job, events: list[JobEvent]) -> None:
     await archive_job(job, events)
 
 
+async def _default_transcribe(job_id: str, items: list[Entry], blobs: dict[str, Blob], full: bool) -> None:
+    from yggdrasil.transcript.store import append_job
+
+    await append_job(job_id, items, blobs, full=full)
+
+
+def _plain(content: Any) -> str:
+    """The text of an omp message's content (a string or text blocks)."""
+    if isinstance(content, str):
+        return content
+    blocks = content if isinstance(content, list) else []
+    return "".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text")
+
+
 class JobRunner:
     """Starts, lists, cancels and polls background jobs. One per process (``runner()``)."""
 
@@ -513,6 +534,7 @@ class JobRunner:
         ops: Callable[[JobBackend], JobOps] = JobOps,
         report: Reporter = _default_report,
         archive: Archiver = _default_archive,
+        transcribe: Transcriber = _default_transcribe,
         settings: Callable[[int], Settings] = _default_settings,
         link_domain: Callable[[], str | None] | None = None,
         poll_s: float = POLL_S,
@@ -523,6 +545,8 @@ class JobRunner:
         self._ops = ops
         self._report = report
         self._archive = archive
+        self._transcribe = transcribe
+        self._tool_starts: dict[str, dict[str, float]] = {}  # per job: tool call id -> when its call was made (ms)
         self._settings = settings
         self._link_domain = link_domain or _link_domain
         self._poll_s = poll_s
@@ -764,7 +788,15 @@ class JobRunner:
             ]
             await ops.write(omp.MODELS_PATH, omp.models_yaml(base_url, specs).encode())
             rules = f"{job.dir}/rules.md"
-            await ops.write(rules, render_rules(settings, job, links=bool(self._link_domain())).encode())
+            rules_text = render_rules(settings, job, links=bool(self._link_domain()))
+            await ops.write(rules, rules_text.encode())
+            full = settings.privacy.capture_llm_content
+            now = datetime.fromtimestamp(self._clock(), UTC)
+            opening = [
+                Entry(kind="system", at=now, parts=[text_part(rules_text, full)]),
+                Entry(kind="user", at=now, parts=[text_part(task, full)]),
+            ]
+            await self._transcribe(job.id, opening, {}, full)
             argv, env = omp.launch(
                 group_id=req.group_id, model=model.id, rules_path=rules, max_time_s=int(limit_s) + 120, token=token
             )
@@ -938,6 +970,16 @@ class JobRunner:
         async def on_event(text: str) -> None:
             await self._event(job, text)
 
+        async def on_message(msg: dict[str, Any]) -> None:
+            if msg.get("role") == "user" and _plain(msg.get("content")).strip() == job.spec.strip():
+                return  # the task itself, already in the transcript since the job started
+            full = self._settings(job.group_id).privacy.capture_llm_content
+            blobs: dict[str, Blob] = {}
+            starts = self._tool_starts.setdefault(job.id, {})
+            await self._transcribe(
+                job.id, message_entries(msg, full=full, blobs=blobs, tool_starts=starts), blobs, full
+            )
+
         async def host(name: str, args: dict[str, Any]) -> tuple[str, bool]:
             return await self._host_tool(job, ops, name, args)
 
@@ -950,6 +992,7 @@ class JobRunner:
             task=job.spec,
             tools=omp.host_tools(links=bool(self._link_domain())),
             on_event=on_event,
+            on_message=on_message,
             clock=self._clock,
         )
 
@@ -992,6 +1035,7 @@ class JobRunner:
         """Record the outcome and release what the running job held (keep entry, slot, relay token). Leftover
         processes are left to the next end-of-invocation reap, which spares the services behind public links."""
         job.status, job.ended_at = status, self._clock()
+        self._tool_starts.pop(job.id, None)
         job.result, job.error = result[:20000], error[:2000]
         if job.kind == "agent":
             from yggdrasil import relay

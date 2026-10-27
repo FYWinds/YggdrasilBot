@@ -23,6 +23,18 @@ class Ok(BaseModel):
     ok: bool = True
 
 
+class VerdictOut(BaseModel):
+    """A moderation verdict (``moderation.guard.Verdict``) as stored on invocations and review items."""
+
+    stage: str
+    verdict: str  # Safe | Unsafe | Controversial | Skipped | Error
+    score: float
+    categories: list[str] = []
+    action: str = "pass"  # pass | review | drop
+    model: str = ""
+    latency_ms: int = 0
+
+
 @dataclass
 class Change:
     session: AsyncSession

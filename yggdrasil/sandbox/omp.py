@@ -34,13 +34,16 @@ TOKEN_ENV = "YGG_RELAY_TOKEN"
 TOOLS = "bash,read,edit,write,grep,glob,eval,todo"  # no task (sub-agents) and no web_search
 EVENTS = (
     "agent_start",
+    "message_end",
     "tool_execution_start",
     "tool_execution_end",
     "auto_retry_start",
     "auto_compaction_start",
     "notice",
 )
-"""Session events written to events.jsonl: enough for progress lines in the console, no streaming deltas."""
+"""Session events written to events.jsonl: progress lines for the console and every finished message for the job's
+transcript; no streaming deltas."""
+SEEN_MESSAGES = 64  # message ids remembered against re-handling a frame after a failed poll
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 """Reassembled ``rpc_chunk`` sequences larger than this (huge tool results we never look at) are skipped."""
@@ -344,6 +347,7 @@ class DriverState:
     status: str = ""  # prompt_result status
     handled: list[str] = field(default_factory=list)  # host_tool_call ids already answered
     accepted: bool = False  # omp acknowledged the prompt (a re-sent duplicate's rejection is then ignored)
+    messages: list[str] = field(default_factory=list)  # ids of the last finished messages already transcribed
 
     def to_json(self) -> str:
         return json.dumps(
@@ -358,6 +362,7 @@ class DriverState:
                 "status": self.status,
                 "handled": self.handled,
                 "accepted": self.accepted,
+                "messages": self.messages,
             },
             ensure_ascii=False,
         )
@@ -378,6 +383,7 @@ class DriverState:
             status=str(data.get("status", "")),
             handled=list(data.get("handled", [])),
             accepted=bool(data.get("accepted", False)),
+            messages=list(data.get("messages", [])),
         )
 
 
@@ -435,6 +441,7 @@ class OmpDriver:
         task: str,
         tools: list[dict[str, Any]],
         on_event: Callable[[str], Awaitable[None]] | None = None,
+        on_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.state = state
@@ -445,6 +452,7 @@ class OmpDriver:
         self._task = task
         self._tools = tools
         self._on_event = on_event
+        self._on_message = on_message
         self._clock = clock
         self._exited_already = False  # omp is gone: frames still read, nothing written back
 
@@ -535,6 +543,13 @@ class OmpDriver:
             return
         if kind == "host_tool_cancel":
             return  # host tools are short; the result (if any) is simply ignored by omp
+        if kind == "message_end":
+            msg, msg_id = frame.get("message"), str(frame.get("messageId") or "")
+            if self._on_message is not None and isinstance(msg, dict) and (not msg_id or msg_id not in s.messages):
+                await self._on_message(msg)
+                if msg_id:
+                    s.messages = [*s.messages, msg_id][-SEEN_MESSAGES:]
+            return
         if self._on_event is not None and (line := describe_event(frame)):
             await self._on_event(line)
 

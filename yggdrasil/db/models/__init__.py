@@ -24,7 +24,15 @@ from yggdrasil.db.models.memory import (
     UserProfile,
     UserProfileFact,
 )
-from yggdrasil.db.models.ops import BotEvent, Invocation, ModerationResult, ReviewItem, SandboxJob
+from yggdrasil.db.models.ops import (
+    BotEvent,
+    Invocation,
+    ModerationResult,
+    ReviewItem,
+    SandboxJob,
+    Transcript,
+    TranscriptBlob,
+)
 
 __all__ = [
     "Admin",
@@ -55,6 +63,8 @@ __all__ = [
     "TaskRoute",
     "Topic",
     "TopicMessage",
+    "Transcript",
+    "TranscriptBlob",
     "UserAlias",
     "UserProfile",
     "UserProfileFact",

@@ -116,6 +116,58 @@ export type ArchiveSmallOut = {
 };
 
 /**
+ * BotOut
+ */
+export type BotOut = {
+    /**
+     * User Id
+     */
+    user_id: number;
+    /**
+     * Name
+     */
+    name: string;
+};
+
+/**
+ * BotReply
+ *
+ * The structured answer of the chat / tldr agents.
+ */
+export type BotReply = {
+    /**
+     * Mode
+     *
+     * forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
+     */
+    mode: 'forward' | 'silent' | 'done';
+    /**
+     * Title
+     *
+     * mode=forward 时这次回复的主题（≤20 字）
+     */
+    title?: string | null;
+    /**
+     * Sections
+     *
+     * mode=forward 时的各节
+     */
+    sections?: Array<Section>;
+    /**
+     * Sources
+     *
+     * 引用过的来源
+     */
+    sources?: Array<SourceRef>;
+    /**
+     * Silent Reason
+     *
+     * mode=silent 时一句话说明为什么不回（只记日志，不发出去）
+     */
+    silent_reason?: string | null;
+};
+
+/**
  * DecideIn
  */
 export type DecideIn = {
@@ -222,6 +274,79 @@ export type EmbedSpaceOut = {
 };
 
 /**
+ * Entry
+ *
+ * One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field).
+ */
+export type Entry = {
+    /**
+     * Kind
+     */
+    kind: 'system' | 'user' | 'assistant' | 'tool' | 'event';
+    /**
+     * At
+     */
+    at?: string | null;
+    /**
+     * Parts
+     */
+    parts?: Array<TextPart | ThinkingPart | ImagePart | ToolCallPart>;
+    /**
+     * Display
+     */
+    display?: ({
+        kind: 'qq_context';
+    } & QqContextDisplay) | ({
+        kind: 'qq_messages';
+    } & QqMessagesDisplay) | ({
+        kind: 'qq_forward';
+    } & QqForwardDisplay) | ({
+        kind: 'page';
+    } & PageDisplay) | ({
+        kind: 'hits';
+    } & HitsDisplay) | ({
+        kind: 'images';
+    } & ImagesDisplay) | null;
+    /**
+     * Model
+     */
+    model?: string | null;
+    /**
+     * Duration Ms
+     */
+    duration_ms?: number | null;
+    usage?: Usage | null;
+    /**
+     * Finish
+     */
+    finish?: string | null;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Call Id
+     */
+    call_id?: string | null;
+    /**
+     * Name
+     */
+    name?: string | null;
+    /**
+     * Outcome
+     */
+    outcome?: 'ok' | 'error' | 'retry' | 'cancelled' | null;
+    /**
+     * Text
+     */
+    text?: string | null;
+    /**
+     * Level
+     */
+    level?: 'info' | 'warn' | 'error' | null;
+};
+
+/**
  * EventDecideIn
  */
 export type EventDecideIn = {
@@ -303,6 +428,34 @@ export type FactOut = {
      * Created At
      */
     created_at: string;
+};
+
+/**
+ * ForwardNode
+ */
+export type ForwardNode = {
+    /**
+     * Depth
+     */
+    depth?: number;
+    /**
+     * User Id
+     */
+    user_id?: number;
+    /**
+     * Sender Name
+     */
+    sender_name?: string;
+    /**
+     * Sent At
+     */
+    sent_at?: string | null;
+    /**
+     * Segments
+     */
+    segments?: Array<{
+        [key: string]: unknown;
+    }>;
 };
 
 /**
@@ -490,6 +643,84 @@ export type HandlerInfo = {
 };
 
 /**
+ * Hit
+ */
+export type Hit = {
+    /**
+     * Title
+     */
+    title?: string;
+    /**
+     * Url
+     */
+    url?: string;
+    /**
+     * Snippet
+     */
+    snippet?: string;
+};
+
+/**
+ * HitsDisplay
+ */
+export type HitsDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'hits';
+    /**
+     * Query
+     */
+    query?: string;
+    /**
+     * Hits
+     */
+    hits?: Array<Hit>;
+};
+
+/**
+ * ImagePart
+ */
+export type ImagePart = {
+    /**
+     * Type
+     */
+    type?: 'image';
+    /**
+     * Blob
+     */
+    blob?: string | null;
+    /**
+     * Url
+     */
+    url?: string | null;
+    /**
+     * Mime
+     */
+    mime?: string;
+    /**
+     * Bytes
+     */
+    bytes?: number;
+};
+
+/**
+ * ImagesDisplay
+ *
+ * Images a tool produced or posted (render_*, sandbox show) rather than returned to the model.
+ */
+export type ImagesDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'images';
+    /**
+     * Images
+     */
+    images?: Array<ShownImage>;
+};
+
+/**
  * InvocationDetail
  */
 export type InvocationDetail = {
@@ -528,7 +759,7 @@ export type InvocationDetail = {
     /**
      * Models
      */
-    models: Array<unknown>;
+    models: Array<string>;
     /**
      * Tokens In
      */
@@ -569,30 +800,18 @@ export type InvocationDetail = {
      * Tool Calls
      */
     tool_calls: {
-        [key: string]: unknown;
+        [key: string]: number;
     };
     /**
      * Ack Latency Ms
      */
     ack_latency_ms: number | null;
-    /**
-     * Input Verdict
-     */
-    input_verdict: {
-        [key: string]: unknown;
-    } | null;
-    /**
-     * Output Verdict
-     */
-    output_verdict: {
-        [key: string]: unknown;
-    } | null;
+    input_verdict: VerdictOut | null;
+    output_verdict: VerdictOut | null;
     /**
      * Reply
      */
-    reply: {
-        [key: string]: unknown;
-    } | null;
+    reply: BotReply | OpsReply | null;
     /**
      * Moderation
      */
@@ -638,7 +857,7 @@ export type InvocationSummary = {
     /**
      * Models
      */
-    models: Array<unknown>;
+    models: Array<string>;
     /**
      * Tokens In
      */
@@ -1017,6 +1236,60 @@ export type Ok = {
      * Ok
      */
     ok?: boolean;
+};
+
+/**
+ * OpsReply
+ *
+ * The structured answer of the ops agent (``yggdrasil.ops.agent``).
+ */
+export type OpsReply = {
+    /**
+     * Mode
+     *
+     * done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；handoff：不是管理操作，交给普通答疑（只在群聊里用）
+     */
+    mode: 'done' | 'reply' | 'handoff';
+    /**
+     * Text
+     *
+     * mode=reply 时发出的文字，纯文本，简短
+     */
+    text?: string | null;
+};
+
+/**
+ * PageDisplay
+ */
+export type PageDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'page';
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Final Url
+     */
+    final_url?: string;
+    /**
+     * Title
+     */
+    title?: string;
+    /**
+     * Via
+     */
+    via?: string;
+    /**
+     * Page
+     */
+    page?: number;
+    /**
+     * Pages
+     */
+    pages?: number;
 };
 
 /**
@@ -1522,6 +1795,99 @@ export type ProviderProbe = {
 };
 
 /**
+ * QQContextDisplay
+ *
+ * The user turn of an invocation: the group chat the prompt included, the quoted message and the trigger.
+ */
+export type QqContextDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'qq_context';
+    /**
+     * Recent
+     */
+    recent?: Array<number>;
+    quoted?: QqMessage | null;
+    trigger?: QqMessage | null;
+    /**
+     * Blocks
+     */
+    blocks?: Array<string>;
+};
+
+/**
+ * QQForwardDisplay
+ */
+export type QqForwardDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'qq_forward';
+    /**
+     * Nodes
+     */
+    nodes?: Array<ForwardNode>;
+};
+
+/**
+ * QQMessage
+ *
+ * A QQ message as it was when the run used it. ``segments`` are raw OneBot segments; the API adds ``src`` to
+ * image segment data when it can serve the picture.
+ */
+export type QqMessage = {
+    /**
+     * Id
+     */
+    id?: number | null;
+    /**
+     * Qq Message Id
+     */
+    qq_message_id?: number | null;
+    /**
+     * User Id
+     */
+    user_id: number;
+    /**
+     * Sender Name
+     */
+    sender_name?: string;
+    /**
+     * Sent At
+     */
+    sent_at?: string | null;
+    /**
+     * Segments
+     */
+    segments?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Is Self
+     */
+    is_self?: boolean;
+    /**
+     * Recalled
+     */
+    recalled?: boolean;
+};
+
+/**
+ * QQMessagesDisplay
+ */
+export type QqMessagesDisplay = {
+    /**
+     * Kind
+     */
+    kind?: 'qq_messages';
+    /**
+     * Message Ids
+     */
+    message_ids?: Array<number>;
+};
+
+/**
  * RefreshResult
  */
 export type RefreshResult = {
@@ -1595,18 +1961,8 @@ export type ReviewOut = {
      * Request Text
      */
     request_text: string;
-    /**
-     * Reply
-     */
-    reply: {
-        [key: string]: unknown;
-    };
-    /**
-     * Verdict
-     */
-    verdict: {
-        [key: string]: unknown;
-    };
+    reply: BotReply;
+    verdict: VerdictOut;
     /**
      * Status
      */
@@ -1859,6 +2215,18 @@ export type SearchTestResult = {
 };
 
 /**
+ * Section
+ */
+export type Section = {
+    /**
+     * Content
+     *
+     * 正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行
+     */
+    content: string;
+};
+
+/**
  * SettingsView
  */
 export type SettingsView = {
@@ -1880,6 +2248,36 @@ export type SettingsView = {
     defaults: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * ShownImage
+ */
+export type ShownImage = {
+    /**
+     * Blob
+     */
+    blob: string;
+    /**
+     * Caption
+     */
+    caption?: string;
+};
+
+/**
+ * SourceRef
+ */
+export type SourceRef = {
+    /**
+     * Label
+     *
+     * 来源名称，如网页标题、文件名、#消息id
+     */
+    label: string;
+    /**
+     * Url
+     */
+    url?: string | null;
 };
 
 /**
@@ -2158,6 +2556,74 @@ export type TaskRouteRow = {
 };
 
 /**
+ * TextPart
+ */
+export type TextPart = {
+    /**
+     * Type
+     */
+    type?: 'text';
+    /**
+     * Text
+     */
+    text?: string | null;
+    /**
+     * Chars
+     */
+    chars?: number;
+};
+
+/**
+ * ThinkingPart
+ */
+export type ThinkingPart = {
+    /**
+     * Type
+     */
+    type?: 'thinking';
+    /**
+     * Text
+     */
+    text?: string | null;
+    /**
+     * Chars
+     */
+    chars?: number;
+    /**
+     * Redacted
+     */
+    redacted?: boolean;
+};
+
+/**
+ * ToolCallPart
+ */
+export type ToolCallPart = {
+    /**
+     * Type
+     */
+    type?: 'tool_call';
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Args
+     */
+    args?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Chars
+     */
+    chars?: number;
+};
+
+/**
  * TopicOut
  */
 export type TopicOut = {
@@ -2205,6 +2671,49 @@ export type TopicOut = {
      * Dirty
      */
     dirty: boolean;
+};
+
+/**
+ * TranscriptOut
+ */
+export type TranscriptOut = {
+    /**
+     * Available
+     */
+    available: boolean;
+    /**
+     * Source
+     */
+    source: string;
+    /**
+     * Content
+     */
+    content: 'full' | 'metadata';
+    /**
+     * Live
+     */
+    live?: boolean;
+    /**
+     * Entries
+     */
+    entries: Array<Entry>;
+    /**
+     * Messages
+     */
+    messages?: {
+        [key: string]: QqMessage;
+    };
+    /**
+     * Names
+     */
+    names?: {
+        [key: string]: string;
+    };
+    bot?: BotOut | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
 };
 
 /**
@@ -2403,6 +2912,24 @@ export type TriggerTestOut = {
 };
 
 /**
+ * Usage
+ */
+export type Usage = {
+    /**
+     * Input
+     */
+    input?: number;
+    /**
+     * Output
+     */
+    output?: number;
+    /**
+     * Cached
+     */
+    cached?: number;
+};
+
+/**
  * ValidationError
  */
 export type ValidationError = {
@@ -2428,6 +2955,42 @@ export type ValidationError = {
     ctx?: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * VerdictOut
+ *
+ * A moderation verdict (``moderation.guard.Verdict``) as stored on invocations and review items.
+ */
+export type VerdictOut = {
+    /**
+     * Stage
+     */
+    stage: string;
+    /**
+     * Verdict
+     */
+    verdict: string;
+    /**
+     * Score
+     */
+    score: number;
+    /**
+     * Categories
+     */
+    categories?: Array<string>;
+    /**
+     * Action
+     */
+    action?: string;
+    /**
+     * Model
+     */
+    model?: string;
+    /**
+     * Latency Ms
+     */
+    latency_ms?: number;
 };
 
 /**
@@ -3642,6 +4205,10 @@ export type ListReviewsData = {
          */
         status?: 'pending' | 'approved' | 'rejected' | 'expired' | null;
         /**
+         * Group Id
+         */
+        group_id?: number | null;
+        /**
          * Limit
          */
         limit?: number;
@@ -4274,6 +4841,10 @@ export type ListInvocationsData = {
     path?: never;
     query?: {
         /**
+         * Q
+         */
+        q?: string | null;
+        /**
          * Group Id
          */
         group_id?: number | null;
@@ -4344,6 +4915,36 @@ export type GetInvocationResponses = {
 };
 
 export type GetInvocationResponse = GetInvocationResponses[keyof GetInvocationResponses];
+
+export type GetInvocationTranscriptData = {
+    body?: never;
+    path: {
+        /**
+         * Invocation Id
+         */
+        invocation_id: string;
+    };
+    query?: never;
+    url: '/invocations/{invocation_id}/transcript';
+};
+
+export type GetInvocationTranscriptErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetInvocationTranscriptError = GetInvocationTranscriptErrors[keyof GetInvocationTranscriptErrors];
+
+export type GetInvocationTranscriptResponses = {
+    /**
+     * Successful Response
+     */
+    200: TranscriptOut;
+};
+
+export type GetInvocationTranscriptResponse = GetInvocationTranscriptResponses[keyof GetInvocationTranscriptResponses];
 
 export type ListStickersData = {
     body?: never;
@@ -4647,6 +5248,36 @@ export type GetJobResponses = {
 
 export type GetJobResponse = GetJobResponses[keyof GetJobResponses];
 
+export type GetJobTranscriptData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/sandbox/jobs/{job_id}/transcript';
+};
+
+export type GetJobTranscriptErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetJobTranscriptError = GetJobTranscriptErrors[keyof GetJobTranscriptErrors];
+
+export type GetJobTranscriptResponses = {
+    /**
+     * Successful Response
+     */
+    200: TranscriptOut;
+};
+
+export type GetJobTranscriptResponse = GetJobTranscriptResponses[keyof GetJobTranscriptResponses];
+
 export type CancelJobData = {
     body?: never;
     path: {
@@ -4676,3 +5307,31 @@ export type CancelJobResponses = {
 };
 
 export type CancelJobResponse = CancelJobResponses[keyof CancelJobResponses];
+
+export type TranscriptBlobData = {
+    body?: never;
+    path: {
+        /**
+         * Sha256
+         */
+        sha256: string;
+    };
+    query?: never;
+    url: '/transcripts/blobs/{sha256}';
+};
+
+export type TranscriptBlobErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranscriptBlobError = TranscriptBlobErrors[keyof TranscriptBlobErrors];
+
+export type TranscriptBlobResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};

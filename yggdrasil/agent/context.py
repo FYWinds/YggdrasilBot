@@ -18,6 +18,7 @@ from yggdrasil.ingest.normalize import normalize
 from yggdrasil.ingest.writer import WRITER
 from yggdrasil.people import People, resolve
 from yggdrasil.settings import Settings
+from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
 
 
@@ -31,6 +32,16 @@ class TargetMessage:
     is_self: bool
     sent_at: datetime | None = None
 
+    def snapshot(self) -> QQMessage:
+        return QQMessage(
+            qq_message_id=self.qq_message_id,
+            user_id=self.user_id,
+            sender_name=self.sender_name,
+            sent_at=self.sent_at,
+            segments=self.segments,
+            is_self=self.is_self,
+        )
+
 
 @dataclass
 class BuiltContext:
@@ -43,14 +54,17 @@ class BuiltContext:
     # Random suffix of every data block's tag (<最近群聊-ab12cd>); the system prompt names it so
     # a pasted "</最近群聊>" can't fake the end of a block.
     nonce: str = ""
+    display: QQContextDisplay | None = None  # what the prompt contained, for the console's transcript
 
 
 class _Blocks:
     def __init__(self) -> None:
         self.nonce = secrets.token_hex(3)
         self.parts: list[str] = []
+        self.tags: list[str] = []
 
     def add(self, tag: str, body: str, attrs: str = "") -> None:
+        self.tags.append(tag)
         name = f"{tag}-{self.nonce}"
         body = body.replace(self.nonce, "*" * len(self.nonce))
         self.parts.append(f"<{name}{attrs}>\n{body}\n</{name}>")
@@ -215,6 +229,7 @@ async def build_context(
     target.text = trigger.text if target is trigger else normalize(target.segments, people.mention).text
     request_text = people.mentions(request_text)
 
+    recent_ids: list[int] = []
     if recent:
         lines = [
             f"[{_ts(m.sent_at)}] #{m.id} {people.who(m.user_id, m.sender_name, is_self=m.is_self)}: "
@@ -222,9 +237,16 @@ async def build_context(
             for m in recent
         ]
         text = "\n".join(lines)
+        first = 0
         if len(text) > cfg.max_context_chars:
             text = text[-cfg.max_context_chars :]
             text = text[text.find("\n") + 1 :]
+            # The messages whose lines survived the cut (a message's own text may contain newlines).
+            kept, first = 0, len(lines)
+            while first > 0 and kept + len(lines[first - 1]) <= len(text):
+                kept += len(lines[first - 1]) + 1
+                first -= 1
+        recent_ids = [m.id for m in recent[first:]]
         blocks.add("最近群聊", text)
 
     if target.qq_message_id != trigger.qq_message_id:
@@ -293,6 +315,19 @@ async def build_context(
             if focused
             else f"篇幅：正文不超过 {ia.tldr_max_chars} 字，挑最重要的说，不要罗列所有细节。"
         )
+    display = QQContextDisplay(
+        recent=recent_ids,
+        quoted=target.snapshot() if target.qq_message_id != trigger.qq_message_id else None,
+        trigger=trigger.snapshot(),
+        blocks=blocks.tags,
+    )
     return BuiltContext(
-        "\n\n".join(blocks.parts), target, trigger, handles, request_text, mentioned, nonce=blocks.nonce
+        "\n\n".join(blocks.parts),
+        target,
+        trigger,
+        handles,
+        request_text,
+        mentioned,
+        nonce=blocks.nonce,
+        display=display,
     )

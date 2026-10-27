@@ -1751,6 +1751,22 @@
             }
           },
           {
+            "name": "group_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group Id"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -2962,6 +2978,22 @@
         "operationId": "list_invocations",
         "parameters": [
           {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
             "name": "group_id",
             "in": "query",
             "required": false,
@@ -3083,6 +3115,49 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InvocationDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invocations/{invocation_id}/transcript": {
+      "get": {
+        "tags": [
+          "invocations"
+        ],
+        "summary": "Get Invocation Transcript",
+        "operationId": "get_invocation_transcript",
+        "parameters": [
+          {
+            "name": "invocation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Invocation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptOut"
                 }
               }
             }
@@ -3672,6 +3747,49 @@
         }
       }
     },
+    "/sandbox/jobs/{job_id}/transcript": {
+      "get": {
+        "tags": [
+          "sandbox"
+        ],
+        "summary": "Get Job Transcript",
+        "description": "The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output\nfor command jobs.",
+        "operationId": "get_job_transcript",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandbox/jobs/{job_id}/cancel": {
       "post": {
         "tags": [
@@ -3700,6 +3818,44 @@
                   "$ref": "#/components/schemas/JobOut"
                 }
               }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transcripts/blobs/{sha256}": {
+      "get": {
+        "tags": [
+          "transcripts"
+        ],
+        "summary": "Transcript Blob",
+        "operationId": "transcript_blob",
+        "parameters": [
+          {
+            "name": "sha256",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sha256"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "image/*": {}
             }
           },
           "422": {
@@ -3888,6 +4044,84 @@
         ],
         "title": "ArchiveSmallOut"
       },
+      "BotOut": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "name"
+        ],
+        "title": "BotOut"
+      },
+      "BotReply": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "forward",
+              "silent",
+              "done"
+            ],
+            "title": "Mode",
+            "description": "forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；done：已经用操作类工具完成了请求（比如撤回），不再发消息"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "mode=forward 时这次回复的主题（≤20 字）"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/Section"
+            },
+            "type": "array",
+            "title": "Sections",
+            "description": "mode=forward 时的各节"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRef"
+            },
+            "type": "array",
+            "title": "Sources",
+            "description": "引用过的来源"
+          },
+          "silent_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Silent Reason",
+            "description": "mode=silent 时一句话说明为什么不回（只记日志，不发出去）"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "BotReply",
+        "description": "The structured answer of the chat / tldr agents."
+      },
       "DecideIn": {
         "properties": {
           "action": {
@@ -4048,6 +4282,230 @@
         ],
         "title": "EmbedSpaceOut"
       },
+      "Entry": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "tool",
+              "event"
+            ],
+            "title": "Kind"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "parts": {
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ThinkingPart"
+                },
+                {
+                  "$ref": "#/components/schemas/ImagePart"
+                },
+                {
+                  "$ref": "#/components/schemas/ToolCallPart"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "image": "#/components/schemas/ImagePart",
+                  "text": "#/components/schemas/TextPart",
+                  "thinking": "#/components/schemas/ThinkingPart",
+                  "tool_call": "#/components/schemas/ToolCallPart"
+                }
+              }
+            },
+            "type": "array",
+            "title": "Parts",
+            "default": []
+          },
+          "display": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/QQContextDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/QQMessagesDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/QQForwardDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PageDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/HitsDisplay"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ImagesDisplay"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "kind",
+                  "mapping": {
+                    "hits": "#/components/schemas/HitsDisplay",
+                    "images": "#/components/schemas/ImagesDisplay",
+                    "page": "#/components/schemas/PageDisplay",
+                    "qq_context": "#/components/schemas/QQContextDisplay",
+                    "qq_forward": "#/components/schemas/QQForwardDisplay",
+                    "qq_messages": "#/components/schemas/QQMessagesDisplay"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finish": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "error",
+                  "retry",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "warn",
+                  "error"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "Entry",
+        "description": "One turn. Fields beyond ``kind``/``at``/``parts`` apply to some kinds only (noted per field)."
+      },
       "EventDecideIn": {
         "properties": {
           "approve": {
@@ -4206,6 +4664,48 @@
           "created_at"
         ],
         "title": "FactOut"
+      },
+      "ForwardNode": {
+        "properties": {
+          "depth": {
+            "type": "integer",
+            "title": "Depth",
+            "default": 0
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id",
+            "default": 0
+          },
+          "sender_name": {
+            "type": "string",
+            "title": "Sender Name",
+            "default": ""
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Segments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ForwardNode"
       },
       "GlossaryIn": {
         "properties": {
@@ -4475,6 +4975,117 @@
         ],
         "title": "HandlerInfo"
       },
+      "Hit": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "default": ""
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "Hit"
+      },
+      "HitsDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "hits",
+            "title": "Kind",
+            "default": "hits"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "default": ""
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/Hit"
+            },
+            "type": "array",
+            "title": "Hits",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "HitsDisplay"
+      },
+      "ImagePart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "image",
+            "title": "Type",
+            "default": "image"
+          },
+          "blob": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blob"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "mime": {
+            "type": "string",
+            "title": "Mime",
+            "default": ""
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ImagePart"
+      },
+      "ImagesDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "images",
+            "title": "Kind",
+            "default": "images"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ShownImage"
+            },
+            "type": "array",
+            "title": "Images",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ImagesDisplay",
+        "description": "Images a tool produced or posted (render_*, sandbox show) rather than returned to the model."
+      },
       "InvocationDetail": {
         "properties": {
           "id": {
@@ -4519,7 +5130,9 @@
             "title": "Request Text"
           },
           "models": {
-            "items": {},
+            "items": {
+              "type": "string"
+            },
             "type": "array",
             "title": "Models"
           },
@@ -4602,7 +5215,9 @@
             "title": "Tokens Cached"
           },
           "tool_calls": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "type": "integer"
+            },
             "type": "object",
             "title": "Tool Calls"
           },
@@ -4620,32 +5235,30 @@
           "input_verdict": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/VerdictOut"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Input Verdict"
+            ]
           },
           "output_verdict": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/VerdictOut"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Output Verdict"
+            ]
           },
           "reply": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/BotReply"
+              },
+              {
+                "$ref": "#/components/schemas/OpsReply"
               },
               {
                 "type": "null"
@@ -4734,7 +5347,9 @@
             "title": "Request Text"
           },
           "models": {
-            "items": {},
+            "items": {
+              "type": "string"
+            },
             "type": "array",
             "title": "Models"
           },
@@ -5354,6 +5969,82 @@
         },
         "type": "object",
         "title": "Ok"
+      },
+      "OpsReply": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "done",
+              "reply",
+              "handoff"
+            ],
+            "title": "Mode",
+            "description": "done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；handoff：不是管理操作，交给普通答疑（只在群聊里用）"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "mode=reply 时发出的文字，纯文本，简短"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "OpsReply",
+        "description": "The structured answer of the ops agent (``yggdrasil.ops.agent``)."
+      },
+      "PageDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "page",
+            "title": "Kind",
+            "default": "page"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "final_url": {
+            "type": "string",
+            "title": "Final Url",
+            "default": ""
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "via": {
+            "type": "string",
+            "title": "Via",
+            "default": ""
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "default": 1
+          },
+          "pages": {
+            "type": "integer",
+            "title": "Pages",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "PageDisplay"
       },
       "Page_DigestOut_": {
         "properties": {
@@ -6119,6 +6810,167 @@
         ],
         "title": "ProviderProbe"
       },
+      "QQContextDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "qq_context",
+            "title": "Kind",
+            "default": "qq_context"
+          },
+          "recent": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Recent",
+            "default": []
+          },
+          "quoted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QQMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QQMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "QQContextDisplay",
+        "description": "The user turn of an invocation: the group chat the prompt included, the quoted message and the trigger."
+      },
+      "QQForwardDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "qq_forward",
+            "title": "Kind",
+            "default": "qq_forward"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/ForwardNode"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "QQForwardDisplay"
+      },
+      "QQMessage": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "qq_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qq Message Id"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "sender_name": {
+            "type": "string",
+            "title": "Sender Name",
+            "default": ""
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Segments",
+            "default": []
+          },
+          "is_self": {
+            "type": "boolean",
+            "title": "Is Self",
+            "default": false
+          },
+          "recalled": {
+            "type": "boolean",
+            "title": "Recalled",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "title": "QQMessage",
+        "description": "A QQ message as it was when the run used it. ``segments`` are raw OneBot segments; the API adds ``src`` to\nimage segment data when it can serve the picture."
+      },
+      "QQMessagesDisplay": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "qq_messages",
+            "title": "Kind",
+            "default": "qq_messages"
+          },
+          "message_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Message Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "QQMessagesDisplay"
+      },
       "RefreshResult": {
         "properties": {
           "probe": {
@@ -6228,14 +7080,10 @@
             "title": "Request Text"
           },
           "reply": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Reply"
+            "$ref": "#/components/schemas/BotReply"
           },
           "verdict": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Verdict"
+            "$ref": "#/components/schemas/VerdictOut"
           },
           "status": {
             "type": "string",
@@ -6669,6 +7517,20 @@
         ],
         "title": "SearchTestResult"
       },
+      "Section": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "正文，纯文本，不要 markdown，不要加小标题；按意思分段，段落之间空一行"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "Section"
+      },
       "SettingsView": {
         "properties": {
           "value": {
@@ -6694,6 +7556,49 @@
           "defaults"
         ],
         "title": "SettingsView"
+      },
+      "ShownImage": {
+        "properties": {
+          "blob": {
+            "type": "string",
+            "title": "Blob"
+          },
+          "caption": {
+            "type": "string",
+            "title": "Caption",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "blob"
+        ],
+        "title": "ShownImage"
+      },
+      "SourceRef": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "来源名称，如网页标题、文件名、#消息id"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "title": "SourceRef"
       },
       "Stats": {
         "properties": {
@@ -7180,6 +8085,108 @@
         ],
         "title": "TaskRouteRow"
       },
+      "TextPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "text",
+            "title": "Type",
+            "default": "text"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "TextPart"
+      },
+      "ThinkingPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "thinking",
+            "title": "Type",
+            "default": "thinking"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars",
+            "default": 0
+          },
+          "redacted": {
+            "type": "boolean",
+            "title": "Redacted",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ThinkingPart"
+      },
+      "ToolCallPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "tool_call",
+            "title": "Type",
+            "default": "tool_call"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Args"
+          },
+          "chars": {
+            "type": "integer",
+            "title": "Chars",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ToolCallPart"
+      },
       "TopicOut": {
         "properties": {
           "id": {
@@ -7250,6 +8257,84 @@
           "dirty"
         ],
         "title": "TopicOut"
+      },
+      "TranscriptOut": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "content": {
+            "type": "string",
+            "enum": [
+              "full",
+              "metadata"
+            ],
+            "title": "Content"
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live",
+            "default": false
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "type": "array",
+            "title": "Entries"
+          },
+          "messages": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QQMessage"
+            },
+            "type": "object",
+            "title": "Messages",
+            "default": {}
+          },
+          "names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Names",
+            "default": {}
+          },
+          "bot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BotOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available",
+          "source",
+          "content",
+          "entries"
+        ],
+        "title": "TranscriptOut"
       },
       "TriggerIn": {
         "properties": {
@@ -7579,6 +8664,27 @@
         ],
         "title": "TriggerTestOut"
       },
+      "Usage": {
+        "properties": {
+          "input": {
+            "type": "integer",
+            "title": "Input",
+            "default": 0
+          },
+          "output": {
+            "type": "integer",
+            "title": "Output",
+            "default": 0
+          },
+          "cached": {
+            "type": "integer",
+            "title": "Cached",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "Usage"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -7618,6 +8724,53 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VerdictOut": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "default": []
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "default": "pass"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
+          "latency_ms": {
+            "type": "integer",
+            "title": "Latency Ms",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "stage",
+          "verdict",
+          "score"
+        ],
+        "title": "VerdictOut",
+        "description": "A moderation verdict (``moderation.guard.Verdict``) as stored on invocations and review items."
       },
       "WorkspaceOut": {
         "properties": {

@@ -95,6 +95,31 @@ def handle(frame: dict) -> None:
         state["prompt"] = frame.get("id")
         respond(frame)
         emit({"type": "agent_start"})
+        emit(
+            {
+                "type": "message_end",
+                "messageId": "m0",
+                "message": {"role": "user", "content": frame.get("message"), "timestamp": 1000},
+            }
+        )
+        emit(
+            {
+                "type": "message_end",
+                "messageId": "m1",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "先看看目录"},
+                        {"type": "toolCall", "id": "t1", "name": "bash", "arguments": {"command": "ls -la"}},
+                    ],
+                    "model": "claude-test",
+                    "usage": {"input": 100, "output": 20, "cacheRead": 50},
+                    "stopReason": "toolUse",
+                    "timestamp": 2000,
+                    "duration": 500,
+                },
+            }
+        )
         emit({"type": "tool_execution_start", "toolCallId": "t1", "toolName": "bash", "args": {"command": "ls -la"}})
         if MODE == "crash":
             sys.stderr.write("boom: provider exploded\n")
@@ -129,6 +154,31 @@ def handle(frame: dict) -> None:
             )
         elif frame.get("id") == "host_2":
             emit({"type": "tool_execution_end", "toolCallId": "t1", "toolName": "bash", "isError": True})
+            emit(
+                {
+                    "type": "message_end",
+                    "messageId": "m2",
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": "t1",
+                        "toolName": "bash",
+                        "content": [{"type": "text", "text": "ls: cannot access"}],
+                        "isError": True,
+                        "timestamp": 3500,
+                    },
+                }
+            )
+            emit(
+                {
+                    "type": "message_end",
+                    "messageId": "m3",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "完成了。"}],
+                        "timestamp": 4000,
+                    },
+                }
+            )
             finish("completed", settled=False)
     elif kind == "abort":
         respond(frame)

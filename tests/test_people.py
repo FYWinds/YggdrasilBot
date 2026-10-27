@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -5,8 +6,10 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegme
 
 from yggdrasil.agent import context
 from yggdrasil.ingest.normalize import normalize
+from yggdrasil.memory import search
+from yggdrasil.memory.search import MessageView
 from yggdrasil.people import People, label, mentioned_ids, self_label
-from yggdrasil.settings import Settings
+from yggdrasil.settings import ContextSettings, Settings
 from yggdrasil.triggers.index import Resolved
 
 SELF = 1000000001
@@ -51,7 +54,10 @@ def test_normalize_mentions() -> None:
     assert normalize(segs, PEOPLE.mention).text == "@耶梦加得(你) 看看@阿明(1000000002) @全体成员"
 
 
-async def test_trigger_renders_self_mention(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``build_context`` without a database: fixed names, no glossary, nothing to flush."""
+
     async def resolve(group_id: int | None, user_ids: Any, *, bot_name: str, self_id: int | None, texts: Any) -> People:
         assert set(user_ids) >= {FRIEND, SELF}
         return People(bot_name, {FRIEND: "阿明"}, frozenset({self_id} if self_id else ()))
@@ -62,8 +68,11 @@ async def test_trigger_renders_self_mention(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(context, "resolve", resolve)
     monkeypatch.setattr(context, "_glossary_hits", nothing)
     monkeypatch.setattr(context.WRITER, "flush", nothing)
-    segs = Message([MessageSegment.at(SELF), MessageSegment.text(" 总结一下")])
-    event = GroupMessageEvent.model_validate(
+    monkeypatch.setattr(search, "recent_messages", nothing)
+
+
+def _event(segs: Message) -> GroupMessageEvent:
+    return GroupMessageEvent.model_validate(
         {
             "time": 1760000000,
             "self_id": SELF,
@@ -81,8 +90,39 @@ async def test_trigger_renders_self_mention(monkeypatch: pytest.MonkeyPatch) -> 
             "group_id": 100,
         }
     )
+
+
+async def test_trigger_renders_self_mention(offline: None) -> None:
+    event = _event(Message([MessageSegment.at(SELF), MessageSegment.text(" 总结一下")]))
     resolved = Resolved("tldr", 1, "", (), "self", 0, False)
     ctx = await context.build_context(event, resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text="")
     assert "@耶梦加得(你) 总结一下" in ctx.prompt
     assert str(SELF) not in ctx.prompt
     assert '发送者="阿明(1000000002)"' in ctx.prompt
+
+
+async def test_context_display_lists_only_the_recent_messages_the_prompt_kept(
+    offline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    t0 = datetime(2026, 10, 1, 4, 0, tzinfo=UTC)
+    # Some messages span lines, so the cut can land inside one.
+    recent = [
+        MessageView(
+            i, i, t0 + timedelta(minutes=i), FRIEND, "阿明", f"第{i}条{'\n续行' * (i % 3)}{'字' * 60}", None, False
+        )
+        for i in range(1, 41)
+    ]
+
+    async def recent_messages(*_: Any, **__: Any) -> list[MessageView]:
+        return recent
+
+    monkeypatch.setattr(search, "recent_messages", recent_messages)
+    settings = Settings(context=ContextSettings(max_context_chars=1000))
+    resolved = Resolved("chat", 1, "", (), "self", 0, False)
+    event = _event(Message("问个问题"))
+    ctx = await context.build_context(event, resolved, settings, self_id=SELF, bot_name="耶梦加得", request_text="")
+    shown = [m.id for m in recent if f"] #{m.id} " in ctx.prompt]
+    assert 1 not in shown
+    assert shown[-1] == 40
+    assert ctx.display is not None
+    assert ctx.display.recent == shown

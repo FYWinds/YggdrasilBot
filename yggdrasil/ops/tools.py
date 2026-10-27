@@ -45,6 +45,7 @@ from yggdrasil.people import label, names_in_groups, self_label
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
+from yggdrasil.transcript.notes import TraceNotes
 
 _UNDO_KEEP = 20
 _UNDO_TTL_S = 7 * 86400
@@ -66,6 +67,7 @@ class OpsDeps:
     quoted: QuotedMessage | None = None
     actions: list[str] = field(default_factory=list)
     tool_counts: Counter[str] = field(default_factory=Counter)
+    notes: TraceNotes = field(default_factory=TraceNotes)  # for the invocation's transcript
 
     @property
     def actor(self) -> str:
@@ -105,12 +107,15 @@ def _op[**P](name: str, *, write: bool = False) -> Callable[[Callable[P, Awaitab
                 return result
             except HTTPException as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[失败] {_detail(e.detail)}"
             except ToolError as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[失败] {e}"
             except Exception as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 LOGGER.opt(exception=e).warning("ops tool {} failed", name)
                 return f"[失败] {type(e).__name__}: {str(e)[:300]}"
             finally:
@@ -289,8 +294,8 @@ async def list_reviews(
                 "id": f"R{r.id}",
                 "group_id": r.group_id,
                 "request": r.request_text[:200],
-                "reply": " ".join(s.get("content", "") for s in r.reply.get("sections", []))[:200],
-                "verdict": {k: r.verdict.get(k) for k in ("verdict", "score", "categories")},
+                "reply": " ".join(s.content for s in r.reply.sections)[:200],
+                "verdict": r.verdict.model_dump(include={"verdict", "score", "categories"}),
             }
             for r in page.items
         ]

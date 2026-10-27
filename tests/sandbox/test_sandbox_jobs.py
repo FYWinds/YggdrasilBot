@@ -33,6 +33,8 @@ from yggdrasil.sandbox.jobs import (
 )
 from yggdrasil.sandbox.state import Link, keep_key
 from yggdrasil.settings import Settings, ToolSettings
+from yggdrasil.transcript.notes import Blob
+from yggdrasil.transcript.schema import Entry, Usage
 
 GROUP = 10001
 WS = "train"
@@ -218,6 +220,18 @@ class Archive:
         self.stored[job.id] = (job, events)
 
 
+class Transcripts:
+    """Collects what the runner appends to job transcripts."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, list[Entry]] = {}
+        self.blobs: dict[str, bytes] = {}
+
+    async def __call__(self, job_id: str, items: list[Entry], blobs: dict[str, Blob], full: bool) -> None:
+        self.entries.setdefault(job_id, []).extend(items)
+        self.blobs.update({k: b.data for k, b in blobs.items()})
+
+
 @pytest.fixture
 def clock() -> Clock:
     return Clock()
@@ -245,6 +259,7 @@ def make_runner(
     clock: Clock,
     tools: dict[str, Any],
     archive: Archive | None = None,
+    transcripts: Transcripts | None = None,
 ) -> JobRunner:
     settings = Settings(tools=ToolSettings(**tools))
     return JobRunner(
@@ -253,6 +268,7 @@ def make_runner(
         ops=lambda backend: FakeOps(pod),
         report=reports,
         archive=archive or Archive(),
+        transcribe=transcripts or Transcripts(),
         settings=lambda gid: settings,
         link_domain=lambda: "example.com",
         clock=clock,
@@ -265,6 +281,11 @@ def archive() -> Archive:
 
 
 @pytest.fixture
+def transcripts() -> Transcripts:
+    return Transcripts()
+
+
+@pytest.fixture
 def runner(
     pod: Pod,
     fake_redis: fakeredis.FakeAsyncRedis,
@@ -272,8 +293,9 @@ def runner(
     clock: Clock,
     tools: dict[str, Any],
     archive: Archive,
+    transcripts: Transcripts,
 ) -> JobRunner:
-    return make_runner(pod, fake_redis, reports, clock, tools, archive)
+    return make_runner(pod, fake_redis, reports, clock, tools, archive, transcripts)
 
 
 @pytest.fixture
@@ -597,6 +619,7 @@ async def test_agent_job_end_to_end(
     reports: Reports,
     fake_relay: dict[str, Any],
     fake_redis: fakeredis.FakeAsyncRedis,
+    transcripts: Transcripts,
 ) -> None:
     pod.files["/workspace/site/shot.png"] = b"\x89PNG..."
     job = await runner.start_agent(REQ, FakeBackend(pod), workspace=WS, task="搭个鹈鹕网站并截图", title="鹈鹕网站")
@@ -630,6 +653,17 @@ async def test_agent_job_end_to_end(
     assert "show /workspace/site/shot.png" in texts
     assert len(reports.jobs) == 1
     assert reports.jobs[0].images == done.images
+    # The transcript: the rules and the task first, then omp's messages (its echo of the task skipped), the
+    # failed bash call timed from its assistant message to its result.
+    entries = transcripts.entries[job.id]
+    assert [e.kind for e in entries] == ["system", "user", "assistant", "tool", "assistant"]
+    assert entries[0].parts[0].text == rules  # pyright: ignore[reportAttributeAccessIssue]
+    assert entries[1].parts[0].text == "搭个鹈鹕网站并截图"  # pyright: ignore[reportAttributeAccessIssue]
+    call = entries[2].parts[1]
+    assert (call.type, call.name, call.args) == ("tool_call", "bash", {"command": "ls -la"})  # pyright: ignore[reportAttributeAccessIssue]
+    assert entries[2].usage == Usage(input=100, output=20, cached=50)
+    tool = entries[3]
+    assert (tool.call_id, tool.outcome, tool.duration_ms) == ("t1", "error", 1000)
 
 
 async def test_agent_job_cancel_revokes_the_token(

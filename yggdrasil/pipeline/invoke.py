@@ -42,6 +42,9 @@ from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
 from yggdrasil.settings import Settings, ToolSettings
+from yggdrasil.transcript import store as transcripts
+from yggdrasil.transcript.capture import TranscriptRecorder
+from yggdrasil.transcript.notes import TraceNotes
 from yggdrasil.triggers.index import Resolved
 
 Handler = Literal["chat", "tldr"]
@@ -125,6 +128,9 @@ class Invocator:
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
         self.sandbox: Session | None = None  # set when this run gets the workspace suite
+        # The run's conversation for the console; every agent this invocator builds records into it.
+        self.recorder = TranscriptRecorder()
+        self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -161,6 +167,8 @@ class Invocator:
                     # Kills leftover processes, renews the claim, releases the workspace; never raises.
                     with contextlib.suppress(Exception):
                         await self.sandbox.close()
+                if self.invocation_id is not None and (self.recorder.history or self.recorder.tools):
+                    await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
 
     async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
         """Attach the images of the quoted and trigger messages up front when the route can see them.
@@ -180,6 +188,8 @@ class Invocator:
         keys = "、".join(key for key, _ in loaded)
         prompt: list[UserContent] = [ctx.prompt, f"下面直接附上了 {keys} 的原图：直接看图，不用再调用 view_image。"]
         for key, img in loaded:
+            handle = ctx.handles.get(key)
+            self.notes.image(img.data, img.content.media_type, segment=handle.data if handle else None)
             prompt += [f"{key}{img.note}：", img.content]
         return prompt
 
@@ -250,6 +260,7 @@ class Invocator:
     async def _run(self) -> str:
         ident = await identity(self.bot)
         persona = self.settings.persona.name
+        self.notes.bot = (ident.self_id, persona)
         sandbox_on = sandbox_tools.suite_enabled(
             self.settings,
             self.handler,
@@ -296,7 +307,10 @@ class Invocator:
             trigger_message_id=self.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=ctx.request_text or ctx.trigger.text,
+            notes=self.notes,
         )
+        if self.notes.full:
+            self.notes.context = ctx.display
         actions = action_tools(deps)
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, self.handler)
@@ -365,7 +379,7 @@ class Invocator:
                 ),
             ),
             tools=tools,
-            capabilities=capabilities,
+            capabilities=[*capabilities, self.recorder],
             name=self.handler,
             retries=2,
         )

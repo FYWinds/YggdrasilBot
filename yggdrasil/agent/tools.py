@@ -27,6 +27,7 @@ from yggdrasil.people import People, clean_name, resolve
 from yggdrasil.prompts import render
 from yggdrasil.tools import render as renderer
 from yggdrasil.tools.errors import ToolError
+from yggdrasil.transcript.schema import ForwardNode, Hit, HitsDisplay, PageDisplay, QQForwardDisplay
 
 if TYPE_CHECKING:
     from yggdrasil.memory.search import MessageView
@@ -49,12 +50,15 @@ def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], Call
                 return await fn(*args, **kwargs)
             except ToolError as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[工具错误] {e}"
             except TaskNotConfigured as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[工具不可用] {e}"
             except Exception as e:
                 outcome = "error"
+                ctx.deps.notes.failed(ctx.tool_call_id)
                 LOGGER.opt(exception=e).warning("tool {} failed", name)
                 return f"[工具错误] {type(e).__name__}: {str(e)[:200]}"
             finally:
@@ -132,6 +136,10 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
         browser_url=APP_CONFIG.browser_url if cfg.browser_fallback else None,
         remote=remote_fetcher(snapshot().search_providers) if cfg.remote_fetch else None,
     )
+    page_info = PageDisplay(
+        url=url, final_url=res.final_url, title=res.title, via=res.via, page=res.page, pages=res.pages
+    )
+    ctx.deps.notes.show(ctx.tool_call_id, page_info)
     more = f"（第 {res.page}/{res.pages} 页，可用 page 参数翻页）" if res.pages > 1 else ""
     return f"标题：{res.title}\n地址：{res.final_url}{more}\n\n{res.text}"
 
@@ -145,6 +153,8 @@ async def web_search(ctx: RunContext[Deps], query: str) -> str:
     hits = await _search(query, snapshot().search_providers, n=ctx.deps.settings.tools.search_results)
     if not hits:
         return "没有搜索结果"
+    shown = [Hit(title=h.title, url=h.url, snippet=h.snippet) for h in hits]
+    ctx.deps.notes.show(ctx.tool_call_id, HitsDisplay(query=query, hits=shown))
     return "\n\n".join(f"{i + 1}. {h.title}\n{h.url}\n{h.snippet}" for i, h in enumerate(hits))
 
 
@@ -216,6 +226,7 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
     if h.kind != "image":
         raise ToolError(f"{handle} 不是图片")
     img = await load_image(ctx.deps.api, ctx.deps.group_id, h)
+    ctx.deps.notes.image(img.data, img.content.media_type, segment=h.data)
     if sees_images(ctx.deps.task):
         return ToolReturn(
             return_value=f"{handle} 的原图附在下一条消息里，直接看图。",
@@ -234,6 +245,7 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
     h = _handle(ctx, handle, "forward")
     # (indent, time, sender id, sender name, segments, handle keys); rendered after one batched name lookup
     nodes: list[tuple[str, str, int, str, list[dict[str, Any]], list[str]]] = []
+    shown: list[ForwardNode] = []  # the same nodes for the console
 
     async def walk(forward_id: str, depth: int, content: list | None) -> None:
         if depth > 3 or len(nodes) > 400:
@@ -254,6 +266,16 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
             uid = str(sender.get("user_id") or rec.get("user_id") or "")
             keys: list[str] = []
             nodes.append(("  " * depth, ts, int(uid) if uid.isdigit() else 0, str(name), segs, keys))
+            sent_at = datetime.fromtimestamp(rec["time"]).astimezone() if rec.get("time") else None
+            shown.append(
+                ForwardNode(
+                    depth=depth,
+                    user_id=int(uid) if uid.isdigit() else 0,
+                    sender_name=str(name),
+                    sent_at=sent_at,
+                    segments=segs,
+                )
+            )
             for att in norm.attachments:
                 key = ctx.deps.handles.add(att.kind, att.data)
                 if key:
@@ -264,6 +286,7 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
 
     inner = h.data.get("content")
     await walk(str(h.data.get("id", "")), 0, inner if isinstance(inner, list) else None)
+    ctx.deps.notes.show(ctx.tool_call_id, QQForwardDisplay(nodes=shown))
     people = await _people(ctx, [n[2] for n in nodes] + [u for n in nodes for u in normalize(n[4]).mentions])
     lines = []
     for indent, ts, uid, name, segs, keys in nodes:
@@ -288,6 +311,7 @@ async def search_history(ctx: RunContext[Deps], query: str, days: int | None = N
     )
     if not hits:
         return "没有找到相关记录"
+    ctx.deps.notes.messages(ctx.tool_call_id, [h.msg_id for h in hits if h.msg_id])
     people = await _people(ctx, [h.user_id for h in hits if h.user_id], [h.text for h in hits])
     out = []
     for h in hits:
@@ -306,6 +330,7 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
     if ctx.deps.group_id is None:
         raise ToolError("私聊里不能检索群历史")
     msgs = await messages_around(ctx.deps.group_id, message_id, min(before, 40), min(after, 40))
+    ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
     return _chat_lines(msgs, await _people_for_messages(ctx, msgs)) or "无"
 
 
@@ -321,6 +346,7 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
     msgs = await recent_messages(ctx.deps.group_id, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
     if not msgs:
         return "这段时间没有聊天记录"
+    ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
     text = _chat_lines(msgs, await _people_for_messages(ctx, msgs))
     if len(text) > cfg.max_context_chars:
         text = text[-cfg.max_context_chars :]
@@ -386,9 +412,12 @@ async def _attach_render(ctx: RunContext[Deps], kind: renderer.Kind, source: str
     pngs = pngs[:held]
     caption = caption.strip()
     first = len(deps.images) + 1
+    rendered: list[tuple[bytes, str]] = []
     for i, png in enumerate(pngs, 1):
         page = caption if i == 1 else (f"{caption}（{i}/{len(pngs)}）" if caption else "")
         deps.images.append((png, page))
+        rendered.append((png, page))
+    deps.notes.shown(ctx.tool_call_id, rendered)
     numbers = f"图 {first}" if len(pngs) == 1 else f"图 {first}–{first + len(pngs) - 1}（共 {len(pngs)} 页）"
     result = f"已生成{numbers}（{caption or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"
     if warnings:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.settings import Settings
+from yggdrasil.transcript.notes import TraceNotes
 
 if TYPE_CHECKING:
     from yggdrasil.sandbox import Session
@@ -72,3 +73,4 @@ class Deps:
     trigger_message_id: int | None = None
     invocation_id: str | None = None
     request_text: str = ""
+    notes: TraceNotes = field(default_factory=TraceNotes)  # what tools showed the model, for the transcript

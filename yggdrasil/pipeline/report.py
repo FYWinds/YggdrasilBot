@@ -106,6 +106,7 @@ class ReportInvocator(Invocator):
     async def _run(self) -> str:
         job = self.job
         ident = await identity(self.bot)
+        self.notes.bot = (ident.self_id, self.settings.persona.name)
         sandbox_on = sandbox_tools.suite_enabled(
             self.settings,
             "chat",
@@ -130,6 +131,7 @@ class ReportInvocator(Invocator):
             trigger_message_id=job.trigger_message_id,
             invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
             request_text=job.request_text,
+            notes=self.notes,
         )
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, "chat")

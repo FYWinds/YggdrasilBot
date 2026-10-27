@@ -3,7 +3,7 @@
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import fakeredis
 import httpx
@@ -11,10 +11,12 @@ import pytest
 from sqlalchemy import delete
 
 from yggdrasil.admin import sandbox_api
-from yggdrasil.db.models import SandboxJob
+from yggdrasil.db.models import SandboxJob, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.sandbox import archive
 from yggdrasil.sandbox.jobs import ACTIVE_KEY, Job, JobEvent, JobRunner, JobStatus, job_key
+from yggdrasil.transcript import store
+from yggdrasil.transcript.schema import Entry, TextPart
 
 GROUP, OTHER = 990051, 990052
 
@@ -107,3 +109,46 @@ async def test_detail_of_an_archived_job_has_its_whole_event_log(client: httpx.A
     running = (await client.get(f"/api/sandbox/jobs/{jobs.running.id}")).json()
     assert running["status"] == "running"
     assert (await client.get("/api/sandbox/jobs/nope")).status_code == 404
+
+
+async def test_command_job_transcript_is_the_script_and_its_output(client: httpx.AsyncClient, jobs: Jobs) -> None:
+    body = (await client.get(f"/api/sandbox/jobs/{jobs.done.id}/transcript")).json()
+    assert (body["source"], body["live"]) == ("command", False)
+    entries = body["entries"]
+    assert [e["kind"] for e in entries] == ["user", "tool", "event"]
+    assert entries[0]["parts"][0]["text"] == "python train.py"
+    assert (entries[1]["name"], entries[1]["outcome"], entries[1]["duration_ms"]) == ("bash", "ok", 60_000)
+    assert entries[1]["parts"][0]["text"] == "loss 0.3"
+    assert entries[2]["text"] == "已完成"
+    running = (await client.get(f"/api/sandbox/jobs/{jobs.running.id}/transcript")).json()
+    assert running["live"] is True
+    assert [e["kind"] for e in running["entries"]] == ["user"]
+    assert (await client.get("/api/sandbox/jobs/nope/transcript")).status_code == 404
+
+
+async def test_agent_job_transcript_accumulates_appended_messages(client: httpx.AsyncClient, jobs: Jobs) -> None:
+    recorded = replace(_job(f"建站 {jobs.tag}", "failed", ago=30), kind="agent", error="模型请求失败")
+    unrecorded = replace(_job(f"旧任务 {jobs.tag}", "succeeded", ago=40), kind="agent")
+    events = [JobEvent(at=time.time() - 35, text="开始工作")]
+    for job in (recorded, unrecorded):
+        await archive.archive_job(job, events)
+    await store.append_job(recorded.id, [Entry(kind="user", parts=[TextPart(text="搭个网站", chars=4)])], {}, full=True)
+    await store.append_job(
+        recorded.id, [Entry(kind="assistant", parts=[TextPart(text="好的", chars=2)])], {}, full=True
+    )
+    try:
+        body = (await client.get(f"/api/sandbox/jobs/{recorded.id}/transcript")).json()
+        assert (body["available"], body["source"]) == (True, "omp")
+        assert [e["kind"] for e in body["entries"]] == ["user", "assistant", "event"]
+        assert body["entries"][-1] == {**body["entries"][-1], "level": "error", "text": "失败：模型请求失败"}
+        # A job from before transcripts shows its task and its event log.
+        old = (await client.get(f"/api/sandbox/jobs/{unrecorded.id}/transcript")).json()
+        assert old["available"] is False
+        assert [(e["kind"], e.get("text")) for e in old["entries"]] == [
+            ("user", None),
+            ("event", "开始工作"),
+            ("event", "已完成"),
+        ]
+    finally:
+        async with get_session() as session:
+            await session.execute(delete(Transcript).where(Transcript.job_id == recorded.id))

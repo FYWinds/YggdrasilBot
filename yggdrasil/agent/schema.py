@@ -29,3 +29,13 @@ class BotReply(BaseModel):
 
     def full_text(self) -> str:
         return "\n\n".join(s.content for s in self.sections if s.content.strip())
+
+
+class OpsReply(BaseModel):
+    """The structured answer of the ops agent (``yggdrasil.ops.agent``)."""
+
+    mode: Literal["done", "reply", "handoff"] = Field(
+        description="done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；"
+        "handoff：不是管理操作，交给普通答疑（只在群聊里用）"
+    )
+    text: str | None = Field(default=None, description="mode=reply 时发出的文字，纯文本，简短")

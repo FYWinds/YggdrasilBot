@@ -12,10 +12,10 @@ from typing import Literal
 
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from opentelemetry import trace
-from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from yggdrasil.agent.schema import OpsReply
 from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_DURATION, INVOCATIONS
@@ -32,16 +32,12 @@ from yggdrasil.people import People, resolve
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 from yggdrasil.settings import InteractionSettings
+from yggdrasil.transcript import store as transcripts
+from yggdrasil.transcript.capture import TranscriptRecorder
+from yggdrasil.transcript.notes import TraceNotes
+from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 
 Outcome = Literal["done", "reply", "handoff", "failed"]
-
-
-class OpsReply(BaseModel):
-    mode: Literal["done", "reply", "handoff"] = Field(
-        description="done：已用工具完成操作，不发消息；reply：回一段简短纯文本（查询结果、失败原因、需要澄清时）；"
-        "handoff：不是管理操作，交给普通答疑（只在群聊里用）"
-    )
-    text: str | None = Field(default=None, description="mode=reply 时发出的文字，纯文本，简短")
 
 
 async def _quoted(event: MessageEvent, self_id: int, bot_name: str) -> QuotedMessage | None:
@@ -56,6 +52,33 @@ async def _quoted(event: MessageEvent, self_id: int, bot_name: str) -> QuotedMes
         LOGGER.exception("name lookup failed")
         people = People(bot_name, self_ids=frozenset({self_id}))
     return QuotedMessage(r.message_id, r.sender.user_id == self_id, normalize(segs, people.mention).text)
+
+
+def _display(event: MessageEvent) -> QQContextDisplay:
+    """The trigger and quoted messages, as the console shows the user turn."""
+
+    def segments(message: object) -> list[dict[str, object]]:
+        return [{"type": s.type, "data": dict(s.data)} for s in message]  # type: ignore[attr-defined]
+
+    sender = event.sender
+    trigger = QQMessage(
+        qq_message_id=event.message_id,
+        user_id=event.user_id,
+        sender_name=(sender.card or sender.nickname or "").strip(),
+        sent_at=datetime.fromtimestamp(event.time).astimezone(),
+        segments=segments(event.original_message),
+    )
+    quoted = None
+    if (r := event.reply) is not None:
+        quoted = QQMessage(
+            qq_message_id=r.message_id,
+            user_id=r.sender.user_id or 0,
+            sender_name=(r.sender.card or r.sender.nickname or "").strip(),
+            sent_at=datetime.fromtimestamp(r.time).astimezone(),
+            segments=segments(r.message),
+        )
+    blocks = ["被引用的消息", "指令"] if quoted else ["指令"]
+    return QQContextDisplay(trigger=trigger, quoted=quoted, blocks=blocks)
 
 
 def _prompt(event: MessageEvent, quoted: QuotedMessage | None, nonce: str) -> str:
@@ -88,6 +111,10 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
     started = time.perf_counter()
     ident = await identity(bot)
     deps = OpsDeps(bot, api, event.user_id, group_id, await _quoted(event, ident.self_id, settings.persona.name))
+    deps.notes = TraceNotes(full=settings.privacy.capture_llm_content, bot=(ident.self_id, settings.persona.name))
+    if deps.notes.full:
+        deps.notes.context = _display(event)
+    recorder = TranscriptRecorder()
     nonce = secrets.token_hex(3)
     group = snap.groups.get(group_id) if group_id is not None else None
     outcome: Outcome = "failed"
@@ -112,6 +139,7 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
                 ),
                 tools=ops_tools(deps),
                 name="ops",
+                capabilities=[recorder],
                 retries=2,
             )
             result = await agent.run(
@@ -144,25 +172,28 @@ async def run_ops(bot: Bot, event: MessageEvent) -> Outcome:
     INVOCATIONS.add(1, {"handler": "ops", "outcome": outcome})
     INVOCATION_DURATION.record(elapsed, {"handler": "ops"})
     async with get_session() as s:
-        s.add(
-            Invocation(
-                group_id=group_id,
-                user_id=event.user_id,
-                handler="ops",
-                trigger_qq_message_id=event.message_id,
-                request_text=event.get_plaintext()[:2000],
-                status=outcome,
-                models=[resolved.label],
-                tool_calls=dict(deps.tool_counts),
-                tokens_in=usage.input_tokens,
-                tokens_out=usage.output_tokens,
-                tokens_cached=usage.cache_read_tokens,
-                duration_ms=int(elapsed * 1000),
-                reply=reply.model_dump() if reply else None,
-                trace_id=trace_id,
-                error=error,
-            )
+        row = Invocation(
+            group_id=group_id,
+            user_id=event.user_id,
+            handler="ops",
+            trigger_qq_message_id=event.message_id,
+            request_text=event.get_plaintext()[:2000],
+            status=outcome,
+            models=[resolved.label],
+            tool_calls=dict(deps.tool_counts),
+            tokens_in=usage.input_tokens,
+            tokens_out=usage.output_tokens,
+            tokens_cached=usage.cache_read_tokens,
+            duration_ms=int(elapsed * 1000),
+            reply=reply.model_dump() if reply else None,
+            trace_id=trace_id,
+            error=error,
         )
+        s.add(row)
+        await s.flush()
+        invocation_id = row.id
+    if recorder.history or recorder.tools:
+        await transcripts.save_invocation(invocation_id, recorder, deps.notes, group_id)
     return outcome
 
 

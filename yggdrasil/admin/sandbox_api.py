@@ -7,10 +7,13 @@ from typing import Literal
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from yggdrasil.admin import transcripts
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Ok, Page, change, not_found, unavailable
 from yggdrasil.sandbox import WorkspaceInfo, WorkspaceManager, archive, manager
-from yggdrasil.sandbox.jobs import Job, JobEvent, runner
+from yggdrasil.sandbox.jobs import STATUS_TEXT, Job, JobEvent, runner
+from yggdrasil.transcript import store
+from yggdrasil.transcript.schema import Entry, TextPart
 
 type JobStatusFilter = Literal["running", "succeeded", "failed", "timeout", "cancelled"]
 _STATUSES: dict[str, tuple[str, ...]] = {"running": ("starting", "running")}
@@ -241,6 +244,56 @@ async def get_job(job_id: str) -> JobDetail:
     if archived is None:
         raise not_found("后台任务")
     return _job_detail(archived.job, archived.events)
+
+
+def _text(text: str) -> TextPart:
+    return TextPart(text=text, chars=len(text))
+
+
+def _ending(job: Job) -> list[Entry]:
+    if job.running or job.ended_at is None:
+        return []
+    level = "info" if job.status == "succeeded" else "warn" if job.status == "cancelled" else "error"
+    text = STATUS_TEXT.get(job.status, job.status) + (f"：{job.error}" if job.error else "")
+    return [Entry(kind="event", at=_ts(job.ended_at), level=level, text=text)]
+
+
+@router.get("/jobs/{job_id}/transcript")
+async def get_job_transcript(job_id: str) -> transcripts.TranscriptOut:
+    """The job as a conversation: omp's messages for agent jobs (live while it runs), the script and its output
+    for command jobs."""
+    r = runner()
+    job = await r.get(job_id)
+    if job is not None:
+        events = list(reversed(await r.events(job_id)))
+    else:
+        archived = await archive.get(job_id)
+        if archived is None:
+            raise not_found("后台任务")
+        job, events = archived.job, archived.events
+    started = _ts(job.created_at)
+    if job.kind == "command":
+        output = Entry(
+            kind="tool",
+            at=_ts(job.ended_at) if job.ended_at is not None else None,
+            call_id="script",
+            name="bash",
+            outcome="ok" if job.status == "succeeded" else "cancelled" if job.status == "cancelled" else "error",
+            duration_ms=int((job.ended_at - job.created_at) * 1000) if job.ended_at is not None else None,
+            parts=[_text(job.result)] if job.result else [],
+        )
+        items = [Entry(kind="user", at=started, parts=[_text(job.spec)])]
+        if not job.running:
+            items.append(output)
+        return transcripts.TranscriptOut(
+            available=True, source="command", content="full", live=job.running, entries=items + _ending(job)
+        )
+    fallback = [Entry(kind="user", at=started, parts=[_text(job.spec)])] + [
+        Entry(kind="event", at=_ts(e.at), level="info", text=e.text) for e in events
+    ]
+    return await transcripts.build(
+        await store.for_job(job_id), events=_ending(job), fallback=fallback, live=job.running
+    )
 
 
 @router.post("/jobs/{job_id}/cancel")

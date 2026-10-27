@@ -1,7 +1,7 @@
 """Moderation review queue."""
 
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Literal, Self
 from uuid import UUID
 
 from fastapi import APIRouter, Query
@@ -9,7 +9,8 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import func, select
 
 from yggdrasil.admin.auth import Actor
-from yggdrasil.admin.common import Page, change, conflict, unavailable
+from yggdrasil.admin.common import Page, VerdictOut, change, conflict, unavailable
+from yggdrasil.agent.schema import BotReply
 from yggdrasil.db.models import ReviewItem
 from yggdrasil.db.session import get_session
 
@@ -25,8 +26,8 @@ class ReviewOut(BaseModel):
     group_id: int
     user_id: int
     request_text: str
-    reply: dict[str, Any]
-    verdict: dict[str, Any]
+    reply: BotReply
+    verdict: VerdictOut
     status: str
     decided_by: str | None
     decided_at: datetime | None
@@ -52,8 +53,8 @@ def _out(r: ReviewItem) -> ReviewOut:
         group_id=r.group_id,
         user_id=r.user_id,
         request_text=r.request_text,
-        reply=dict(r.reply),
-        verdict=dict(r.verdict),
+        reply=BotReply.model_validate(r.reply),
+        verdict=VerdictOut.model_validate(r.verdict),
         status=r.status,
         decided_by=r.decided_by,
         decided_at=r.decided_at,
@@ -64,10 +65,13 @@ def _out(r: ReviewItem) -> ReviewOut:
 @router.get("")
 async def list_reviews(
     status: ReviewStatus | None = None,
+    group_id: int | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Page[ReviewOut]:
     cond = [ReviewItem.status == status] if status else []
+    if group_id is not None:
+        cond.append(ReviewItem.group_id == group_id)
     async with get_session() as s:
         total = await s.scalar(select(func.count()).select_from(ReviewItem).where(*cond)) or 0
         rows = await s.scalars(
