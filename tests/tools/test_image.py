@@ -4,11 +4,13 @@ message (moderated like every image the bot sends)."""
 import base64
 import io
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 import httpx
 import pytest
+from nonebot.adapters.onebot.v11 import NetworkError
 from PIL import Image
 from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
@@ -72,11 +74,18 @@ def upstream(monkeypatch: pytest.MonkeyPatch) -> Upstream:
 
 
 class FakeAPI:
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: bool = False) -> None:
         self.sent: list[list[dict[str, Any]]] = []
+        self.timeouts: list[float | None] = []
+        self.timeout = timeout
 
-    async def send_group_msg(self, *, group_id: int, message: list[dict[str, Any]]) -> SendResult:
+    async def send_group_msg(
+        self, *, group_id: int, message: list[dict[str, Any]], reply_timeout: float | None = None
+    ) -> SendResult:
         self.sent.append(message)
+        self.timeouts.append(reply_timeout)
+        if self.timeout:
+            raise NetworkError("WebSocket call api send_group_msg timeout")
         return SendResult(message_id=SENT)
 
     async def get_msg(self, *, message_id: int) -> MessageRecord:
@@ -127,6 +136,33 @@ async def test_the_picture_is_sent_replying_to_the_trigger(upstream: Upstream, r
     assert own.is_self
     assert own.qq_message_id == SENT
     assert own.segments == [{"type": "image", "data": {"file": "abc.png", "url": "https://example.com/abc.png"}}]
+
+
+async def test_an_unconfirmed_send_counts_as_sent(upstream: Upstream, recorded: list[IncomingMessage]):
+    # QQ can take longer than the call's timeout to confirm a picture it did post (the first prod drawing): the run
+    # must end as done, and the model must not post it again.
+    api = FakeAPI(timeout=True)
+    ctx = _ctx(api)
+    result = await tools.generate_image(ctx, "x")
+    assert len(api.sent) == 1
+    assert api.timeouts == [send.SEND_IMAGE_TIMEOUT_S]
+    assert "不要重发" in str(result)
+    assert ctx.deps.actions == ["image (unconfirmed)"]
+    assert recorded == []  # no message id to record it under
+
+
+async def test_a_large_picture_is_sent_as_jpeg(upstream: Upstream, recorded: list[IncomingMessage]):
+    noisy = io.BytesIO()
+    Image.frombytes("RGB", (800, 800), os.urandom(800 * 800 * 3)).save(noisy, "PNG")
+    upstream.response = _ok(noisy.getvalue())
+    api = FakeAPI()
+    await tools.generate_image(_ctx(api), "x")
+    reply, image = api.sent[0]  # no text: the reply to the trigger, then the picture
+    assert reply["type"] == "reply"
+    sent = base64.b64decode(image["data"]["file"].removeprefix("base64://"))
+    assert sent[:2] == b"\xff\xd8"
+    assert len(sent) < len(noisy.getvalue())
+    assert Image.open(io.BytesIO(sent)).size == (800, 800)
 
 
 async def test_reference_images_go_as_data_urls(upstream: Upstream):

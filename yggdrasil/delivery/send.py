@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from nonebot.adapters.onebot.v11 import NetworkError
+
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.core.log import LOGGER
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
@@ -135,6 +137,10 @@ async def send_text(
     return res.message_id
 
 
+# Uploading a picture can take QQ well over the adapter's 30 s api_timeout.
+SEND_IMAGE_TIMEOUT_S = 120.0
+
+
 async def send_image(
     api: NapCatAPI,
     *,
@@ -145,15 +151,26 @@ async def send_image(
     text: str,
     self_id: int,
     nickname: str,
-) -> int:
-    """Images (with an optional line of text) as one plain message, replying to the trigger."""
+) -> int | None:
+    """Images (with an optional line of text) as one plain message, replying to the trigger.
+
+    None: QQ didn't confirm within ``SEND_IMAGE_TIMEOUT_S``. The message almost always went out anyway (it did when
+    the first drawing hit the default timeout), so callers must not send it again.
+    """
     segments = [reply_seg(reply_to)] if reply_to else []
     if text:
         segments.append(text_seg(text))
     segments += [image_seg("base64://" + base64.b64encode(png).decode()) for png in images]
-    if group_id is None:
-        return (await api.send_private_msg(user_id=user_id, message=segments)).message_id
-    res = await api.send_group_msg(group_id=group_id, message=segments)
+    try:
+        if group_id is None:
+            res = await api.send_private_msg(user_id=user_id, message=segments, reply_timeout=SEND_IMAGE_TIMEOUT_S)
+            return res.message_id
+        res = await api.send_group_msg(group_id=group_id, message=segments, reply_timeout=SEND_IMAGE_TIMEOUT_S)
+    except NetworkError as e:
+        if not (e.msg or "").endswith("timeout"):
+            raise
+        LOGGER.warning("sending images to {} was not confirmed in {}s", group_id or user_id, SEND_IMAGE_TIMEOUT_S)
+        return None
     # Record the message as QQ stored it (image segments with file and url, not our base64), so a later reply to it
     # can load the picture again (e.g. "make it bluer").
     try:

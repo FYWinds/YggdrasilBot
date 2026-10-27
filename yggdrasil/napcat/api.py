@@ -86,11 +86,20 @@ class NapCatAPI:
         )
 
     # --- messages ---------------------------------------------------------
-    async def send_group_msg(self, *, group_id: int, message: Segments) -> SendResult:
-        return _parse(SendResult, await self._call("send_group_msg", group_id=group_id, message=message))
+    # reply_timeout: seconds to wait for the reply instead of the adapter's api_timeout (images upload slowly).
+    async def send_group_msg(
+        self, *, group_id: int, message: Segments, reply_timeout: float | None = None
+    ) -> SendResult:
+        return _parse(
+            SendResult, await self._call("send_group_msg", group_id=group_id, message=message, _timeout=reply_timeout)
+        )
 
-    async def send_private_msg(self, *, user_id: int, message: Segments) -> SendResult:
-        return _parse(SendResult, await self._call("send_private_msg", user_id=user_id, message=message))
+    async def send_private_msg(
+        self, *, user_id: int, message: Segments, reply_timeout: float | None = None
+    ) -> SendResult:
+        return _parse(
+            SendResult, await self._call("send_private_msg", user_id=user_id, message=message, _timeout=reply_timeout)
+        )
 
     # No source/summary/prompt/news overrides: a preview that doesn't match the nodes trips QQ's risk
     # control ("risky link" warnings); NapCat derives the real one from the node contents.

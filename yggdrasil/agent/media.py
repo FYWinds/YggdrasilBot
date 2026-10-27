@@ -108,6 +108,30 @@ def fit_image(blob: bytes) -> bytes:
         return blob  # not decodable here; let the model API judge
 
 
+_SEND_MAX_BYTES = 600 * 1024
+
+
+def compact_image(blob: bytes) -> bytes:
+    """A large opaque picture as JPEG before it is sent: QQ recompresses it anyway, and a 1 MB PNG uploads slowly
+    enough to time out the OneBot call. Transparent and animated images stay as they are."""
+    if len(blob) <= _SEND_MAX_BYTES:
+        return blob
+    try:
+        with Image.open(io.BytesIO(blob)) as img:
+            if getattr(img, "is_animated", False):
+                return blob
+            if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+                lowest_alpha = img.convert("RGBA").getchannel("A").getextrema()[0]
+                if isinstance(lowest_alpha, int | float) and lowest_alpha < 255:
+                    return blob
+            out = io.BytesIO()
+            img.convert("RGB").save(out, "JPEG", quality=90, optimize=True)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return blob
+    data = out.getvalue()
+    return data if len(data) < len(blob) else blob
+
+
 @dataclass(frozen=True, slots=True)
 class ModelImage:
     """An image ready for a vision model; an animation arrives as one sheet of sampled frames."""

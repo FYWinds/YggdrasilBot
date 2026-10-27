@@ -18,7 +18,7 @@ from PIL import Image
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.deps import Deps, Handle
-from yggdrasil.agent.media import ModelImage, fit_image, load_image, media_bytes, media_type
+from yggdrasil.agent.media import ModelImage, compact_image, fit_image, load_image, media_bytes, media_type
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
@@ -517,22 +517,29 @@ async def generate_image(
     except ImageError as e:
         raise ToolError(f"画图失败：{e}") from e
     deps.vision_tokens.append((result.model, result.input_tokens, result.output_tokens))
-    pictures = [await screen_image(deps, data) for data, _ in result.images]
+    pictures = [compact_image(await screen_image(deps, data)) for data, _ in result.images]
     caption = text.strip()
-    message_id = await send_image(
-        deps.api,
-        group_id=deps.group_id,
-        user_id=deps.user_id,
-        reply_to=deps.trigger_message_id,
-        images=pictures,
-        text=caption,
-        self_id=deps.self_id,
-        nickname=deps.bot_nickname,
-    )
+    # Recorded before sending, so the transcript shows what was made (and paid for) even if QQ refuses it.
     for picture in pictures:
         deps.notes.shown(ctx.tool_call_id, [(picture, caption)], mime=media_type(picture))
-    deps.actions.append(f"image {message_id}")
     cost = f"（花费 ${result.cost:.3f}）" if result.cost is not None else ""
+    try:
+        message_id = await send_image(
+            deps.api,
+            group_id=deps.group_id,
+            user_id=deps.user_id,
+            reply_to=deps.trigger_message_id,
+            images=pictures,
+            text=caption,
+            self_id=deps.self_id,
+            nickname=deps.bot_nickname,
+        )
+    except Exception as e:
+        raise ToolError(f"图画好了{cost}，但发到群里失败：{type(e).__name__}: {str(e)[:200]}") from e
+    if message_id is None:
+        deps.actions.append("image (unconfirmed)")
+        return f"图已经发出{cost}，QQ 没有及时确认，但大概率已经发到群里了，不要重发。没有别的要说就选 mode=done。"
+    deps.actions.append(f"image {message_id}")
     return f"图已经发到群里了{cost}。没有别的要说就选 mode=done。"
 
 
