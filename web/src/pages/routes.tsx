@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { PencilIcon, PlusIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import {
   createEmbedSpaceMutation,
@@ -12,13 +12,23 @@ import {
   upsertRouteMutation,
 } from "@/client/@tanstack/react-query.gen";
 import type { ProviderOut, RouteIn, TaskRouteRow } from "@/client/types.gen";
-import { ConfirmButton, Field, JsonEditor, NumberInput, OptionSelect, PageHeader, QueryState } from "@/components/common";
-import { CapBadges, capsOf } from "@/components/model-caps";
+import {
+  ConfirmButton,
+  Empty,
+  Field,
+  FormDialog,
+  Hint,
+  JsonEditor,
+  NumberInput,
+  OptionSelect,
+  PageHeader,
+  PendingButton,
+  QueryState,
+} from "@/components/common";
+import { ModelSelector } from "@/components/model-caps";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtTime, isPlainObject } from "@/lib/format";
 
@@ -38,35 +48,6 @@ const TASK_LABELS: Record<string, string> = {
   memory_profile: "用户画像",
   memory_digest: "每日摘要",
 };
-
-/** Text input with the provider's cached model list as suggestions; any value is allowed. Shows the chosen model's capabilities. */
-function ModelInput({
-  provider,
-  value,
-  onChange,
-}: {
-  provider: ProviderOut | undefined;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  const listId = useId();
-  return (
-    <>
-      <Input
-        list={listId}
-        value={value}
-        placeholder={provider?.models.length ? "选择或输入模型" : "输入模型名（可先在 Providers 拉取模型列表）"}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <datalist id={listId}>
-        {provider?.models.map((m) => (
-          <option key={m} value={m} />
-        ))}
-      </datalist>
-      {value.trim() && <CapBadges caps={capsOf(provider, value)} />}
-    </>
-  );
-}
 
 export function RoutesPage() {
   const routes = useQuery(listRoutesOptions());
@@ -93,57 +74,70 @@ export function RoutesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {routes.data.map((row) => (
-              <TableRow key={row.task}>
-                <TableCell>
-                  <div className="font-medium">{TASK_LABELS[row.task] ?? row.task}</div>
-                </TableCell>
-                <TableCell>
-                  {row.route ? (
-                    <>
-                      <div className="font-mono text-xs">{row.route.model}</div>
-                      <div className="text-xs text-muted-foreground">{providerName(row.route.provider_id)}</div>
-                      {thinkingOf(row.route.params) && (
-                        <Badge variant="outline" className="mt-1">
-                          思考 {thinkingOf(row.route.params)}
-                        </Badge>
-                      )}
-                    </>
-                  ) : (
-                    <Badge variant="outline">未配置</Badge>
-                  )}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {row.route?.fallback_model
-                    ? `${providerName(row.route.fallback_provider_id)} / ${row.route.fallback_model}`
-                    : "—"}
-                </TableCell>
-                <TableCell className="max-w-56 truncate font-mono text-xs">
-                  {row.route && Object.keys(row.route.params ?? {}).length ? JSON.stringify(row.route.params) : "—"}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {row.route?.limits && Object.values(row.route.limits).some((v) => v != null)
-                    ? JSON.stringify(Object.fromEntries(Object.entries(row.route.limits).filter(([, v]) => v != null)))
-                    : "—"}
-                </TableCell>
-                <TableCell>
-                  <div className="flex justify-end gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => setEditing(row)}>
-                      <PencilIcon /> {row.route ? "编辑" : "配置"}
-                    </Button>
-                    {row.route && (
-                      <ConfirmButton
-                        title={`删除 ${row.task} 的路由？`}
-                        description="删除后该任务不可用，直到重新配置。"
-                        onConfirm={() => remove.mutate({ path: { task: row.task } })}
-                      >
-                        删除
-                      </ConfirmButton>
+            {routes.data.map((row) => {
+              const params =
+                row.route && Object.keys(row.route.params ?? {}).length ? JSON.stringify(row.route.params) : null;
+              const thinking = thinkingOf(row.route?.params);
+              return (
+                <TableRow key={row.task}>
+                  <TableCell>
+                    <div className="font-medium">{TASK_LABELS[row.task] ?? row.task}</div>
+                  </TableCell>
+                  <TableCell>
+                    {row.route ? (
+                      <>
+                        <div className="font-mono text-xs">{row.route.model}</div>
+                        <div className="text-xs text-muted-foreground">{providerName(row.route.provider_id)}</div>
+                        {thinking && (
+                          <Badge variant="outline" className="mt-1">
+                            思考 {thinking}
+                          </Badge>
+                        )}
+                      </>
+                    ) : (
+                      <Badge variant="outline">未配置</Badge>
                     )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {row.route?.fallback_model
+                      ? `${providerName(row.route.fallback_provider_id)} / ${row.route.fallback_model}`
+                      : "—"}
+                  </TableCell>
+                  <TableCell className="max-w-56 font-mono text-xs">
+                    {params ? (
+                      <Hint content={params}>
+                        <span tabIndex={0} className="block truncate rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                          {params}
+                        </span>
+                      </Hint>
+                    ) : (
+                      "—"
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {row.route?.limits && Object.values(row.route.limits).some((v) => v != null)
+                      ? JSON.stringify(Object.fromEntries(Object.entries(row.route.limits).filter(([, v]) => v != null)))
+                      : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-1.5">
+                      <Button size="sm" variant="outline" onClick={() => setEditing(row)}>
+                        <PencilIcon data-icon="inline-start" /> {row.route ? "编辑" : "配置"}
+                      </Button>
+                      {row.route && (
+                        <ConfirmButton
+                          title={`删除 ${row.task} 的路由？`}
+                          description="删除后该任务不可用，直到重新配置。"
+                          onConfirm={() => remove.mutate({ path: { task: row.task } })}
+                        >
+                          删除
+                        </ConfirmButton>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
@@ -154,9 +148,6 @@ export function RoutesPage() {
     </div>
   );
 }
-
-// No "off": Claude 5 can't disable thinking (see _thinking_needs in admin/routes.py).
-const THINKING_OPTIONS = ["minimal", "low", "medium", "high", "xhigh"].map((v) => ({ value: v, label: v }));
 
 function thinkingOf(params: Record<string, unknown> | undefined): string | null {
   const t = params?.thinking;
@@ -185,108 +176,86 @@ function RouteDialog({
   const providerOptions = providers.map((p) => ({ value: String(p.id), label: p.name }));
   const limits = form.limits ?? {};
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {TASK_LABELS[row.task] ?? row.task}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="grid gap-4">
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Provider">
-              <OptionSelect
-                value={String(form.provider_id)}
-                onChange={(v) => setForm({ ...form, provider_id: Number(v) })}
-                options={providerOptions}
-              />
-            </Field>
-            <Field label="模型">
-              <ModelInput
-                provider={providers.find((p) => p.id === form.provider_id)}
-                value={form.model}
-                onChange={(model) => setForm({ ...form, model })}
-              />
-            </Field>
-            <Field label="兜底 Provider">
-              <OptionSelect
-                value={form.fallback_provider_id == null ? null : String(form.fallback_provider_id)}
-                onChange={(v) => setForm({ ...form, fallback_provider_id: v === null ? null : Number(v) })}
-                noneLabel="无"
-                options={providerOptions}
-              />
-            </Field>
-            <Field label="兜底模型">
-              <ModelInput
-                provider={providers.find((p) => p.id === form.fallback_provider_id)}
-                value={form.fallback_model ?? ""}
-                onChange={(m) => setForm({ ...form, fallback_model: m || null })}
-              />
-            </Field>
-          </div>
-          <Field
-            label="思考强度"
-            hint={
-              capsOf(providers.find((p) => p.id === form.provider_id), form.model)?.reasoning === false
-                ? "models.dev 标记这个模型不支持思考，只能用默认"
-                : "默认不传，由模型决定；开启后更慢、更贵。兜底模型用同一个设置。"
-            }
-          >
-            <OptionSelect
-              value={thinkingOf(form.params)}
-              onChange={(v) => {
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={TASK_LABELS[row.task] ?? row.task}
+      description={`任务 ${row.task} 用哪个 provider 的哪个模型、调用参数和 UsageLimits。`}
+      onSubmit={() => save.mutate({ path: { task: row.task }, body: form })}
+      pending={save.isPending}
+      submitDisabled={!form.model || !form.provider_id || !paramsValid}
+      className="sm:max-w-2xl"
+    >
+      <div className="grid grid-cols-[12rem_1fr] gap-3">
+        <Field label="Provider">
+          <OptionSelect
+            value={String(form.provider_id)}
+            onChange={(v) => setForm({ ...form, provider_id: Number(v) })}
+            options={providerOptions}
+          />
+        </Field>
+        <Field label="模型" hint="「思考」默认不传，由模型决定；开启后更慢、更贵。兜底模型用同一个设置。">
+          <ModelSelector
+            provider={providers.find((p) => p.id === form.provider_id)}
+            value={form.model}
+            onChange={(model) => setForm({ ...form, model })}
+            effort={{
+              value: thinkingOf(form.params),
+              onChange: (v) => {
                 const { thinking: _, ...rest } = form.params ?? {};
                 setForm({ ...form, params: v === null ? rest : { ...rest, thinking: v } });
-              }}
-              noneLabel="默认"
-              options={THINKING_OPTIONS}
-            />
-          </Field>
-          <Field label="参数" hint="temperature、max_tokens、top_p、timeout、seed、extra_body…">
-            <JsonEditor
-              rows={5}
-              value={form.params}
-              onValidityChange={setParamsValid}
-              onChange={(v) => isPlainObject(v) && setForm({ ...form, params: v })}
-            />
-          </Field>
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="request_limit">
-              <NumberInput
-                value={limits.request_limit}
-                onChange={(v) => setForm({ ...form, limits: { ...limits, request_limit: v } })}
-                placeholder="默认"
-              />
-            </Field>
-            <Field label="tool_calls_limit">
-              <NumberInput
-                value={limits.tool_calls_limit}
-                onChange={(v) => setForm({ ...form, limits: { ...limits, tool_calls_limit: v } })}
-                placeholder="默认"
-              />
-            </Field>
-            <Field label="total_tokens_limit">
-              <NumberInput
-                value={limits.total_tokens_limit}
-                onChange={(v) => setForm({ ...form, limits: { ...limits, total_tokens_limit: v } })}
-                placeholder="默认"
-              />
-            </Field>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button
-            disabled={save.isPending || !form.model || !form.provider_id || !paramsValid}
-            onClick={() => save.mutate({ path: { task: row.task }, body: form })}
-          >
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+              },
+            }}
+          />
+        </Field>
+        <Field label="兜底 Provider">
+          <OptionSelect
+            value={form.fallback_provider_id == null ? null : String(form.fallback_provider_id)}
+            onChange={(v) => setForm({ ...form, fallback_provider_id: v === null ? null : Number(v) })}
+            noneLabel="无"
+            options={providerOptions}
+          />
+        </Field>
+        <Field label="兜底模型">
+          <ModelSelector
+            provider={providers.find((p) => p.id === form.fallback_provider_id)}
+            value={form.fallback_model ?? ""}
+            onChange={(m) => setForm({ ...form, fallback_model: m || null })}
+          />
+        </Field>
+      </div>
+      <Field label="参数" hint="temperature、max_tokens、top_p、timeout、seed、extra_body…">
+        <JsonEditor
+          rows={5}
+          value={form.params}
+          onValidityChange={setParamsValid}
+          onChange={(v) => isPlainObject(v) && setForm({ ...form, params: v })}
+        />
+      </Field>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="request_limit">
+          <NumberInput
+            value={limits.request_limit}
+            onChange={(v) => setForm({ ...form, limits: { ...limits, request_limit: v } })}
+            placeholder="默认"
+          />
+        </Field>
+        <Field label="tool_calls_limit">
+          <NumberInput
+            value={limits.tool_calls_limit}
+            onChange={(v) => setForm({ ...form, limits: { ...limits, tool_calls_limit: v } })}
+            placeholder="默认"
+          />
+        </Field>
+        <Field label="total_tokens_limit">
+          <NumberInput
+            value={limits.total_tokens_limit}
+            onChange={(v) => setForm({ ...form, limits: { ...limits, total_tokens_limit: v } })}
+            placeholder="默认"
+          />
+        </Field>
+      </div>
+    </FormDialog>
   );
 }
 
@@ -301,6 +270,10 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
       },
     });
   const reembed = useMutation({ ...reembedEmbedSpaceMutation(), onSuccess: () => toast.success("已重新入队") });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (providerId && model && !create.isPending) create.mutate({ body: { provider_id: providerId, model } });
+  };
   return (
     <Card className="mt-8">
       <CardHeader>
@@ -311,6 +284,7 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
       </CardHeader>
       <CardContent className="grid gap-4">
         <QueryState isLoading={spaces.isLoading} error={spaces.error} />
+        {spaces.data?.length === 0 && <Empty description="用下面的表单新建第一个向量空间。">还没有向量空间</Empty>}
         {!!spaces.data?.length && (
           <Table>
             <TableHeader>
@@ -320,7 +294,9 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
                 <TableHead>维度</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>创建时间</TableHead>
-                <TableHead />
+                <TableHead className="text-right">
+                  <span className="sr-only">操作</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -331,16 +307,24 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
                     {s.provider_name ?? `#${s.provider_id}`} / {s.model}
                   </TableCell>
                   <TableCell>{s.dim}</TableCell>
-                  <TableCell className="flex gap-1">
-                    {s.active && <Badge>生效中</Badge>}
-                    <Badge variant="outline">{s.status}</Badge>
+                  <TableCell>
+                    <div className="flex gap-1">
+                      {s.active && <Badge>生效中</Badge>}
+                      <Badge variant="outline">{s.status}</Badge>
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs">{fmtTime(s.created_at)}</TableCell>
                   <TableCell className="text-right">
                     {!s.active && (
-                      <Button size="sm" variant="outline" onClick={() => reembed.mutate({ path: { space_id: s.id } })}>
+                      <PendingButton
+                        size="sm"
+                        variant="outline"
+                        pending={reembed.isPending && reembed.variables?.path.space_id === s.id}
+                        disabled={reembed.isPending}
+                        onClick={() => reembed.mutate({ path: { space_id: s.id } })}
+                      >
                         重新入队
-                      </Button>
+                      </PendingButton>
                     )}
                   </TableCell>
                 </TableRow>
@@ -348,7 +332,7 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
             </TableBody>
           </Table>
         )}
-        <div className="flex flex-wrap items-end gap-3">
+        <form onSubmit={submit} className="flex flex-wrap items-start gap-3">
           <Field label="Provider" className="w-48">
             <OptionSelect
               value={providerId === null ? null : String(providerId)}
@@ -356,16 +340,14 @@ function EmbedSpaces({ providers }: { providers: ProviderOut[] }) {
               options={providers.map((p) => ({ value: String(p.id), label: p.name }))}
             />
           </Field>
-          <Field label="模型" className="w-72">
-            <ModelInput provider={providers.find((p) => p.id === providerId)} value={model} onChange={setModel} />
+          <Field label="模型" className="w-80">
+            <ModelSelector provider={providers.find((p) => p.id === providerId)} value={model} onChange={setModel} />
           </Field>
-          <Button
-            disabled={!providerId || !model || create.isPending}
-            onClick={() => providerId && create.mutate({ body: { provider_id: providerId, model } })}
-          >
-            <PlusIcon /> 新建并重嵌入
-          </Button>
-        </div>
+          <PendingButton type="submit" className="mt-7" pending={create.isPending} disabled={!providerId || !model}>
+            {!create.isPending && <PlusIcon data-icon="inline-start" />}
+            新建并重嵌入
+          </PendingButton>
+        </form>
       </CardContent>
     </Card>
   );

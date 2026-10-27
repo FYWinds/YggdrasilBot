@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
+import { GlobeIcon, PencilIcon, PlusIcon, SearchIcon, ZapIcon } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import {
   createSearchProviderMutation,
   deleteSearchProviderMutation,
@@ -8,41 +9,36 @@ import {
   testSearchProviderMutation,
   updateSearchProviderMutation,
 } from "@/client/@tanstack/react-query.gen";
-import type {
-  SearchKind,
-  SearchProviderIn,
-  SearchProviderOut,
-} from "@/client/types.gen";
+import type { SearchKind, SearchProviderIn, SearchProviderOut, SearchTestHit } from "@/client/types.gen";
 import {
+  ApiKeyField,
   ConfirmButton,
   Empty,
+  ExternalLink,
   Field,
+  FormDialog,
   JsonEditor,
   NumberInput,
   OptionSelect,
   PageHeader,
   QueryState,
 } from "@/components/common";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 import { isPlainObject } from "@/lib/format";
 
 const KINDS: {
@@ -81,26 +77,27 @@ function kindOf(kind: string) {
 
 export function SearchPage() {
   const providers = useQuery(listSearchProvidersOptions());
-  const [editing, setEditing] = useState<SearchProviderOut | "new" | null>(
-    null,
-  );
+  const [editing, setEditing] = useState<SearchProviderOut | "new" | null>(null);
   const [testing, setTesting] = useState<SearchProviderOut | null>(null);
-  const remove = useMutation(deleteSearchProviderMutation());
+  const remove = useMutation({ ...deleteSearchProviderMutation(), onSuccess: () => toast.success("已删除") });
+  const addButton = (
+    <Button onClick={() => setEditing("new")}>
+      <PlusIcon data-icon="inline-start" /> 新增
+    </Button>
+  );
 
   return (
     <div>
       <PageHeader
         title="搜索源"
         description="web_search 按优先级从小到大依次尝试：报错、没有结果或本月额度用完，就换下一个。API key 加密存储，只显示末四位。"
-        actions={
-          <Button onClick={() => setEditing("new")}>
-            <PlusIcon /> 新增
-          </Button>
-        }
+        actions={addButton}
       />
       <QueryState isLoading={providers.isLoading} error={providers.error} />
       {providers.data?.length === 0 && (
-        <Empty>还没有搜索源，web_search 会直接报错</Empty>
+        <Empty icon={<SearchIcon />} description="没有搜索源时 web_search 会直接报错。" action={addButton}>
+          还没有搜索源
+        </Empty>
       )}
       {!!providers.data?.length && (
         <Table>
@@ -125,47 +122,24 @@ export function SearchPage() {
                     {kindOf(p.kind).label}
                   </Badge>
                 </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {p.base_url}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {p.api_key_masked ?? "—"}
-                </TableCell>
+                <TableCell className="font-mono text-xs">{p.base_url}</TableCell>
+                <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">
                   {p.used_this_month}
-                  <span className="text-muted-foreground">
-                    {" "}
-                    / {p.monthly_limit ?? "不限"}
-                  </span>
+                  <span className="text-muted-foreground"> / {p.monthly_limit ?? "不限"}</span>
                 </TableCell>
-                <TableCell>
-                  {p.enabled ? (
-                    <Badge>启用</Badge>
-                  ) : (
-                    <Badge variant="outline">停用</Badge>
-                  )}
-                </TableCell>
+                <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setTesting(p)}
-                    >
-                      <ZapIcon /> 测试
+                    <Button size="sm" variant="outline" onClick={() => setTesting(p)}>
+                      <ZapIcon data-icon="inline-start" /> 测试
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setEditing(p)}
-                    >
-                      <PencilIcon /> 编辑
+                    <Button size="sm" variant="outline" onClick={() => setEditing(p)}>
+                      <PencilIcon data-icon="inline-start" /> 编辑
                     </Button>
                     <ConfirmButton
                       title={`删除 ${p.name}？`}
-                      onConfirm={() =>
-                        remove.mutate({ path: { provider_id: p.id } })
-                      }
+                      onConfirm={() => remove.mutate({ path: { provider_id: p.id } })}
                     >
                       删除
                     </ConfirmButton>
@@ -177,25 +151,14 @@ export function SearchPage() {
         </Table>
       )}
       {editing && (
-        <SearchProviderDialog
-          provider={editing === "new" ? null : editing}
-          onClose={() => setEditing(null)}
-        />
+        <SearchProviderDialog provider={editing === "new" ? null : editing} onClose={() => setEditing(null)} />
       )}
-      {testing && (
-        <TestDialog provider={testing} onClose={() => setTesting(null)} />
-      )}
+      {testing && <TestDialog provider={testing} onClose={() => setTesting(null)} />}
     </div>
   );
 }
 
-function SearchProviderDialog({
-  provider,
-  onClose,
-}: {
-  provider: SearchProviderOut | null;
-  onClose: () => void;
-}) {
+function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderOut | null; onClose: () => void }) {
   const initialKind = kindOf(provider?.kind ?? "exa");
   const [form, setForm] = useState<SearchProviderIn>({
     name: provider?.name ?? "",
@@ -208,15 +171,8 @@ function SearchProviderDialog({
     monthly_limit: provider ? provider.monthly_limit : initialKind.limit,
     params: provider?.params ?? initialKind.params,
   });
-  const create = useMutation({
-    ...createSearchProviderMutation(),
-    onSuccess: onClose,
-  });
-  const update = useMutation({
-    ...updateSearchProviderMutation(),
-    onSuccess: onClose,
-  });
-  const pending = create.isPending || update.isPending;
+  const create = useMutation({ ...createSearchProviderMutation(), onSuccess: onClose });
+  const update = useMutation({ ...updateSearchProviderMutation(), onSuccess: onClose });
   const kind = kindOf(form.kind);
   const submit = () => {
     const body = { ...form, api_key: form.api_key || null };
@@ -229,182 +185,134 @@ function SearchProviderDialog({
     setForm(
       provider
         ? { ...form, kind: next.value }
-        : {
-            ...form,
-            kind: next.value,
-            base_url: "",
-            params: next.params,
-            monthly_limit: next.limit,
-          },
+        : { ...form, kind: next.value, base_url: "", params: next.params, monthly_limit: next.limit },
     );
   };
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>
-            {provider ? `编辑 ${provider.name}` : "新增搜索源"}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="grid gap-4">
-          <Field label="名称">
-            <Input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </Field>
-          <Field label="类型">
-            <OptionSelect
-              value={form.kind}
-              onChange={switchKind}
-              options={KINDS}
-            />
-          </Field>
-          <Field label="地址" hint={kind.url}>
-            <Input
-              value={form.base_url ?? ""}
-              onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-            />
-          </Field>
-          <Field
-            label="API key"
-            hint={
-              provider?.api_key_masked
-                ? `当前 ${provider.api_key_masked}；留空保持不变`
-                : form.kind === "exa" || form.kind === "deepseek"
-                  ? "必填"
-                  : "可留空"
-            }
-          >
-            <Input
-              type="password"
-              autoComplete="off"
-              value={form.api_key ?? ""}
-              disabled={!!form.clear_api_key}
-              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-            />
-          </Field>
-          {provider?.api_key_masked && (
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={!!form.clear_api_key}
-                onCheckedChange={(c) =>
-                  setForm({ ...form, clear_api_key: c === true })
-                }
-              />
-              清除已存储的 key
-            </label>
-          )}
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="优先级" hint="数字越小越先用">
-              <NumberInput
-                value={form.priority}
-                onChange={(v) => setForm({ ...form, priority: v ?? 100 })}
-              />
-            </Field>
-            <Field label="每月上限" hint="按 UTC 自然月计数，留空不限">
-              <NumberInput
-                value={form.monthly_limit}
-                placeholder="不限"
-                onChange={(v) => setForm({ ...form, monthly_limit: v })}
-              />
-            </Field>
-          </div>
-          <Field
-            label="参数"
-            hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek：不需要参数'
-          >
-            <JsonEditor
-              rows={3}
-              value={form.params}
-              onChange={(v) =>
-                isPlainObject(v) &&
-                setForm({ ...form, params: v as Record<string, unknown> })
-              }
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={form.enabled}
-              onCheckedChange={(c) => setForm({ ...form, enabled: c })}
-            />
-            启用
-          </label>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button disabled={pending || !form.name} onClick={submit}>
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={provider ? `编辑 ${provider.name}` : "新增搜索源"}
+      description="web_search 按优先级依次尝试启用的搜索源；保存后可以在列表里单独测试。"
+      onSubmit={submit}
+      pending={create.isPending || update.isPending}
+      submitDisabled={!form.name}
+    >
+      <Field label="名称">
+        <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+      </Field>
+      <Field label="类型">
+        <OptionSelect value={form.kind} onChange={switchKind} options={KINDS} />
+      </Field>
+      <Field label="地址" hint={kind.url}>
+        <Input value={form.base_url ?? ""} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+      </Field>
+      <ApiKeyField
+        masked={provider?.api_key_masked}
+        value={form.api_key ?? ""}
+        clear={!!form.clear_api_key}
+        emptyHint={form.kind === "exa" || form.kind === "deepseek" ? "必填" : "可留空"}
+        onChange={(patch) => setForm({ ...form, ...patch })}
+      />
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="优先级" hint="数字越小越先用">
+          <NumberInput value={form.priority} onChange={(v) => setForm({ ...form, priority: v ?? 100 })} />
+        </Field>
+        <Field label="每月上限" hint="按 UTC 自然月计数，留空不限">
+          <NumberInput
+            value={form.monthly_limit}
+            placeholder="不限"
+            onChange={(v) => setForm({ ...form, monthly_limit: v })}
+          />
+        </Field>
+      </div>
+      <Field
+        label="参数"
+        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek：不需要参数'
+      >
+        <JsonEditor
+          rows={3}
+          value={form.params}
+          onChange={(v) => isPlainObject(v) && setForm({ ...form, params: v as Record<string, unknown> })}
+        />
+      </Field>
+      <Field label="启用" orientation="horizontal">
+        <Switch checked={form.enabled} onCheckedChange={(c) => setForm({ ...form, enabled: c })} />
+      </Field>
+    </FormDialog>
   );
 }
 
-function TestDialog({
-  provider,
-  onClose,
-}: {
-  provider: SearchProviderOut;
-  onClose: () => void;
-}) {
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/** Search results as Sources: one line per hit, opening into its snippet and link. */
+function Hits({ hits }: { hits: SearchTestHit[] }) {
+  if (!hits.length) return <Empty icon={<SearchIcon />}>没有结果</Empty>;
+  return (
+    <Trace>
+      {hits.map((h, i) => (
+        <TraceCollapsible key={`${i}:${h.url}`}>
+          <TraceCollapsibleTrigger>
+            <TraceLine>
+              <TraceIcon>
+                <GlobeIcon />
+              </TraceIcon>
+              <TraceTitle>{h.title || hostOf(h.url)}</TraceTitle>
+              <TraceDescription>{hostOf(h.url)}</TraceDescription>
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <TraceCollapsibleContent className="grid gap-1.5 text-sm">
+            {h.snippet && <p className="whitespace-pre-wrap text-foreground">{h.snippet}</p>}
+            <ExternalLink href={h.url} className="font-mono text-xs break-all">
+              {h.url}
+              <span className="sr-only">（在新标签页打开）</span>
+            </ExternalLink>
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      ))}
+    </Trace>
+  );
+}
+
+function TestDialog({ provider, onClose }: { provider: SearchProviderOut; onClose: () => void }) {
   const [query, setQuery] = useState("Python 最新版本");
   const test = useMutation(testSearchProviderMutation());
   const result = test.data;
-  const hits = result?.hits ?? [];
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>测试 {provider.name}</DialogTitle>
-        </DialogHeader>
-        <div className="flex gap-2">
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} />
-          <Button
-            disabled={test.isPending || !query.trim()}
-            onClick={() =>
-              test.mutate({
-                path: { provider_id: provider.id },
-                body: { query },
-              })
-            }
-          >
-            <ZapIcon /> 搜索
-          </Button>
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={`测试 ${provider.name}`}
+      description="只查这一个搜索源，会计入它的本月用量。"
+      onSubmit={() => test.mutate({ path: { provider_id: provider.id }, body: { query } })}
+      pending={test.isPending}
+      submitLabel="搜索"
+      submitDisabled={!query.trim()}
+      className="sm:max-w-2xl"
+    >
+      <Field label="查询">
+        <Input required value={query} onChange={(e) => setQuery(e.target.value)} />
+      </Field>
+      {result && !result.ok && (
+        <Alert variant="destructive">
+          <AlertTitle>搜索失败 · {result.latency_ms}ms</AlertTitle>
+          <AlertDescription className="whitespace-pre-wrap">{result.error}</AlertDescription>
+        </Alert>
+      )}
+      {result?.ok && (
+        <div className="grid gap-3">
+          <p className="text-sm text-muted-foreground">
+            {result.latency_ms}ms · {result.hits?.length ?? 0} 条结果
+          </p>
+          <Hits hits={result.hits ?? []} />
         </div>
-        <p className="text-xs text-muted-foreground">
-          只查这一个搜索源，会计入它的本月用量。
-        </p>
-        {result && !result.ok && (
-          <p className="text-sm text-destructive">失败 · {result.error}</p>
-        )}
-        {result?.ok && (
-          <div className="grid max-h-96 gap-3 overflow-auto">
-            <p className="text-sm text-muted-foreground">
-              {result.latency_ms}ms · {hits.length} 条结果
-            </p>
-            {hits.map((h) => (
-              <div key={h.url} className="text-sm">
-                <a
-                  href={h.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium hover:underline"
-                >
-                  {h.title}
-                </a>
-                <div className="truncate font-mono text-xs text-muted-foreground">
-                  {h.url}
-                </div>
-                <p className="mt-1 text-xs">{h.snippet}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+      )}
+    </FormDialog>
   );
 }

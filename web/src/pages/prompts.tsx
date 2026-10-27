@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { diffLines } from "diff";
-import { useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   activatePromptVersionMutation,
@@ -11,16 +11,35 @@ import {
   resetPromptMutation,
 } from "@/client/@tanstack/react-query.gen";
 import type { PromptDetail } from "@/client/types.gen";
-import { ConfirmButton, Empty, Field, JsonEditor, PageHeader, Pre, QueryState } from "@/components/common";
+import {
+  ConfirmButton,
+  Disclosure,
+  Empty,
+  Field,
+  Hint,
+  JsonEditor,
+  PageHeader,
+  PendingButton,
+  QueryState,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockContent,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+  CodeBlockLine,
+  CodeBlockTitle,
+} from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { fmtTime, isPlainObject } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 export function PromptsPage() {
   const list = useQuery(listPromptsOptions());
@@ -33,19 +52,22 @@ export function PromptsPage() {
       {list.data?.length === 0 && <Empty>没有可编辑的模板</Empty>}
       {!!list.data?.length && (
         <div className="flex gap-6">
-          <nav className="flex w-56 shrink-0 flex-col gap-0.5">
+          <ToggleGroup
+            type="single"
+            orientation="vertical"
+            spacing={0.5}
+            aria-label="模板"
+            className="w-56 shrink-0"
+            value={current ?? ""}
+            onValueChange={(v) => v && setKey(v)}
+          >
             {list.data.map((p) => (
-              <Button
-                key={p.key}
-                variant="ghost"
-                onClick={() => setKey(p.key)}
-                className={cn("justify-between", current === p.key && "bg-muted font-medium")}
-              >
-                <span className="font-mono">{p.key}</span>
+              <ToggleGroupItem key={p.key} value={p.key} className="justify-between font-normal data-[state=on]:font-medium">
+                <span className="truncate font-mono">{p.key}</span>
                 {p.active_version_id ? <Badge>v{p.active_version_id}</Badge> : <Badge variant="outline">默认</Badge>}
-              </Button>
+              </ToggleGroupItem>
             ))}
-          </nav>
+          </ToggleGroup>
           <div className="min-w-0 flex-1">{current && <PromptEditor key={current} promptKey={current} />}</div>
         </div>
       )}
@@ -57,28 +79,54 @@ function activeBody(d: PromptDetail): string {
   return d.versions.find((v) => v.id === d.active_version_id)?.body ?? d.default_body;
 }
 
+/** A template or rendered prompt: line numbers, wrapping, copy button. */
+function TemplateBlock({ title, value }: { title: ReactNode; value: string }) {
+  return (
+    <CodeBlock>
+      <CodeBlockHeader>
+        <CodeBlockTitle>{title}</CodeBlockTitle>
+        <CodeBlockActions>
+          <CodeBlockCopyButton value={value} aria-label="复制" />
+        </CodeBlockActions>
+      </CodeBlockHeader>
+      <CodeBlockContent wrap lineNumbers className="max-h-[32rem]">
+        {value}
+      </CodeBlockContent>
+    </CodeBlock>
+  );
+}
+
 function DiffView({ from, to }: { from: string; to: string }) {
   const parts = diffLines(from, to);
   if (parts.every((p) => !p.added && !p.removed)) return <Empty>与默认模板相同</Empty>;
+  const rows = parts.flatMap((p) =>
+    p.value
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line) => ({ line, variant: p.added ? ("added" as const) : p.removed ? ("removed" as const) : ("default" as const) })),
+  );
+  const added = rows.filter((r) => r.variant === "added").length;
+  const removed = rows.filter((r) => r.variant === "removed").length;
   return (
-    <pre className="max-h-[32rem] overflow-auto rounded-lg border text-xs">
-      {parts.map((p, i) => (
-        <div
-          key={i}
-          className={cn(
-            "px-3 whitespace-pre-wrap",
-            p.added && "bg-green-500/15 text-green-900",
-            p.removed && "bg-red-500/15 text-red-900 line-through decoration-red-900/40",
-          )}
-        >
-          {p.value
-            .replace(/\n$/, "")
-            .split("\n")
-            .map((line) => `${p.added ? "+" : p.removed ? "-" : " "} ${line}`)
-            .join("\n")}
-        </div>
-      ))}
-    </pre>
+    <CodeBlock>
+      <CodeBlockHeader>
+        <CodeBlockTitle>默认模板 → 编辑器</CodeBlockTitle>
+        <span className="ms-auto font-mono text-xs">
+          <span className="text-success">+{added}</span> <span className="text-destructive">−{removed}</span>
+        </span>
+      </CodeBlockHeader>
+      <CodeBlockContent wrap className="max-h-[32rem]">
+        {rows.map((r, i) => (
+          <CodeBlockLine
+            key={i}
+            variant={r.variant}
+            className={r.variant === "added" ? "bg-success/10 after:text-success" : undefined}
+          >
+            {r.line}
+          </CodeBlockLine>
+        ))}
+      </CodeBlockContent>
+    </CodeBlock>
   );
 }
 
@@ -104,9 +152,14 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
     setVars((old) => Object.fromEntries(detail.data.variables.map((v) => [v, old[v] ?? ""])));
   }, [detail.data]);
 
-  if (!detail.data) return <QueryState isLoading={detail.isLoading} error={detail.error} />;
+  if (!detail.data) return <QueryState isLoading={detail.isLoading} error={detail.error} variant="card" />;
   const d = detail.data;
   const changed = body !== activeBody(d);
+  const canSave = changed && !!body.trim() && !create.isPending;
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    if (canSave) create.mutate({ path: { key: promptKey }, body: { body, note, activate } });
+  };
 
   return (
     <div className="grid gap-6">
@@ -124,32 +177,37 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
               <TabsTrigger value="diff">与默认对比</TabsTrigger>
               <TabsTrigger value="preview">预览</TabsTrigger>
             </TabsList>
-            <TabsContent value="edit" className="grid gap-3">
-              <Textarea
-                className="min-h-96 font-mono text-xs"
-                spellCheck={false}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-              <div className="flex flex-wrap items-center gap-3">
-                <Input className="w-80" placeholder="版本备注" value={note} onChange={(e) => setNote(e.target.value)} />
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={activate} onCheckedChange={(c) => setActivate(c === true)} />
-                  保存后立即生效
-                </label>
-                <Button
-                  disabled={!changed || !body.trim() || create.isPending}
-                  onClick={() => create.mutate({ path: { key: promptKey }, body: { body, note, activate } })}
-                >
-                  保存为新版本
-                </Button>
-                <Button variant="outline" disabled={!changed} onClick={() => setBody(activeBody(d))}>
-                  撤销修改
-                </Button>
-                <Button variant="outline" onClick={() => setBody(d.default_body)}>
-                  载入默认模板
-                </Button>
-              </div>
+            <TabsContent value="edit" asChild>
+              <form onSubmit={save} className="grid gap-3">
+                <Textarea
+                  aria-label="模板内容"
+                  className="min-h-96 font-mono text-xs"
+                  spellCheck={false}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                />
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    aria-label="版本备注"
+                    className="w-80"
+                    placeholder="版本备注"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                  <Field label="保存后立即生效" orientation="horizontal" className="w-auto">
+                    <Checkbox checked={activate} onCheckedChange={(c) => setActivate(c === true)} />
+                  </Field>
+                  <PendingButton type="submit" pending={create.isPending} disabled={!changed || !body.trim()}>
+                    保存为新版本
+                  </PendingButton>
+                  <Button type="button" variant="outline" disabled={!changed} onClick={() => setBody(activeBody(d))}>
+                    撤销修改
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setBody(d.default_body)}>
+                    载入默认模板
+                  </Button>
+                </div>
+              </form>
             </TabsContent>
             <TabsContent value="diff">
               <DiffView from={d.default_body} to={body} />
@@ -159,14 +217,14 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
                 <JsonEditor value={vars} rows={6} onChange={(v) => isPlainObject(v) && setVars(v)} />
               </Field>
               <div>
-                <Button
-                  disabled={preview.isPending}
+                <PendingButton
+                  pending={preview.isPending}
                   onClick={() => preview.mutate({ path: { key: promptKey }, body: { body, variables: vars } })}
                 >
                   渲染编辑器中的模板
-                </Button>
+                </PendingButton>
               </div>
-              {preview.data && <Pre value={preview.data.rendered} className="max-h-[32rem] whitespace-pre-wrap" />}
+              {preview.data && <TemplateBlock title="渲染结果" value={preview.data.rendered} />}
             </TabsContent>
           </Tabs>
         </CardContent>
@@ -188,27 +246,39 @@ function PromptEditor({ promptKey }: { promptKey: string }) {
         <CardContent className="grid gap-2">
           {d.versions.length === 0 && <Empty>还没有保存过版本</Empty>}
           {d.versions.map((v) => (
-            <div key={v.id} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm">
-              <div className="min-w-0">
-                <span className="font-mono">v{v.id}</span>
-                {v.id === d.active_version_id && <Badge className="ml-2">生效中</Badge>}
-                <span className="ml-3 text-muted-foreground">
-                  {fmtTime(v.created_at)} · {v.created_by}
-                </span>
-                {v.note && <div className="truncate text-muted-foreground">{v.note}</div>}
+            <div key={v.id} className="grid gap-1 rounded-lg border px-3 py-2 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="font-mono">v{v.id}</span>
+                  {v.id === d.active_version_id && <Badge className="ml-2">生效中</Badge>}
+                  <span className="ml-3 text-muted-foreground">
+                    {fmtTime(v.created_at)} · {v.created_by}
+                  </span>
+                  {v.note && (
+                    <Hint content={v.note}>
+                      <div tabIndex={0} className="truncate rounded-sm text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                        {v.note}
+                      </div>
+                    </Hint>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <Button size="sm" variant="outline" onClick={() => setBody(v.body)}>
+                    载入编辑器
+                  </Button>
+                  <PendingButton
+                    size="sm"
+                    pending={activateM.isPending && activateM.variables?.body.version_id === v.id}
+                    disabled={v.id === d.active_version_id || activateM.isPending}
+                    onClick={() => activateM.mutate({ path: { key: promptKey }, body: { version_id: v.id } })}
+                  >
+                    设为生效
+                  </PendingButton>
+                </div>
               </div>
-              <div className="flex shrink-0 gap-1.5">
-                <Button size="sm" variant="outline" onClick={() => setBody(v.body)}>
-                  载入编辑器
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={v.id === d.active_version_id || activateM.isPending}
-                  onClick={() => activateM.mutate({ path: { key: promptKey }, body: { version_id: v.id } })}
-                >
-                  设为生效
-                </Button>
-              </div>
+              <Disclosure label="查看内容">
+                <TemplateBlock title={`v${v.id}`} value={v.body} />
+              </Disclosure>
             </div>
           ))}
         </CardContent>

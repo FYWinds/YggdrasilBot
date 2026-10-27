@@ -1,13 +1,25 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { decideReviewMutation, listReviewsOptions } from "@/client/@tanstack/react-query.gen";
 import type { ReviewOut } from "@/client/types.gen";
-import { Disclosure, Empty, OptionSelect, PageHeader, Pager, Pre, QueryState, useGroupName } from "@/components/common";
+import {
+  ConfirmButton,
+  Empty,
+  FilterBar,
+  FormDialog,
+  GroupSelect,
+  OptionSelect,
+  PageHeader,
+  Pager,
+  QueryState,
+  useGroupName,
+} from "@/components/common";
+import { ReplyView } from "@/components/qq";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtTime } from "@/lib/format";
 
@@ -15,28 +27,11 @@ type Status = "pending" | "approved" | "rejected" | "expired";
 const STATUS_LABELS: Record<Status, string> = { pending: "待审核", approved: "已通过", rejected: "已拒绝", expired: "已过期" };
 const LIMIT = 20;
 
-/** Best-effort plain text of a serialized BotReply (messages, then title + sections). */
-function replyText(reply: Record<string, unknown>): string {
-  const parts: string[] = [];
-  if (Array.isArray(reply.messages)) {
-    parts.push(...reply.messages.filter((m): m is string => typeof m === "string" && m.length > 0));
-  }
-  if (typeof reply.title === "string" && reply.title) parts.push(reply.title);
-  if (Array.isArray(reply.sections)) {
-    for (const s of reply.sections) {
-      if (s && typeof s === "object") {
-        const { title, content } = s as { title?: unknown; content?: unknown };
-        parts.push([title, content].filter((x) => typeof x === "string" && x).join("\n"));
-      }
-    }
-  }
-  return parts.join("\n\n");
-}
-
 export function ReviewsPage() {
   const [status, setStatus] = useState<Status | null>("pending");
+  const [groupId, setGroupId] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
-  const reviews = useQuery(listReviewsOptions({ query: { status, limit: LIMIT, offset } }));
+  const reviews = useQuery(listReviewsOptions({ query: { status, group_id: groupId, limit: LIMIT, offset } }));
   const decide = useMutation({ ...decideReviewMutation(), onSuccess: (r) => toast.success(`R${r.id} ${STATUS_LABELS[r.status as Status] ?? r.status}`) });
   const [editing, setEditing] = useState<ReviewOut | null>(null);
   const [text, setText] = useState("");
@@ -44,22 +39,28 @@ export function ReviewsPage() {
 
   return (
     <div>
-      <PageHeader
-        title="审核队列"
-        description="被审核模型拦下的回复。也可以在私聊里用 admin.review 指令处理。"
-        actions={
-          <OptionSelect
-            className="w-36"
-            value={status}
-            onChange={(v) => {
-              setStatus(v as Status | null);
-              setOffset(0);
-            }}
-            noneLabel="全部"
-            options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-          />
-        }
-      />
+      <PageHeader title="审核队列" description="被审核模型拦下的回复。也可以在私聊里用 admin.review 指令处理。" />
+      <FilterBar>
+        <GroupSelect
+          className="w-56"
+          value={groupId}
+          onChange={(v) => {
+            setGroupId(v);
+            setOffset(0);
+          }}
+        />
+        <OptionSelect
+          className="w-36"
+          aria-label="状态"
+          value={status}
+          onChange={(v) => {
+            setStatus(v as Status | null);
+            setOffset(0);
+          }}
+          noneLabel="全部"
+          options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+      </FilterBar>
       <QueryState isLoading={reviews.isLoading} error={reviews.error} />
       {reviews.data?.items.length === 0 && <Empty>队列是空的</Empty>}
       <div className="grid gap-4">
@@ -75,6 +76,13 @@ export function ReviewsPage() {
                   {groupName(r.group_id)} · {r.user_id} · {fmtTime(r.created_at)}
                   {r.status === "pending" ? ` · ${fmtTime(r.expires_at)} 过期` : r.decided_by ? ` · ${r.decided_by}` : ""}
                 </span>
+                {r.invocation_id != null && (
+                  <Button variant="link" asChild className="ml-auto h-auto p-0 text-sm font-normal">
+                    <Link to="/invocations/$id" params={{ id: String(r.invocation_id) }}>
+                      调用 #{r.invocation_id}
+                    </Link>
+                  </Button>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -84,10 +92,20 @@ export function ReviewsPage() {
                   {r.request_text}
                 </div>
               )}
-              <Pre value={replyText(r.reply) || r.reply} className="whitespace-pre-wrap" />
-              <Disclosure label="审核结果">
-                <Pre value={r.verdict} />
-              </Disclosure>
+              <ReplyView reply={r.reply} defaultOpen />
+              <div className="flex flex-wrap items-center gap-1 text-sm">
+                <span className="text-muted-foreground">审核结果：</span>
+                <Badge variant="destructive">{r.verdict.verdict}</Badge>
+                <Badge variant="outline" className="font-mono">
+                  {r.verdict.score.toFixed(2)}
+                </Badge>
+                {(r.verdict.categories ?? []).map((c) => (
+                  <Badge key={c} variant="secondary">
+                    {c}
+                  </Badge>
+                ))}
+                <Badge variant="outline">{r.verdict.action}</Badge>
+              </div>
               {r.status === "pending" && (
                 <div className="flex gap-2">
                   <Button
@@ -100,18 +118,20 @@ export function ReviewsPage() {
                     variant="outline"
                     onClick={() => {
                       setEditing(r);
-                      setText(replyText(r.reply));
+                      setText([r.reply.title, ...(r.reply.sections ?? []).map((s) => s.content)].filter(Boolean).join("\n\n"));
                     }}
                   >
                     修改后发送
                   </Button>
-                  <Button
-                    variant="destructive"
+                  <ConfirmButton
+                    size="default"
+                    title={`拒绝 R${r.id}？`}
+                    description="这条回复不会发送。"
                     disabled={decide.isPending}
-                    onClick={() => decide.mutate({ path: { review_id: r.id }, body: { action: "reject" } })}
+                    onConfirm={() => decide.mutate({ path: { review_id: r.id }, body: { action: "reject" } })}
                   >
                     拒绝
-                  </Button>
+                  </ConfirmButton>
                 </div>
               )}
             </CardContent>
@@ -120,30 +140,24 @@ export function ReviewsPage() {
       </div>
       {reviews.data && <Pager total={reviews.data.total} limit={LIMIT} offset={offset} onChange={setOffset} />}
       {editing && (
-        <Dialog open onOpenChange={(o) => !o && setEditing(null)}>
-          <DialogContent className="sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>修改 R{editing.id} 后发送</DialogTitle>
-            </DialogHeader>
-            <Textarea rows={12} value={text} onChange={(e) => setText(e.target.value)} />
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setEditing(null)}>
-                取消
-              </Button>
-              <Button
-                disabled={!text.trim() || decide.isPending}
-                onClick={() =>
-                  decide.mutate(
-                    { path: { review_id: editing.id }, body: { action: "edit", text } },
-                    { onSuccess: () => setEditing(null) },
-                  )
-                }
-              >
-                发送
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <FormDialog
+          open
+          onOpenChange={(o) => !o && setEditing(null)}
+          className="sm:max-w-2xl"
+          title={`修改 R${editing.id} 后发送`}
+          description="编辑后的文本会代替原回复发送到群里。"
+          submitLabel="发送"
+          pending={decide.isPending}
+          submitDisabled={!text.trim()}
+          onSubmit={() =>
+            decide.mutate(
+              { path: { review_id: editing.id }, body: { action: "edit", text } },
+              { onSuccess: () => setEditing(null) },
+            )
+          }
+        >
+          <Textarea rows={12} aria-label="回复文本" value={text} onChange={(e) => setText(e.target.value)} />
+        </FormDialog>
       )}
     </div>
   );

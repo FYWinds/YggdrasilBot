@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { PencilIcon, PlayIcon, PlusIcon } from "lucide-react";
-import { useState } from "react";
+import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import {
   createTriggerMutation,
@@ -15,11 +15,13 @@ import {
   ConfirmButton,
   Empty,
   Field,
+  FormDialog,
   GroupSelect,
   MultiToggle,
   NumberInput,
   OptionSelect,
   PageHeader,
+  PendingButton,
   Pre,
   QueryState,
   TagInput,
@@ -27,7 +29,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -54,21 +55,27 @@ export function TriggersPage() {
   const [editing, setEditing] = useState<TriggerOut | "new" | null>(null);
   const remove = useMutation({ ...deleteTriggerMutation(), onSuccess: () => toast.success("已删除") });
   const update = useMutation(updateTriggerMutation());
+  const addButton = (
+    <Button onClick={() => setEditing("new")} disabled={!meta.data}>
+      <PlusIcon data-icon="inline-start" /> 新增规则
+    </Button>
+  );
 
   return (
     <div>
       <PageHeader
         title="指令"
         description="什么话触发哪个 handler。群级规则覆盖同 handler 的全局规则；按优先级取第一条命中。"
-        actions={
-          <Button onClick={() => setEditing("new")} disabled={!meta.data}>
-            <PlusIcon /> 新增规则
-          </Button>
-        }
+        actions={addButton}
       />
+      <QueryState isLoading={meta.isLoading} error={meta.error} variant="card" />
       {meta.data && <TryMatch meta={meta.data} />}
       <QueryState isLoading={triggers.isLoading} error={triggers.error} />
-      {triggers.data?.length === 0 && <Empty>还没有规则</Empty>}
+      {triggers.data?.length === 0 && (
+        <Empty description="没有规则时，消息不会触发任何 handler。" action={addButton}>
+          还没有规则
+        </Empty>
+      )}
       {!!triggers.data?.length && (
         <Table>
           <TableHeader>
@@ -117,6 +124,7 @@ export function TriggersPage() {
                 <TableCell>{t.priority}</TableCell>
                 <TableCell>
                   <Switch
+                    aria-label={`启用规则 #${t.id}`}
                     checked={t.enabled}
                     onCheckedChange={(enabled) =>
                       update.mutate({ path: { trigger_id: t.id }, body: { ...toInput(t), enabled } })
@@ -126,7 +134,7 @@ export function TriggersPage() {
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
                     <Button size="sm" variant="outline" onClick={() => setEditing(t)}>
-                      <PencilIcon /> 编辑
+                      <PencilIcon data-icon="inline-start" /> 编辑
                     </Button>
                     <ConfirmButton title={`删除规则 #${t.id}？`} onConfirm={() => remove.mutate({ path: { trigger_id: t.id } })}>
                       删除
@@ -179,99 +187,89 @@ function TriggerDialog({ trigger, meta, onClose }: { trigger: TriggerOut | null;
   };
   const usesPatterns = PATTERN_TYPES.includes(form.match_type);
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{trigger ? `编辑规则 #${trigger.id}` : "新增规则"}</DialogTitle>
-        </DialogHeader>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="handler">
-            <OptionSelect
-              value={form.handler}
-              onChange={(v) => v && setForm({ ...form, handler: v })}
-              options={meta.handlers.map((h) => ({ value: h.name, label: `${h.name} · ${h.description}` }))}
-            />
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={trigger ? `编辑规则 #${trigger.id}` : "新增规则"}
+      description="什么消息、在哪个范围、由谁发出时触发这个 handler；保存后几秒内热更新。"
+      onSubmit={submit}
+      pending={create.isPending || update.isPending}
+      className="sm:max-w-2xl"
+    >
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="handler">
+          <OptionSelect
+            value={form.handler}
+            onChange={(v) => v && setForm({ ...form, handler: v })}
+            options={meta.handlers.map((h) => ({ value: h.name, label: `${h.name} · ${h.description}` }))}
+          />
+        </Field>
+        <Field label="范围">
+          <OptionSelect
+            value={form.scope ?? "global"}
+            onChange={(v) => v && setForm({ ...form, scope: v as TriggerIn["scope"] })}
+            options={meta.scopes.map((s) => ({ value: s, label: SCOPE_LABELS[s] ?? s }))}
+          />
+        </Field>
+        {form.scope === "group" && (
+          <Field label="群" className="col-span-2">
+            <GroupSelect value={form.group_id ?? null} onChange={(g) => setForm({ ...form, group_id: g })} allLabel={null} />
           </Field>
-          <Field label="范围">
-            <OptionSelect
-              value={form.scope ?? "global"}
-              onChange={(v) => v && setForm({ ...form, scope: v as TriggerIn["scope"] })}
-              options={meta.scopes.map((s) => ({ value: s, label: SCOPE_LABELS[s] ?? s }))}
-            />
+        )}
+        <Field label="匹配方式">
+          <OptionSelect
+            value={form.match_type}
+            onChange={(v) => v && setForm({ ...form, match_type: v })}
+            options={meta.match_types.map((m) => ({ value: m, label: MATCH_LABELS[m] ?? m }))}
+          />
+        </Field>
+        <Field label="目标消息">
+          <OptionSelect
+            value={form.target ?? "quoted_or_self"}
+            onChange={(v) => v && setForm({ ...form, target: v })}
+            options={meta.targets.map((t) => ({ value: t, label: TARGET_LABELS[t] ?? t }))}
+          />
+        </Field>
+        {usesPatterns && (
+          <Field
+            label="patterns"
+            className="col-span-2"
+            hint={form.match_type === "regex" ? "忽略大小写；可以带捕获组" : "忽略大小写"}
+          >
+            <TagInput value={form.patterns ?? []} onChange={(patterns) => setForm({ ...form, patterns })} />
           </Field>
-          {form.scope === "group" && (
-            <Field label="群" className="col-span-2">
-              <GroupSelect value={form.group_id ?? null} onChange={(g) => setForm({ ...form, group_id: g })} allLabel={null} />
-            </Field>
-          )}
-          <Field label="匹配方式">
-            <OptionSelect
-              value={form.match_type}
-              onChange={(v) => v && setForm({ ...form, match_type: v })}
-              options={meta.match_types.map((m) => ({ value: m, label: MATCH_LABELS[m] ?? m }))}
-            />
-          </Field>
-          <Field label="目标消息">
-            <OptionSelect
-              value={form.target ?? "quoted_or_self"}
-              onChange={(v) => v && setForm({ ...form, target: v })}
-              options={meta.targets.map((t) => ({ value: t, label: TARGET_LABELS[t] ?? t }))}
-            />
-          </Field>
-          {usesPatterns && (
-            <Field
-              label="patterns"
-              className="col-span-2"
-              hint={form.match_type === "regex" ? "忽略大小写；可以带捕获组" : "忽略大小写"}
-            >
-              <TagInput value={form.patterns ?? []} onChange={(patterns) => setForm({ ...form, patterns })} />
-            </Field>
-          )}
-          <Field label="参数模板" className="col-span-2" hint="把命中结果改写成 handler 参数：{0}、{1} 是捕获组，{rest} 是剩余文本">
-            <Input
-              className="font-mono"
-              value={form.arg_template ?? ""}
-              onChange={(e) => setForm({ ...form, arg_template: e.target.value || null })}
-            />
-          </Field>
-          <Field label="允许的角色" className="col-span-2" hint="不选表示所有人；owner 隐含 admin，superuser 总是允许">
-            <MultiToggle
-              options={meta.roles}
-              value={form.allowed_roles ?? []}
-              onChange={(allowed_roles) => setForm({ ...form, allowed_roles })}
-            />
-          </Field>
-          <Field label="优先级" hint="越小越先匹配">
-            <NumberInput value={form.priority} onChange={(v) => setForm({ ...form, priority: v ?? 100 })} />
-          </Field>
-          <Field label="冷却（秒）">
-            <NumberInput value={form.cooldown_s} onChange={(v) => setForm({ ...form, cooldown_s: v ?? 0 })} />
-          </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={!!form.require_mention}
-              onCheckedChange={(c) => setForm({ ...form, require_mention: c })}
-            />
-            必须 @bot 或提到名字
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch checked={form.enabled ?? true} onCheckedChange={(c) => setForm({ ...form, enabled: c })} />
-            启用
-          </label>
-          <Field label="备注" className="col-span-2">
-            <Input value={form.note ?? ""} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-          </Field>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button disabled={create.isPending || update.isPending} onClick={submit}>
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        )}
+        <Field label="参数模板" className="col-span-2" hint="把命中结果改写成 handler 参数：{0}、{1} 是捕获组，{rest} 是剩余文本">
+          <Input
+            className="font-mono"
+            value={form.arg_template ?? ""}
+            onChange={(e) => setForm({ ...form, arg_template: e.target.value || null })}
+          />
+        </Field>
+        <Field label="允许的角色" className="col-span-2" hint="不选表示所有人；owner 隐含 admin，superuser 总是允许">
+          <MultiToggle
+            options={meta.roles}
+            value={form.allowed_roles ?? []}
+            onChange={(allowed_roles) => setForm({ ...form, allowed_roles })}
+          />
+        </Field>
+        <Field label="优先级" hint="越小越先匹配">
+          <NumberInput value={form.priority} onChange={(v) => setForm({ ...form, priority: v ?? 100 })} />
+        </Field>
+        <Field label="冷却（秒）">
+          <NumberInput value={form.cooldown_s} onChange={(v) => setForm({ ...form, cooldown_s: v ?? 0 })} />
+        </Field>
+        <Field label="必须 @bot 或提到名字" orientation="horizontal">
+          <Switch checked={!!form.require_mention} onCheckedChange={(c) => setForm({ ...form, require_mention: c })} />
+        </Field>
+        <Field label="启用" orientation="horizontal">
+          <Switch checked={form.enabled ?? true} onCheckedChange={(c) => setForm({ ...form, enabled: c })} />
+        </Field>
+        <Field label="备注" className="col-span-2">
+          <Input value={form.note ?? ""} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+        </Field>
+      </div>
+    </FormDialog>
   );
 }
 
@@ -285,6 +283,10 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
     role: "member",
   });
   const test = useMutation(testTriggerMutation());
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!test.isPending) test.mutate({ body: input });
+  };
   return (
     <Card className="mb-6">
       <CardHeader>
@@ -292,13 +294,12 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
         <CardDescription>与运行时同一份索引代码；规则保存后几秒内热更新到这里。</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="flex flex-wrap items-end gap-3">
+        <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
           <Field label="消息文本" className="min-w-72 flex-1">
             <Input
               value={input.text}
               placeholder="例如：太长不看 总结最近50条"
               onChange={(e) => setInput({ ...input, text: e.target.value })}
-              onKeyDown={(e) => e.key === "Enter" && test.mutate({ body: input })}
             />
           </Field>
           <Field label="场景" className="w-28">
@@ -323,18 +324,17 @@ function TryMatch({ meta }: { meta: TriggerMeta }) {
               options={meta.roles.map((r) => ({ value: r, label: r }))}
             />
           </Field>
-          <label className="flex h-8 items-center gap-2 text-sm">
+          <Field label="@bot" orientation="horizontal" className="h-8 w-auto">
             <Switch checked={!!input.to_me} onCheckedChange={(c) => setInput({ ...input, to_me: c })} />
-            @bot
-          </label>
-          <label className="flex h-8 items-center gap-2 text-sm">
+          </Field>
+          <Field label="回复 bot" orientation="horizontal" className="h-8 w-auto">
             <Switch checked={!!input.replied_to_bot} onCheckedChange={(c) => setInput({ ...input, replied_to_bot: c })} />
-            回复 bot
-          </label>
-          <Button onClick={() => test.mutate({ body: input })} disabled={test.isPending}>
-            <PlayIcon /> 试匹配
-          </Button>
-        </div>
+          </Field>
+          <PendingButton type="submit" pending={test.isPending}>
+            {!test.isPending && <PlayIcon data-icon="inline-start" />}
+            试匹配
+          </PendingButton>
+        </form>
         {test.data &&
           (test.data.resolved ? (
             <div className="grid gap-2">

@@ -18,7 +18,10 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { getMeOptions } from "@/client/@tanstack/react-query.gen";
+import { Hint } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
 
 export const NAV = [
@@ -54,17 +57,18 @@ export function Layout() {
               className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
               activeProps={{ className: "bg-muted font-medium text-foreground" }}
             >
-              <Icon className="size-4" />
+              <Icon className="size-4" aria-hidden />
               {label}
             </Link>
           ))}
         </nav>
-        <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+        <Separator />
+        <div className="px-4 py-3 text-xs text-muted-foreground">
           {me.data ? (
             <div className="grid gap-1">
-              <span className="truncate" title={me.data.email}>
-                {me.data.email}
-              </span>
+              <Hint content={me.data.email}>
+                <span className="truncate">{me.data.email}</span>
+              </Hint>
               {me.data.environment !== "prod" && (
                 <Badge variant="outline" className="w-fit">
                   {me.data.environment}
@@ -74,7 +78,7 @@ export function Layout() {
           ) : me.error ? (
             <span className="text-destructive">{errorMessage(me.error)}</span>
           ) : (
-            "…"
+            <Skeleton className="h-4 w-full" aria-label="加载中" />
           )}
         </div>
       </aside>

@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ListIcon, PencilIcon, PlusIcon, RefreshCwIcon, ZapIcon } from "lucide-react";
+import { ListIcon, PencilIcon, PlusIcon, RefreshCwIcon, ServerIcon, ZapIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -13,11 +13,21 @@ import {
 } from "@/client/@tanstack/react-query.gen";
 import type { ProviderIn, ProviderOut, ProviderProbe } from "@/client/types.gen";
 import { CapBadges } from "@/components/model-caps";
-import { ConfirmButton, Empty, Field, Hint, JsonEditor, OptionSelect, PageHeader, QueryState } from "@/components/common";
+import {
+  ApiKeyField,
+  ConfirmButton,
+  Empty,
+  Field,
+  FormDialog,
+  Hint,
+  JsonEditor,
+  OptionSelect,
+  PageHeader,
+  PendingButton,
+  QueryState,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -46,20 +56,25 @@ export function ProvidersPage() {
       },
     });
   const remove = useMutation({ ...deleteProviderMutation(), onSuccess: () => toast.success("已删除") });
+  const addButton = (
+    <Button onClick={() => setEditing("new")}>
+      <PlusIcon data-icon="inline-start" /> 新增
+    </Button>
+  );
 
   return (
     <div>
       <PageHeader
         title="Providers"
         description="OpenAI 兼容的接口（new-api、TEI、llama.cpp…）。API key 加密存储，只显示末四位。"
-        actions={
-          <Button onClick={() => setEditing("new")}>
-            <PlusIcon /> 新增
-          </Button>
-        }
+        actions={addButton}
       />
       <QueryState isLoading={providers.isLoading} error={providers.error} />
-      {providers.data?.length === 0 && <Empty>还没有 provider</Empty>}
+      {providers.data?.length === 0 && (
+        <Empty icon={<ServerIcon />} description="模型路由和向量空间都要先选一个 provider。" action={addButton}>
+          还没有 provider
+        </Empty>
+      )}
       {!!providers.data?.length && (
         <Table>
           <TableHeader>
@@ -87,33 +102,43 @@ export function ProvidersPage() {
                 <TableCell className="font-mono text-xs">{p.api_key_masked ?? "—"}</TableCell>
                 <TableCell>
                   <Hint content={`${p.models.join("\n")}\n\n更新于 ${fmtTime(p.models_fetched_at)}`}>
-                    <span>{p.models.length} 个</span>
+                    <Button variant="link" size="sm" className="h-auto p-0" onClick={() => setModelsOf(p.id)}>
+                      {p.models.length} 个
+                    </Button>
                   </Hint>
                 </TableCell>
                 <TableCell>{p.enabled ? <Badge>启用</Badge> : <Badge variant="outline">停用</Badge>}</TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1.5">
-                    <Button
+                    <PendingButton
                       size="sm"
                       variant="outline"
+                      pending={test.isPending && test.variables?.path.provider_id === p.id}
                       disabled={test.isPending}
                       onClick={() => test.mutate({ path: { provider_id: p.id } })}
                     >
-                      <ZapIcon /> 测试
-                    </Button>
-                    <Button
+                      {!(test.isPending && test.variables?.path.provider_id === p.id) && (
+                        <ZapIcon data-icon="inline-start" />
+                      )}
+                      测试
+                    </PendingButton>
+                    <PendingButton
                       size="sm"
                       variant="outline"
+                      pending={refresh.isPending && refresh.variables?.path.provider_id === p.id}
                       disabled={refresh.isPending}
                       onClick={() => refresh.mutate({ path: { provider_id: p.id } })}
                     >
-                      <RefreshCwIcon /> 拉取模型
-                    </Button>
+                      {!(refresh.isPending && refresh.variables?.path.provider_id === p.id) && (
+                        <RefreshCwIcon data-icon="inline-start" />
+                      )}
+                      拉取模型
+                    </PendingButton>
                     <Button size="sm" variant="outline" onClick={() => setModelsOf(p.id)}>
-                      <ListIcon /> 模型与别名
+                      <ListIcon data-icon="inline-start" /> 模型与别名
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => setEditing(p)}>
-                      <PencilIcon /> 编辑
+                      <PencilIcon data-icon="inline-start" /> 编辑
                     </Button>
                     <ConfirmButton
                       title={`删除 ${p.name}？`}
@@ -147,78 +172,55 @@ function ProviderDialog({ provider, onClose }: { provider: ProviderOut | null; o
   });
   const create = useMutation({ ...createProviderMutation(), onSuccess: onClose });
   const update = useMutation({ ...updateProviderMutation(), onSuccess: onClose });
-  const pending = create.isPending || update.isPending;
   const submit = () => {
     const body = { ...form, api_key: form.api_key || null };
     if (provider) update.mutate({ path: { provider_id: provider.id }, body });
     else create.mutate({ body });
   };
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{provider ? `编辑 ${provider.name}` : "新增 provider"}</DialogTitle>
-        </DialogHeader>
-        <div className="grid gap-4">
-          <Field label="名称">
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </Field>
-          <Field label="Base URL" hint="包含 /v1，例如 https://api.example.com/v1">
-            <Input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-          </Field>
-          <Field label="接口格式" hint="对话请求使用的协议；模型列表始终通过 GET {base_url}/models 拉取">
-            <OptionSelect
-              value={form.api_format ?? "openai"}
-              onChange={(v) => setForm({ ...form, api_format: v === "anthropic" ? "anthropic" : "openai" })}
-              options={[
-                { value: "openai", label: "OpenAI（/chat/completions）" },
-                { value: "anthropic", label: "Anthropic（/messages，原生工具调用）" },
-              ]}
-            />
-          </Field>
-          <Field
-            label="API key"
-            hint={provider?.api_key_masked ? `当前 ${provider.api_key_masked}；留空保持不变` : "可留空（本地服务）"}
-          >
-            <Input
-              type="password"
-              autoComplete="off"
-              value={form.api_key ?? ""}
-              disabled={!!form.clear_api_key}
-              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-            />
-          </Field>
-          {provider?.api_key_masked && (
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={!!form.clear_api_key}
-                onCheckedChange={(c) => setForm({ ...form, clear_api_key: c === true })}
-              />
-              清除已存储的 key
-            </label>
-          )}
-          <Field label="额外请求头" hint='JSON 对象，例如 {"X-Foo": "bar"}'>
-            <JsonEditor
-              rows={3}
-              value={form.headers}
-              onChange={(v) => isPlainObject(v) && setForm({ ...form, headers: v as Record<string, string> })}
-            />
-          </Field>
-          <label className="flex items-center gap-2 text-sm">
-            <Switch checked={form.enabled} onCheckedChange={(c) => setForm({ ...form, enabled: c })} />
-            启用
-          </label>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button disabled={pending || !form.name || !form.base_url} onClick={submit}>
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={provider ? `编辑 ${provider.name}` : "新增 provider"}
+      description="OpenAI 兼容的接口地址和凭据；保存后可以在列表里测试连通、拉取模型。"
+      onSubmit={submit}
+      pending={create.isPending || update.isPending}
+      submitDisabled={!form.name || !form.base_url}
+    >
+      <Field label="名称">
+        <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+      </Field>
+      <Field label="Base URL" hint="包含 /v1，例如 https://api.example.com/v1">
+        <Input required value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+      </Field>
+      <Field label="接口格式" hint="对话请求使用的协议；模型列表始终通过 GET {base_url}/models 拉取">
+        <OptionSelect
+          value={form.api_format ?? "openai"}
+          onChange={(v) => setForm({ ...form, api_format: v === "anthropic" ? "anthropic" : "openai" })}
+          options={[
+            { value: "openai", label: "OpenAI（/chat/completions）" },
+            { value: "anthropic", label: "Anthropic（/messages，原生工具调用）" },
+          ]}
+        />
+      </Field>
+      <ApiKeyField
+        masked={provider?.api_key_masked}
+        value={form.api_key ?? ""}
+        clear={!!form.clear_api_key}
+        emptyHint="可留空（本地服务）"
+        onChange={(patch) => setForm({ ...form, ...patch })}
+      />
+      <Field label="额外请求头" hint='JSON 对象，例如 {"X-Foo": "bar"}'>
+        <JsonEditor
+          rows={3}
+          value={form.headers}
+          onChange={(v) => isPlainObject(v) && setForm({ ...form, headers: v as Record<string, string> })}
+        />
+      </Field>
+      <Field label="启用" orientation="horizontal">
+        <Switch checked={form.enabled} onCheckedChange={(c) => setForm({ ...form, enabled: c })} />
+      </Field>
+    </FormDialog>
   );
 }
 
@@ -235,82 +237,75 @@ function ModelsDialog({ provider, onClose }: { provider: ProviderOut; onClose: (
       else toast.success("已保存别名并更新能力信息");
     },
   });
+  const extraName = extra.trim();
+  const canAdd = !!extraName && !ids.includes(extraName);
+  const addExtra = () => {
+    if (!canAdd) return;
+    setAliases({ ...aliases, [extraName]: "" });
+    setExtra("");
+  };
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>{provider.name} 的模型能力</DialogTitle>
-        </DialogHeader>
-        <p className="text-sm text-muted-foreground">
-          能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）。匹配不上或匹配错了，就填别名，例如
-          anthropic/claude-sonnet-5-5。
-        </p>
-        <div className="max-h-[60vh] overflow-y-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>模型</TableHead>
-                <TableHead>能力</TableHead>
-                <TableHead className="w-64">别名（models.dev id）</TableHead>
+    <FormDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={`${provider.name} 的模型能力`}
+      description="能力信息来自 models.dev，模型名去掉网关前缀后自动匹配（cvp/claude-sonnet-5-5 → claude-sonnet-5-5）。匹配不上或匹配错了，就填别名，例如 anthropic/claude-sonnet-5-5。"
+      onSubmit={() => save.mutate({ path: { provider_id: provider.id }, body: { aliases } })}
+      pending={save.isPending}
+      submitLabel="保存别名"
+      className="sm:max-w-4xl"
+    >
+      {ids.length ? (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>模型</TableHead>
+              <TableHead>能力</TableHead>
+              <TableHead className="w-64">别名（models.dev id）</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {ids.map((m) => (
+              <TableRow key={m}>
+                <TableCell className="font-mono text-xs">{m}</TableCell>
+                <TableCell>
+                  <CapBadges caps={provider.model_caps[m]} showId />
+                </TableCell>
+                <TableCell>
+                  <Input
+                    aria-label={`${m} 的别名`}
+                    className="h-8 font-mono text-xs"
+                    value={aliases[m] ?? ""}
+                    placeholder="自动匹配"
+                    onChange={(e) => setAliases({ ...aliases, [m]: e.target.value })}
+                  />
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ids.map((m) => (
-                <TableRow key={m}>
-                  <TableCell className="font-mono text-xs">{m}</TableCell>
-                  <TableCell>
-                    <CapBadges caps={provider.model_caps[m]} showId />
-                  </TableCell>
-                  <TableCell>
-                    <Input
-                      className="h-8 font-mono text-xs"
-                      value={aliases[m] ?? ""}
-                      placeholder="自动匹配"
-                      onChange={(e) => setAliases({ ...aliases, [m]: e.target.value })}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-              {!ids.length && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    还没有模型，先拉取模型列表，或在下面添加
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-        <div className="flex gap-2">
+            ))}
+          </TableBody>
+        </Table>
+      ) : (
+        <Empty description="先在列表里拉取模型，或在下面添加路由里手填的模型名。">还没有模型</Empty>
+      )}
+      <div className="flex items-end gap-2">
+        <Field label="添加不在列表里的模型（路由里手填的）" className="flex-1">
           <Input
             className="font-mono text-xs"
             value={extra}
-            placeholder="不在列表里的模型名（路由里手填的）"
             onChange={(e) => setExtra(e.target.value)}
-          />
-          <Button
-            variant="outline"
-            disabled={!extra.trim() || ids.includes(extra.trim())}
-            onClick={() => {
-              setAliases({ ...aliases, [extra.trim()]: "" });
-              setExtra("");
+            onKeyDown={(e) => {
+              // Enter adds the row here instead of submitting the aliases.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addExtra();
+              }
             }}
-          >
-            <PlusIcon /> 添加
-          </Button>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            关闭
-          </Button>
-          <Button
-            disabled={save.isPending}
-            onClick={() => save.mutate({ path: { provider_id: provider.id }, body: { aliases } })}
-          >
-            保存别名
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          />
+        </Field>
+        <Button type="button" variant="outline" disabled={!canAdd} onClick={addExtra}>
+          <PlusIcon data-icon="inline-start" /> 添加
+        </Button>
+      </div>
+    </FormDialog>
   );
 }

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { getStatsOptions } from "@/client/@tanstack/react-query.gen";
 import { Empty, PageHeader, QueryState } from "@/components/common";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -13,7 +14,7 @@ export function OverviewPage() {
   return (
     <div>
       <PageHeader title="概览" description="最近 24 小时" />
-      <QueryState isLoading={stats.isLoading} error={stats.error} />
+      <QueryState isLoading={stats.isLoading} error={stats.error} variant="card" />
       {s && (
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
@@ -55,9 +56,9 @@ export function OverviewPage() {
               <CardTitle className="text-3xl">{s.pending_reviews}</CardTitle>
             </CardHeader>
             <CardContent className="text-sm">
-              <Link to="/reviews" className="underline">
-                打开审核队列
-              </Link>
+              <Button variant="link" asChild className="h-auto p-0">
+                <Link to="/reviews">打开审核队列</Link>
+              </Button>
             </CardContent>
           </Card>
         </div>

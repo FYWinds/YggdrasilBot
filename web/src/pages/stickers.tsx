@@ -7,10 +7,21 @@ import {
   listStickersOptions,
   setStickerEnabledMutation,
 } from "@/client/@tanstack/react-query.gen";
-import { Empty, GroupSelect, OptionSelect, PageHeader, Pager, QueryState } from "@/components/common";
+import {
+  DetailDialog,
+  Empty,
+  Field,
+  FilterBar,
+  GroupSelect,
+  OptionSelect,
+  PageHeader,
+  Pager,
+  QueryState,
+  SectionHeader,
+  useDebounced,
+} from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -47,6 +58,7 @@ export function StickersPage() {
   const [groupId, setGroupId] = useState<number | null>(null);
   const [order, setOrder] = useState<string | null>("seen");
   const [q, setQ] = useState("");
+  const debouncedQ = useDebounced(q);
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const stickers = useQuery(
@@ -57,7 +69,7 @@ export function StickersPage() {
         enabled: enabled === null ? null : enabled === "true",
         flagged: flagged === null ? null : flagged === "true",
         group_id: groupId,
-        q: q || null,
+        q: debouncedQ || null,
         order: order === "recent" ? "recent" : "seen",
         limit: LIMIT,
         offset,
@@ -78,64 +90,68 @@ export function StickersPage() {
       <PageHeader
         title="表情包"
         description="群里出现过的表情包：自定义表情在出现时保存原图，由「表情包打标」任务写描述、打标签并做审核标记；商城表情只记录 id。下载失败的默认不显示，在状态里选「失败」查看。点卡片看大图和详细信息。"
-        actions={
-          <>
-            <Input
-              className="w-56"
-              placeholder="搜索描述 / 文字 / 标签"
-              value={q}
-              onChange={(e) => filter(setQ)(e.target.value)}
-            />
-            <GroupSelect className="w-56" value={groupId} onChange={filter(setGroupId)} />
-            <OptionSelect
-              className="w-28"
-              value={kind}
-              onChange={filter(setKind)}
-              noneLabel="全部类型"
-              options={[
-                { value: "image", label: "自定义" },
-                { value: "mface", label: "商城" },
-              ]}
-            />
-            <OptionSelect
-              className="w-40"
-              value={status}
-              onChange={filter(setStatus)}
-              noneLabel="全部（不含失败）"
-              options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-            />
-            <OptionSelect
-              className="w-28"
-              value={flagged}
-              onChange={filter(setFlagged)}
-              noneLabel="审核：全部"
-              options={[
-                { value: "true", label: "有风险" },
-                { value: "false", label: "无风险" },
-              ]}
-            />
-            <OptionSelect
-              className="w-28"
-              value={enabled}
-              onChange={filter(setEnabled)}
-              noneLabel="启用：全部"
-              options={[
-                { value: "true", label: "已启用" },
-                { value: "false", label: "已禁用" },
-              ]}
-            />
-            <OptionSelect
-              className="w-28"
-              value={order}
-              onChange={filter(setOrder)}
-              options={[
-                { value: "seen", label: "最常用" },
-                { value: "recent", label: "最近出现" },
-              ]}
-            />
-          </>
-        }
       />
+      <FilterBar>
+        <Input
+          className="w-64"
+          placeholder="搜索描述 / 文字 / 标签"
+          aria-label="搜索表情包"
+          value={q}
+          onChange={(e) => filter(setQ)(e.target.value)}
+        />
+        <GroupSelect className="w-56" value={groupId} onChange={filter(setGroupId)} />
+        <OptionSelect
+          className="w-28"
+          aria-label="类型"
+          value={kind}
+          onChange={filter(setKind)}
+          noneLabel="全部类型"
+          options={[
+            { value: "image", label: "自定义" },
+            { value: "mface", label: "商城" },
+          ]}
+        />
+        <OptionSelect
+          className="w-40"
+          aria-label="状态"
+          value={status}
+          onChange={filter(setStatus)}
+          noneLabel="全部（不含失败）"
+          options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <OptionSelect
+          className="w-28"
+          aria-label="审核"
+          value={flagged}
+          onChange={filter(setFlagged)}
+          noneLabel="审核：全部"
+          options={[
+            { value: "true", label: "有风险" },
+            { value: "false", label: "无风险" },
+          ]}
+        />
+        <OptionSelect
+          className="w-28"
+          aria-label="启用"
+          value={enabled}
+          onChange={filter(setEnabled)}
+          noneLabel="启用：全部"
+          options={[
+            { value: "true", label: "已启用" },
+            { value: "false", label: "已禁用" },
+          ]}
+        />
+        <OptionSelect
+          className="w-28"
+          aria-label="排序"
+          value={order}
+          onChange={filter(setOrder)}
+          options={[
+            { value: "seen", label: "最常用" },
+            { value: "recent", label: "最近出现" },
+          ]}
+        />
+      </FilterBar>
       <QueryState isLoading={stickers.isLoading} error={stickers.error} />
       {stickers.data?.items.length === 0 && <Empty>没有符合条件的表情包</Empty>}
       {!!stickers.data?.items.length && (
@@ -229,7 +245,11 @@ function StickerCard({
           {s.seen_count} 次 · {s.group_count} 个群 · {fmtTime(s.last_seen)}
         </span>
         <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <Switch checked={s.enabled} onCheckedChange={onToggle} />
+          <Switch
+            checked={s.enabled}
+            onCheckedChange={onToggle}
+            aria-label={`启用表情包 #${s.id}${s.summary ? ` ${s.summary}` : ""}`}
+          />
         </span>
       </div>
     </div>
@@ -262,15 +282,15 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
       ]
     : [];
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>
-            表情包 #{id} <span className="text-sm font-normal text-muted-foreground">{d?.summary}</span>
-          </DialogTitle>
-        </DialogHeader>
-        <QueryState isLoading={detail.isLoading} error={detail.error} />
-        {d && (
+    <DetailDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      className="sm:max-w-4xl"
+      title={`表情包 #${id}`}
+      description={d?.summary || "大图、打标结果和各群出现次数"}
+    >
+      <QueryState isLoading={detail.isLoading} error={detail.error} variant="card" />
+      {d && (
           <div className="grid gap-4 text-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <div className="flex flex-col gap-2">
               <div className="flex min-h-48 items-center justify-center rounded-md bg-muted/40 p-2">
@@ -287,17 +307,16 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
               <div className="flex items-center justify-between gap-2">
                 {hasImage(d) ? (
                   <Button size="sm" variant="outline" asChild>
-                    <a href={`/api/stickers/${d.id}/image`} target="_blank" rel="noreferrer">
-                      打开原图 <ExternalLinkIcon />
+                    <a href={`/api/stickers/${d.id}/image`} target="_blank" rel="noreferrer noopener">
+                      打开原图 <ExternalLinkIcon data-icon="inline-end" />
                     </a>
                   </Button>
                 ) : (
                   <span />
                 )}
-                <label className="flex items-center gap-2 text-xs">
-                  {d.enabled ? "已启用" : "已禁用"}
+                <Field orientation="horizontal" label={d.enabled ? "已启用" : "已禁用"} className="w-auto">
                   <Switch checked={d.enabled} onCheckedChange={onToggle} />
-                </label>
+                </Field>
               </div>
             </div>
             <div className="flex flex-col gap-3">
@@ -327,7 +346,7 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
             </div>
             {d.groups.length > 0 && (
               <div className="md:col-span-2">
-                <div className="mb-1 font-medium">各群出现次数</div>
+                <SectionHeader level={3} title="各群出现次数" />
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -351,8 +370,7 @@ function StickerDialog({ id, onClose, onToggle }: { id: number; onClose: () => v
               </div>
             )}
           </div>
-        )}
-      </DialogContent>
-    </Dialog>
+      )}
+    </DetailDialog>
   );
 }

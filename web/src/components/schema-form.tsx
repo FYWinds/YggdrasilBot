@@ -2,6 +2,7 @@ import { PlusIcon, Trash2Icon } from "lucide-react";
 import { useState } from "react";
 import { Field, JsonEditor, MultiToggle, NumberInput, OptionSelect, TagInput } from "@/components/common";
 import { Button } from "@/components/ui/button";
+import { FieldDescription, FieldLegend, FieldSet } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { isPlainObject } from "@/lib/format";
@@ -127,11 +128,13 @@ function typeOf(s: JsonSchema): string | undefined {
 }
 
 export function SchemaInput({
+  id,
   schema,
   root,
   value,
   onChange,
 }: {
+  id?: string;
   schema: JsonSchema;
   root: JsonSchema;
   value: unknown;
@@ -142,6 +145,7 @@ export function SchemaInput({
   if (s.enum) {
     return (
       <OptionSelect
+        id={id}
         value={value == null ? null : String(value)}
         onChange={(v) => onChange(v)}
         options={s.enum.map((e) => ({ value: String(e), label: String(e) }))}
@@ -149,11 +153,12 @@ export function SchemaInput({
     );
   }
   if (type === "boolean") {
-    return <Switch checked={Boolean(value)} onCheckedChange={onChange} />;
+    return <Switch id={id} checked={Boolean(value)} onCheckedChange={onChange} />;
   }
   if (type === "integer" || type === "number") {
     return (
       <NumberInput
+        id={id}
         className="max-w-48"
         step={type === "integer" ? 1 : "any"}
         value={typeof value === "number" ? value : null}
@@ -162,18 +167,18 @@ export function SchemaInput({
     );
   }
   if (type === "string") {
-    return <Input value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} />;
+    return <Input id={id} value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} />;
   }
   if (type === "array" && s.items) {
     const items = resolveSchema(s.items, root);
     const list = Array.isArray(value) ? value.map(String) : [];
-    if (items.enum) return <MultiToggle options={items.enum.map(String)} value={list} onChange={onChange} />;
-    if (typeOf(items) === "string") return <TagInput value={list} onChange={onChange} />;
+    if (items.enum) return <MultiToggle id={id} options={items.enum.map(String)} value={list} onChange={onChange} />;
+    if (typeOf(items) === "string") return <TagInput id={id} value={list} onChange={onChange} />;
   }
   if (type === "object" && typeof s.additionalProperties === "object") {
     return <MapEditor schema={s.additionalProperties} root={root} value={value} onChange={onChange} />;
   }
-  return <JsonEditor value={value} onChange={onChange} rows={4} />;
+  return <JsonEditor id={id} value={value} onChange={onChange} rows={4} />;
 }
 
 function MapEditor({
@@ -199,7 +204,7 @@ function MapEditor({
   return (
     <div className="grid gap-3">
       {Object.entries(map).map(([k, v]) => (
-        <div key={k} className="rounded-lg border p-3">
+        <div key={k} role="group" aria-label={k} className="rounded-lg border p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="font-mono text-sm">{k}</span>
             <Button
@@ -218,9 +223,21 @@ function MapEditor({
         </div>
       ))}
       <div className="flex gap-2">
-        <Input placeholder="新键名" value={newKey} onChange={(e) => setNewKey(e.target.value)} className="max-w-72" />
+        <Input
+          aria-label="新键名"
+          placeholder="新键名"
+          value={newKey}
+          onChange={(e) => setNewKey(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          className="max-w-72"
+        />
         <Button size="sm" variant="outline" onClick={add}>
-          <PlusIcon /> 添加
+          <PlusIcon data-icon="inline-start" /> 添加
         </Button>
       </div>
     </div>
@@ -234,7 +251,10 @@ function defaultsOf(schema: JsonSchema, root: JsonSchema): unknown {
   return null;
 }
 
-/** Renders an object schema: nested objects become sections, everything else a labelled input. */
+/**
+ * Renders an object schema. Nested objects, maps and multi-choice lists become a FieldSet (the legend names the
+ * group); every other value is a Field whose label is linked to its input (Switch rows are horizontal).
+ */
 export function SchemaObject({
   schema,
   root,
@@ -253,25 +273,41 @@ export function SchemaObject({
     <div className="grid gap-4">
       {Object.entries(s.properties).map(([key, child]) => {
         const cs = resolveSchema(child, root);
+        const type = typeOf(cs);
+        const set = (nv: unknown) => onChange({ ...obj, [key]: nv });
         if (cs.properties) {
           return (
-            <fieldset key={key} className="grid gap-3 rounded-lg border p-3">
-              <legend className="px-1">
-                <span className="font-mono text-xs">{key}</span>
-              </legend>
-              {cs.description && <p className="text-xs text-muted-foreground">{cs.description}</p>}
-              <SchemaObject
-                schema={cs}
-                root={root}
-                value={obj[key]}
-                onChange={(nv) => onChange({ ...obj, [key]: nv })}
-              />
-            </fieldset>
+            <FieldSet key={key} className="gap-3 rounded-lg border p-3">
+              <FieldLegend variant="label" className="px-1 font-mono text-xs">
+                {key}
+              </FieldLegend>
+              {cs.description && <FieldDescription>{cs.description}</FieldDescription>}
+              <SchemaObject schema={cs} root={root} value={obj[key]} onChange={set} />
+            </FieldSet>
+          );
+        }
+        const grouped =
+          (type === "object" && typeof cs.additionalProperties === "object") ||
+          (type === "array" && !!cs.items && !!resolveSchema(cs.items, root).enum);
+        if (grouped) {
+          return (
+            <FieldSet key={key} className="gap-2">
+              <FieldLegend variant="label" className="mb-0 font-mono text-xs">
+                {key}
+              </FieldLegend>
+              {cs.description && <FieldDescription>{cs.description}</FieldDescription>}
+              <SchemaInput schema={cs} root={root} value={obj[key]} onChange={set} />
+            </FieldSet>
           );
         }
         return (
-          <Field key={key} label={<span className="font-mono text-xs">{key}</span>} hint={cs.description}>
-            <SchemaInput schema={cs} root={root} value={obj[key]} onChange={(nv) => onChange({ ...obj, [key]: nv })} />
+          <Field
+            key={key}
+            label={<span className="font-mono text-xs">{key}</span>}
+            hint={cs.description}
+            orientation={type === "boolean" ? "horizontal" : "vertical"}
+          >
+            <SchemaInput schema={cs} root={root} value={obj[key]} onChange={set} />
           </Field>
         );
       })}

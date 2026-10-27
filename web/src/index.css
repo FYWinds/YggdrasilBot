@@ -128,3 +128,19 @@
     @apply font-sans;
     }
 }
+
+/* Positive state (diff additions, success marks); --destructive is its counterpart. */
+@theme inline {
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
+}
+
+:root {
+    --success: oklch(0.527 0.154 150.069);
+    --success-foreground: oklch(0.985 0 0);
+}
+
+.dark {
+    --success: oklch(0.723 0.219 149.579);
+    --success-foreground: oklch(0.145 0 0);
+}

@@ -3,7 +3,9 @@ import { Layout } from "@/components/layout";
 import { AdminsPage } from "@/pages/admins";
 import { EventsPage } from "@/pages/events";
 import { GroupsPage } from "@/pages/groups";
+import { InvocationPage } from "@/pages/invocation";
 import { InvocationsPage } from "@/pages/invocations";
+import { JobPage } from "@/pages/job";
 import { MemoryPage } from "@/pages/memory";
 import { OverviewPage } from "@/pages/overview";
 import { PromptsPage } from "@/pages/prompts";
@@ -37,7 +39,9 @@ const routeTree = rootRoute.addChildren([
   page("/events", EventsPage),
   page("/memory", MemoryPage),
   page("/invocations", InvocationsPage),
+  page("/invocations/$id", InvocationPage),
   page("/sandbox", SandboxPage),
+  page("/sandbox/jobs/$id", JobPage),
   page("/stickers", StickersPage),
   page("/admins", AdminsPage),
 ]);

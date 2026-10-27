@@ -6,7 +6,7 @@ import {
   getSettingsSchemaOptions,
   putGlobalSettingsMutation,
 } from "@/client/@tanstack/react-query.gen";
-import { Disclosure, JsonEditor, PageHeader, Pre, QueryState } from "@/components/common";
+import { Disclosure, Field, JsonEditor, PageHeader, PendingButton, Pre, QueryState } from "@/components/common";
 import { type JsonSchema, resolveSchema, SECTION_LABELS, SchemaObject, sparseDiff } from "@/components/schema-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,7 +29,15 @@ export function SettingsPage() {
   }, [globalQ.data]);
 
   const root = schemaQ.data as JsonSchema | undefined;
-  if (!root || !globalQ.data) return <QueryState isLoading={schemaQ.isLoading || globalQ.isLoading} error={schemaQ.error ?? globalQ.error} />;
+  if (!root || !globalQ.data) {
+    return (
+      <QueryState
+        isLoading={schemaQ.isLoading || globalQ.isLoading}
+        error={schemaQ.error ?? globalQ.error}
+        variant="card"
+      />
+    );
+  }
 
   const sparse = sparseDiff(draft, globalQ.data.defaults);
   const doc = isPlainObject(sparse) ? sparse : {};
@@ -41,9 +49,9 @@ export function SettingsPage() {
         title="设置"
         description="全局设置；群级覆盖在「群管理」里编辑。只保存与默认值不同的项。"
         actions={
-          <Button disabled={!dirty || save.isPending} onClick={() => save.mutate({ body: doc })}>
-            {save.isPending ? "保存中…" : dirty ? "保存" : "已保存"}
-          </Button>
+          <PendingButton pending={save.isPending} disabled={!dirty} onClick={() => save.mutate({ body: doc })}>
+            {dirty ? "保存" : "已保存"}
+          </PendingButton>
         }
       />
       <Tabs defaultValue="form">
@@ -75,20 +83,23 @@ export function SettingsPage() {
               <CardDescription>直接编辑覆盖默认值的稀疏 JSON；保存时会按 Settings 校验。</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
-              <JsonEditor value={raw} onChange={setRaw} rows={20} onValidityChange={setRawValid} />
+              <Field label="覆盖默认值的 JSON">
+                <JsonEditor value={raw} onChange={setRaw} rows={20} onValidityChange={setRawValid} />
+              </Field>
               <div className="flex gap-2">
-                <Button
-                  disabled={!rawValid || !isPlainObject(raw) || save.isPending}
+                <PendingButton
+                  pending={save.isPending}
+                  disabled={!rawValid || !isPlainObject(raw)}
                   onClick={() => isPlainObject(raw) && save.mutate({ body: raw })}
                 >
                   保存 JSON
-                </Button>
+                </PendingButton>
                 <Button variant="outline" onClick={() => setRaw(globalQ.data.value)}>
                   还原
                 </Button>
               </div>
               <Disclosure label="生效值（合并默认值后）">
-                <Pre value={globalQ.data.effective} className="max-h-96" />
+                <Pre value={globalQ.data.effective} viewport="max-h-96" />
               </Disclosure>
             </CardContent>
           </Card>

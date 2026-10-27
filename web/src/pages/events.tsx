@@ -7,12 +7,14 @@ import type { EventOut } from "@/client/types.gen";
 import {
   ConfirmButton,
   Empty,
+  FilterBar,
   Hint,
   OptionSelect,
   PageHeader,
   Pager,
   Pre,
   QueryState,
+  useDebounced,
   useGroupName,
 } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
@@ -83,12 +85,13 @@ export function EventsPage() {
   const [kind, setKind] = useState<string | null>("request.");
   const [status, setStatus] = useState<Status | null>(null);
   const [groupId, setGroupId] = useState("");
+  const debouncedGroupId = useDebounced(groupId);
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<number | null>(null);
   const groupName = useGroupName();
   const events = useQuery(
     listEventsOptions({
-      query: { kind, status, group_id: groupId ? Number(groupId) : null, limit: LIMIT, offset },
+      query: { kind, status, group_id: debouncedGroupId ? Number(debouncedGroupId) : null, limit: LIMIT, offset },
     }),
   );
   const decide = useMutation({
@@ -105,32 +108,35 @@ export function EventsPage() {
       <PageHeader
         title="事件"
         description="加群和好友申请、bot 自身状态和已启用群的成员变动。保留天数和自动处理策略在设置的 events 一节。"
-        actions={
-          <div className="flex gap-2">
-            <Input
-              className="w-36"
-              inputMode="numeric"
-              placeholder="群号"
-              value={groupId}
-              onChange={(e) => reset(setGroupId)(e.target.value.replace(/\D/g, ""))}
-            />
-            <OptionSelect
-              className="w-40"
-              value={kind}
-              onChange={reset(setKind)}
-              noneLabel="全部类型"
-              options={Object.entries(KIND_FILTERS).map(([value, label]) => ({ value, label }))}
-            />
-            <OptionSelect
-              className="w-32"
-              value={status}
-              onChange={(v) => reset(setStatus)(v as Status | null)}
-              noneLabel="全部状态"
-              options={Object.entries(STATUS).map(([value, s]) => ({ value, label: s.label }))}
-            />
-          </div>
-        }
       />
+      <FilterBar>
+        <Hint content="填群号；事件也会来自未加入白名单的群，所以这里不是群下拉框">
+          <Input
+            className="w-36"
+            inputMode="numeric"
+            placeholder="群号"
+            aria-label="群号（可填未启用的群）"
+            value={groupId}
+            onChange={(e) => reset(setGroupId)(e.target.value.replace(/\D/g, ""))}
+          />
+        </Hint>
+        <OptionSelect
+          className="w-40"
+          aria-label="类型"
+          value={kind}
+          onChange={reset(setKind)}
+          noneLabel="全部类型"
+          options={Object.entries(KIND_FILTERS).map(([value, label]) => ({ value, label }))}
+        />
+        <OptionSelect
+          className="w-32"
+          aria-label="状态"
+          value={status}
+          onChange={(v) => reset(setStatus)(v as Status | null)}
+          noneLabel="全部状态"
+          options={Object.entries(STATUS).map(([value, s]) => ({ value, label: s.label }))}
+        />
+      </FilterBar>
       <QueryState isLoading={events.isLoading} error={events.error} />
       {events.data?.items.length === 0 && <Empty>没有符合条件的事件</Empty>}
       {!!events.data?.items.length && (
@@ -151,7 +157,21 @@ export function EventsPage() {
             {events.data.items.map((e) => (
               <Fragment key={e.id}>
                 <TableRow className="cursor-pointer" onClick={() => setOpen(open === e.id ? null : e.id)}>
-                  <TableCell className="font-mono text-xs">E{e.id}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="font-mono"
+                      aria-expanded={open === e.id}
+                      aria-label={`E${e.id} 原始数据`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setOpen(open === e.id ? null : e.id);
+                      }}
+                    >
+                      E{e.id}
+                    </Button>
+                  </TableCell>
                   <TableCell className="text-xs">{fmtTime(e.at)}</TableCell>
                   <TableCell>
                     {KIND_LABELS[e.kind] ?? e.kind}
@@ -182,14 +202,14 @@ export function EventsPage() {
                           disabled={decide.isPending}
                           onClick={() => decide.mutate({ path: { event_id: e.id }, body: { approve: true } })}
                         >
-                          <CheckIcon /> 同意
+                          <CheckIcon data-icon="inline-start" /> 同意
                         </Button>
                         <ConfirmButton
                           title={`拒绝 E${e.id}？`}
                           description="拒绝后无法撤销。"
                           onConfirm={() => decide.mutate({ path: { event_id: e.id }, body: { approve: false } })}
                         >
-                          <XIcon /> 拒绝
+                          <XIcon data-icon="inline-start" /> 拒绝
                         </ConfirmButton>
                       </div>
                     )}
