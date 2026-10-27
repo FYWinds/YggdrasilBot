@@ -69,14 +69,15 @@ async def test_deepseek_balance_parses_string_amounts_per_currency(
         200,
         json={
             "is_available": True,
+            # As DeepSeek answers for a CNY account: the empty USD entry comes first.
             "balance_infos": [
+                {"currency": "USD", "total_balance": "0.00", "granted_balance": "0.00", "topped_up_balance": "0.00"},
                 {
                     "currency": "CNY",
                     "total_balance": "110.00",
                     "granted_balance": "10.00",
                     "topped_up_balance": "100.00",
                 },
-                {"currency": "USD", "total_balance": "1.50", "granted_balance": "0", "topped_up_balance": "1.50"},
             ],
         },
     )
@@ -87,13 +88,14 @@ async def test_deepseek_balance_parses_string_amounts_per_currency(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert (body["kind"], body["available"]) == ("deepseek", True)
+    # The currency holding money leads (the console shows the first amount), then the rest.
     assert [(a["label"], a["currency"], a["value"]) for a in body["amounts"]] == [
         ("余额", "CNY", 110.0),
         ("赠送", "CNY", 10.0),
         ("充值", "CNY", 100.0),
-        ("余额", "USD", 1.5),
+        ("余额", "USD", 0.0),
         ("赠送", "USD", 0.0),
-        ("充值", "USD", 1.5),
+        ("充值", "USD", 0.0),
     ]
     assert upstream.auth("https://api.deepseek.com/user/balance") == ["Bearer sk-deepseek"]
 

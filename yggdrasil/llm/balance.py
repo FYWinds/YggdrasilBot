@@ -81,9 +81,9 @@ async def deepseek_balance(
     if not isinstance(infos, list):
         raise BalanceError("DeepSeek 余额响应缺少 balance_infos")
     amounts: list[BalanceAmount] = []
-    for info in infos:
-        if not isinstance(info, dict):
-            continue
+    # The console shows the first amount: lead with the currency that holds money (accounts list USD and CNY, one 0).
+    rows = sorted((i for i in infos if isinstance(i, dict)), key=lambda i: -(_num(i.get("total_balance")) or 0))
+    for info in rows:
         currency = str(info.get("currency") or "") or None
         for field, label in (("total_balance", "余额"), ("granted_balance", "赠送"), ("topped_up_balance", "充值")):
             amounts.append(BalanceAmount(label=label, currency=currency, value=_num(info.get(field))))
