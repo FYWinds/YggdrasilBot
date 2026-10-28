@@ -15,7 +15,7 @@ from yggdrasil.admin.common import Ok, change, conflict, not_found, unavailable,
 from yggdrasil.crypto import decrypt, encrypt, mask
 from yggdrasil.db.models import SearchProvider
 from yggdrasil.db.session import get_session
-from yggdrasil.llm.balance import BalanceError, BalanceOut, BalanceUnsupported, deepseek_balance
+from yggdrasil.llm.balance import BalanceError, BalanceOut, BalanceUnsupported, deepseek_balance, x_balance
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.search import DEFAULT_BASE_URLS, SearchBackendError, monthly_usage, reserve_quota, search_with
 
@@ -214,18 +214,18 @@ async def test_search_provider(provider_id: int, body: SearchTestIn) -> SearchTe
 
 @router.get("/{provider_id}/balance")
 async def get_search_provider_balance(provider_id: int) -> BalanceOut:
-    """Account balance of a DeepSeek search provider (always read from api.deepseek.com)."""
+    """Account balance of a DeepSeek search provider (always read from api.deepseek.com) or of the X API."""
     async with get_session() as s:
         p = await s.get(SearchProvider, provider_id)
         if p is None:
             raise not_found("搜索源")
-    if p.kind != "deepseek":
-        raise unprocessable("只有 DeepSeek 搜索源支持余额查询")
+    if p.kind not in ("deepseek", "x"):
+        raise unprocessable("只有 DeepSeek 和 X API 搜索源支持余额查询")
     key = _key(p)
     if p.api_key_enc and key is None:
         raise unprocessable("无法解密已存储的 key")
     try:
-        return await deepseek_balance(key)
+        return await (x_balance(p.base_url, key) if p.kind == "x" else deepseek_balance(key))
     except BalanceUnsupported as e:
         raise unprocessable(str(e)) from e
     except BalanceError as e:

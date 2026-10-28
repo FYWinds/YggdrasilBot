@@ -1,4 +1,4 @@
-"""Account balance of an LLM provider: DeepSeek, OpenRouter, or a new-api gateway.
+"""Account balance of an LLM provider (DeepSeek, OpenRouter, a new-api gateway) or of the X API.
 
 Each fetcher returns a ``BalanceOut`` or raises ``BalanceUnsupported`` (the endpoint has no balance API)
 or ``BalanceError`` (the upstream answered with an error or garbage). Messages never contain key material.
@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from yggdrasil.config import APP_CONFIG
 
-type BalanceKind = Literal["deepseek", "openrouter", "new-api"]
+type BalanceKind = Literal["deepseek", "openrouter", "new-api", "x"]
 
 DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
 # new-api reports an unlimited token as a huge hard limit.
@@ -44,7 +44,8 @@ class BalanceError(Exception):
     """The balance API failed (HTTP error, network error, unexpected body)."""
 
 
-def detect_kind(base_url: str) -> BalanceKind:
+def detect_kind(base_url: str) -> Literal["deepseek", "openrouter", "new-api"]:
+    """Balance API of an LLM provider (the X API is a search provider, see :func:`x_balance`)."""
     host = (urlsplit(base_url).hostname or "").lower()
     if host == "api.deepseek.com":
         return "deepseek"
@@ -139,6 +140,32 @@ async def openrouter_balance(
         available=None if limit is None or remaining is None else remaining > 0,
         amounts=amounts,
         note=note,
+        fetched_at=datetime.now(UTC),
+    )
+
+
+async def x_balance(base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None) -> BalanceOut:
+    """X API pay-per-use credits (``GET /2/usage/credits``, app bearer token)."""
+    if not api_key:
+        raise BalanceUnsupported("未配置 Bearer Token，无法查询 X API 余额")
+    data = _data(await _get_json(f"{base_url.rstrip('/')}/2/usage/credits", api_key, None, client))
+    total = _num(data.get("total_balance"))
+    if total is None:
+        raise BalanceError("X API 余额响应缺少 total_balance")
+    grants = sorted(
+        (str(g.get("expires_at") or "")[:10], amount)
+        for g in data.get("free_grants") or []
+        if isinstance(g, dict) and (amount := _num(g.get("amount")))
+    )
+    return BalanceOut(
+        kind="x",
+        available=total > 0,
+        amounts=[
+            BalanceAmount(label="余额", currency="USD", value=total),
+            BalanceAmount(label="充值", currency="USD", value=_num(data.get("prepaid_balance"))),
+            BalanceAmount(label="赠送", currency="USD", value=_num(data.get("free_balance"))),
+        ],
+        note="；".join(f"赠送 ${amount:.2f} 于 {expires} 到期" for expires, amount in grants) or None,
         fetched_at=datetime.now(UTC),
     )
 

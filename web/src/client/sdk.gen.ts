@@ -142,7 +142,7 @@ export const testSearchProvider = <ThrowOnError extends boolean = false>(options
 /**
  * Get Search Provider Balance
  *
- * Account balance of a DeepSeek search provider (always read from api.deepseek.com).
+ * Account balance of a DeepSeek search provider (always read from api.deepseek.com) or of the X API.
  */
 export const getSearchProviderBalance = <ThrowOnError extends boolean = false>(options: Options<GetSearchProviderBalanceData, ThrowOnError>): RequestResult<GetSearchProviderBalanceResponses, GetSearchProviderBalanceErrors, ThrowOnError> => (options.client ?? client).get<GetSearchProviderBalanceResponses, GetSearchProviderBalanceErrors, ThrowOnError>({ url: '/search-providers/{provider_id}/balance', ...options });
 

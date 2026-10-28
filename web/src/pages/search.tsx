@@ -140,7 +140,7 @@ export function SearchPage() {
                   <span className="text-muted-foreground"> / {p.monthly_limit ?? "不限"}</span>
                 </TableCell>
                 <TableCell>
-                  {p.kind === "deepseek" ? (
+                  {p.kind === "deepseek" || p.kind === "x" ? (
                     <BalanceCell provider={p} />
                   ) : (
                     <span className="text-muted-foreground">—</span>
@@ -176,7 +176,7 @@ export function SearchPage() {
   );
 }
 
-/** Lazily fetched DeepSeek account balance (disabled providers are not queried). */
+/** Lazily fetched DeepSeek or X API account balance (disabled providers are not queried). */
 function BalanceCell({ provider }: { provider: SearchProviderOut }) {
   const path = { provider_id: provider.id };
   const balance = useQuery({

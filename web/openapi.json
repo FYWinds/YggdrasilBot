@@ -602,7 +602,7 @@
           "search"
         ],
         "summary": "Get Search Provider Balance",
-        "description": "Account balance of a DeepSeek search provider (always read from api.deepseek.com).",
+        "description": "Account balance of a DeepSeek search provider (always read from api.deepseek.com) or of the X API.",
         "operationId": "get_search_provider_balance",
         "parameters": [
           {
@@ -4170,7 +4170,8 @@
         "enum": [
           "deepseek",
           "openrouter",
-          "new-api"
+          "new-api",
+          "x"
         ]
       },
       "BalanceOut": {

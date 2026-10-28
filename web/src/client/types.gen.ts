@@ -133,7 +133,7 @@ export type BalanceAmount = {
     value?: number | null;
 };
 
-export type BalanceKind = 'deepseek' | 'openrouter' | 'new-api';
+export type BalanceKind = 'deepseek' | 'openrouter' | 'new-api' | 'x';
 
 /**
  * BalanceOut

@@ -230,7 +230,7 @@ async def test_balance_key_is_write_only_and_clearable(
     assert all(secret not in str(d) for d in details)
 
 
-async def test_search_provider_balance_only_for_deepseek(
+async def test_search_provider_balance_not_for_web_only_kinds(
     client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
 ) -> None:
     upstream.routes["https://api.deepseek.com/user/balance"] = httpx.Response(
@@ -263,3 +263,35 @@ async def test_search_provider_balance_only_for_deepseek(
     exa = await client.get(f"/api/search-providers/{ids['exa']}/balance")
     assert exa.status_code == 422
     assert (await client.get("/api/search-providers/2147483000/balance")).status_code == 404
+
+
+async def test_x_balance_shows_total_with_prepaid_free_and_grant_expiry(
+    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+) -> None:
+    upstream.routes["https://api.x.com/2/usage/credits"] = httpx.Response(
+        200,
+        json={
+            "data": {
+                "free_balance": 19.74,
+                "free_grants": [
+                    {"amount": 4.74, "expires_at": "2027-02-01T00:00:00.000Z"},
+                    {"amount": 15.0, "expires_at": "2027-01-26T19:02:23.000Z"},
+                ],
+                # prepaid may go negative; total is clamped at 0 upstream.
+                "prepaid_balance": -20.0,
+                "total_balance": 0.0,
+            }
+        },
+    )
+    resp = await client.post(
+        "/api/search-providers", json={"name": f"pytest-{uuid.uuid4().hex[:8]}", "kind": "x", "api_key": "x-bearer"}
+    )
+    assert resp.status_code == 200, resp.text
+    cleanup.append((SearchProvider, resp.json()["id"]))
+
+    body = (await client.get(f"/api/search-providers/{resp.json()['id']}/balance")).json()
+
+    assert (body["kind"], body["available"]) == ("x", False)
+    assert [(a["label"], a["value"]) for a in body["amounts"]] == [("余额", 0.0), ("充值", -20.0), ("赠送", 19.74)]
+    assert body["note"] == "赠送 $15.00 于 2027-01-26 到期；赠送 $4.74 于 2027-02-01 到期"
+    assert upstream.auth("https://api.x.com/2/usage/credits") == ["Bearer x-bearer"]

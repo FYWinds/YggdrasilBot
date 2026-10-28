@@ -308,7 +308,7 @@ export const getSearchProviderBalanceQueryKey = (options: Options<GetSearchProvi
 /**
  * Get Search Provider Balance
  *
- * Account balance of a DeepSeek search provider (always read from api.deepseek.com).
+ * Account balance of a DeepSeek search provider (always read from api.deepseek.com) or of the X API.
  */
 export const getSearchProviderBalanceOptions = (options: Options<GetSearchProviderBalanceData>) => queryOptions<GetSearchProviderBalanceResponse, GetSearchProviderBalanceError, GetSearchProviderBalanceResponse, ReturnType<typeof getSearchProviderBalanceQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
