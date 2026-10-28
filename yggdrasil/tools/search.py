@@ -1,6 +1,7 @@
 """Web search: one function per backend kind, plus the provider pool behind the ``web_search`` tool.
 
-Providers are admin-configured (dashboard), so their URLs are trusted and get no SSRF guard.
+Providers are admin-configured (dashboard), so their URLs are trusted and get no SSRF guard. The ``x`` kind holds
+the X API token for ``search_x`` / ``read_x`` (``yggdrasil.tools.x``) and is not part of the ``web_search`` pool.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -17,8 +18,9 @@ from yggdrasil.kv import redis_client
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.errors import ToolError
 
-KINDS = ("searxng", "exa", "deepseek")
-DEFAULT_BASE_URLS = {"exa": "https://api.exa.ai", "deepseek": "https://api.deepseek.com"}
+WEB_KINDS = ("searxng", "exa", "deepseek")
+KINDS = (*WEB_KINDS, "x")
+DEFAULT_BASE_URLS = {"exa": "https://api.exa.ai", "deepseek": "https://api.deepseek.com", "x": "https://api.x.com"}
 TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 31, "year": 366}
 _SNIPPET_CHARS = 300
@@ -62,7 +64,7 @@ async def web_search(
         raise ToolError("搜索关键词不能为空")
     if time_range is not None and time_range not in TIME_RANGES:
         raise ToolError("time_range 只能是 day、week、month、year 之一")
-    candidates = [p for p in providers if p.enabled]
+    candidates = [p for p in providers if p.enabled and p.kind in WEB_KINDS]
     if not candidates:
         raise ToolError("没有可用的搜索源")
     reserve = reserve or reserve_quota
@@ -97,7 +99,9 @@ async def search_with(
     time_range: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[SearchHit]:
-    """Query a single provider (no quota bookkeeping)."""
+    """Query a single provider (no quota bookkeeping). An ``x`` provider answers with X News stories."""
+    if p.kind == "x":
+        return await _x_news_hits(p, query, n, client)
     if p.kind == "searxng":
         request = _searxng_request(p, query, time_range)
         parse = parse_searxng
@@ -125,6 +129,25 @@ async def search_with(
     except ValueError as e:
         raise SearchBackendError("response is not JSON") from e
     return parse(payload, n)
+
+
+async def _x_news_hits(p: SearchProviderInfo, query: str, n: int, client: httpx.AsyncClient | None) -> list[SearchHit]:
+    """X News stories of the last day as hits (the console's provider test)."""
+    from yggdrasil.tools import x
+
+    try:
+        stories = await x.search_news(p, query, hours=24, n=n, client=client)
+    except ToolError as e:
+        raise SearchBackendError(str(e)) from e
+    return [
+        SearchHit(
+            s.name,
+            f"https://x.com/i/status/{s.post_ids[0]}" if s.post_ids else "",
+            _clip(s.summary, _LONG_SNIPPET_CHARS),
+            "x",
+        )
+        for s in stories
+    ]
 
 
 # --- quota -------------------------------------------------------------------

@@ -112,7 +112,7 @@ def _expired(url: str) -> httpx.HTTPStatusError:
 def downloads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     seen: list[str] = []
 
-    async def fake(url: str, max_bytes: int) -> bytes:
+    async def fake(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
         seen.append(url)
         if "rkey=old" in url:
             raise _expired(url)

@@ -72,6 +72,13 @@ const KINDS: {
     params: { language: "zh-CN" },
     limit: null,
   },
+  {
+    value: "x",
+    label: "X API（给 search_x / read_x 用，不参与 web_search）",
+    url: "留空使用 https://api.x.com；key 填 App 的 Bearer Token",
+    params: {},
+    limit: 300,
+  },
 ];
 
 function kindOf(kind: string) {
@@ -234,7 +241,7 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
         masked={provider?.api_key_masked}
         value={form.api_key ?? ""}
         clear={!!form.clear_api_key}
-        emptyHint={form.kind === "exa" || form.kind === "deepseek" ? "必填" : "可留空"}
+        emptyHint={form.kind === "searxng" ? "可留空" : "必填"}
         onChange={(patch) => setForm({ ...form, ...patch })}
       />
       <div className="grid grid-cols-2 gap-4">
@@ -251,7 +258,7 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
       </div>
       <Field
         label="参数"
-        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek：不需要参数'
+        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek、X API：不需要参数'
       >
         <JsonEditor
           rows={3}

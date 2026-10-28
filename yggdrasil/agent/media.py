@@ -15,6 +15,7 @@ from yggdrasil.agent.deps import Handle
 from yggdrasil.core.log import LOGGER
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.tools.errors import ToolError
+from yggdrasil.tools.ssrf import guarded_client
 
 IMAGE_MAX_DOWNLOAD = 20 * 1024 * 1024
 _IMAGE_MAX_SIDE = 1568  # Claude downsizes anything larger; also keeps payloads well under the 5 MB cap
@@ -31,11 +32,10 @@ _DEFAULT_FRAME_MS = 100  # browsers play GIF frames of 0-10 ms at 100 ms
 _SHEET_GAP = 4
 
 
-async def download(url: str, max_bytes: int) -> bytes:
-    async with (
-        httpx.AsyncClient(timeout=60, follow_redirects=True) as client,
-        client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as resp,
-    ):
+async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
+    """Download ``url``; ``guarded`` routes it through the SSRF guard (URLs that came from third-party content)."""
+    client = guarded_client(timeout=60) if guarded else httpx.AsyncClient(timeout=60, follow_redirects=True)
+    async with client, client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
         resp.raise_for_status()
         chunks, size = [], 0
         async for chunk in resp.aiter_bytes():
@@ -47,7 +47,11 @@ async def download(url: str, max_bytes: int) -> bytes:
 
 
 async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes: int) -> tuple[bytes, str]:
-    """Bytes + filename of an image/file handle, via URL in the segment or NapCat's get_file."""
+    """Bytes + filename of an image/file handle, via URL in the segment or NapCat's get_file.
+
+    Handles registered by web tools carry a ``source`` (``x``, ...): their URLs come from third-party content and
+    are fetched through the SSRF guard. QQ attachment URLs come from the protocol side and are fetched directly.
+    """
     data = h.data
     name = str(data.get("file") or data.get("name") or "file")
     url = data.get("url")
@@ -66,7 +70,7 @@ async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes
     if not url:
         raise ToolError("拿不到文件下载地址")
     try:
-        return await download(url, max_bytes), name
+        return await download(url, max_bytes, guarded=bool(data.get("source"))), name
     except httpx.HTTPStatusError as e:
         # QQ image URLs carry an rkey that expires within hours; the protocol side re-signs it by file name.
         if h.kind != "image" or not data.get("file") or not 400 <= e.response.status_code < 500:

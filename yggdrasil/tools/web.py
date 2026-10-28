@@ -12,7 +12,7 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote
@@ -23,6 +23,7 @@ from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.telemetry import TRACER
+from yggdrasil.tools import x
 from yggdrasil.tools.docs import decode_html, parse_document
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import GuardedResponse, check_url, guarded_client, impersonated_stream
@@ -130,6 +131,8 @@ class PageResult:
     """More content exists beyond this page (later pages, or the source hit a size cap)."""
     via: str
     """``http`` / ``browser`` / ``document:<kind>`` / adapter name (``bilibili``, ``github``, ``hackernews``, ...)."""
+    images: list[str] = field(default_factory=list)
+    """Image URLs from the source (adapters only); the caller shows them with page 1."""
 
 
 @dataclass(slots=True)
@@ -141,6 +144,8 @@ class Extracted:
     text: str
     via: str
     capped: bool = False
+    images: list[str] = field(default_factory=list)
+    """Image URLs that belong to the content (third-party: download them through the SSRF guard)."""
 
 
 class Unreadable(ToolError):
@@ -208,6 +213,7 @@ async def read_url(
         pages=len(pages),
         truncated=page < len(pages) or extracted.capped,
         via=extracted.via,
+        images=extracted.images if page == 1 else [],
     )
 
 
@@ -625,6 +631,29 @@ def _cn_count(value: int) -> str:
     if value >= 10_000:
         return f"{value / 10_000:.1f}万"
     return str(value)
+
+
+@site_adapter(*x.HOSTS)
+async def _x_post(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
+    pid = x.post_id(str(url))
+    if pid is None:
+        return None
+    from yggdrasil.runtime import snapshot
+
+    try:
+        post = await x.read_post(pid, x.provider(snapshot().search_providers), client=client)
+    except x.PostGone:
+        raise
+    except ToolError as exc:
+        LOGGER.warning("x post {} unreadable: {}", pid, exc)
+        return None  # FxTwitter down and no X API: the generic path may still get the text
+    return Extracted(
+        final_url=post.url,
+        title=f"{x.who(post)} 在 X 上的帖子",
+        text=x.format_post(post),
+        via=post.via,
+        images=[m.url for m in post.images()],
+    )
 
 
 _GITHUB_RESERVED = frozenset(

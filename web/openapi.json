@@ -7531,7 +7531,8 @@
         "enum": [
           "searxng",
           "exa",
-          "deepseek"
+          "deepseek",
+          "x"
         ]
       },
       "SearchProviderIn": {
