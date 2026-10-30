@@ -70,8 +70,13 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(context.WRITER, "flush", nothing)
     monkeypatch.setattr(search, "recent_messages", nothing)
 
+    async def no_row(*_: Any) -> None:
+        return None
 
-def _event(segs: Message) -> GroupMessageEvent:
+    monkeypatch.setattr(search, "find_by_qq_id", no_row)
+
+
+def _event(segs: Message, reply: dict[str, Any] | None = None) -> GroupMessageEvent:
     return GroupMessageEvent.model_validate(
         {
             "time": 1760000000,
@@ -88,6 +93,7 @@ def _event(segs: Message) -> GroupMessageEvent:
             "sender": {"user_id": FRIEND, "card": "阿明"},
             "to_me": True,
             "group_id": 100,
+            "reply": reply,
         }
     )
 
@@ -126,3 +132,41 @@ async def test_context_display_lists_only_the_recent_messages_the_prompt_kept(
     assert shown[-1] == 40
     assert ctx.display is not None
     assert ctx.display.recent == shown
+
+
+async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The prod failure: "tldr" on a one-line remark that replies to a forward. Only the remark reached the prompt,
+    # so the forward had no handle and the model could not open it.
+    t0 = datetime(2026, 10, 30, 4, 0, tzinfo=UTC)
+    remark_segs = [{"type": "reply", "data": {"id": "777"}}, {"type": "text", "data": {"text": "否定与自我否定"}}]
+    remark = MessageView(73120, 2, t0, FRIEND, "阿明", "否定与自我否定", 777, False, remark_segs)
+    forward_segs = [{"type": "forward", "data": {"id": "res-1"}}]
+    forward = MessageView(
+        73117, 777, t0 - timedelta(minutes=6), 10001, "老王", "[合并转发]", None, False, forward_segs
+    )
+    rows = {2: remark, 777: forward}
+
+    async def find_by_qq_id(_group_id: int, qq_message_id: int) -> MessageView | None:
+        return rows.get(qq_message_id)
+
+    monkeypatch.setattr(search, "find_by_qq_id", find_by_qq_id)
+    reply = {
+        "time": int(t0.timestamp()),
+        "message_type": "group",
+        "message_id": 2,
+        "real_id": 2,
+        "sender": {"user_id": FRIEND, "card": "阿明"},
+        "message": remark_segs,
+    }
+    event = _event(Message([MessageSegment.reply(2), MessageSegment.at(SELF), MessageSegment.text(" tldr")]), reply)
+    resolved = Resolved("tldr", 1, "", (), "quoted", 0, False)
+    ctx = await context.build_context(event, resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text="")
+
+    # The forward shows up with a handle the model can pass to expand_forward, and the quoted remark has a number.
+    assert "#73117 老王(10001): [合并转发] (fwd#1)" in ctx.prompt
+    assert ctx.prompt.index("#73117") < ctx.prompt.index("否定与自我否定")
+    assert '编号="#73120"' in ctx.prompt
+    assert ctx.handles.get("fwd#1") is not None
+    assert ctx.focus == ["fwd#1"]
+    assert ctx.display is not None
+    assert [m.id for m in ctx.display.chain] == [73117]

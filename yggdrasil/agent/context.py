@@ -4,7 +4,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ahocorasick
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
@@ -20,6 +20,9 @@ from yggdrasil.people import People, resolve
 from yggdrasil.settings import Settings
 from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
+
+if TYPE_CHECKING:
+    from yggdrasil.memory.search import MessageView
 
 
 @dataclass(slots=True)
@@ -55,6 +58,9 @@ class BuiltContext:
     # a pasted "</最近群聊>" can't fake the end of a block.
     nonce: str = ""
     display: QQContextDisplay | None = None  # what the prompt contained, for the console's transcript
+    # Handles of the messages the request is about (trigger, quoted message and what it replies to), in prompt
+    # order; their images are attached up front. Background chat registers handles too, but not here.
+    focus: list[str] = field(default_factory=list)
 
 
 class _Blocks:
@@ -166,18 +172,49 @@ async def _glossary_hits(group_id: int, texts: list[str]) -> list[Any]:
 
 # --- assembly ----------------------------------------------------------------
 
+# The quoted message plus up to two messages up its own reply chain: "tldr" on a remark that replies to a forward
+# must see the forward.
+_QUOTE_LEVELS = 3
 
-def _attach(handles: Handles, msg: TargetMessage) -> str:
-    """Register a message's attachments; returns ' (img#1, url#1)' style suffix."""
-    norm = normalize(msg.segments)
-    keys = []
-    for att in norm.attachments:
-        if key := handles.add(att.kind, att.data, msg.qq_message_id):
-            keys.append(key)
-    for url in norm.urls:
-        if key := handles.add("url", {"url": url}, msg.qq_message_id):
-            keys.append(key)
-    return f" ({', '.join(dict.fromkeys(keys))})" if keys else ""
+
+def chat_line(m: "MessageView", people: People, handles: Handles) -> str:
+    """A history message as the model sees it everywhere: ``[time] #id who: text (fwd#1, img#2)``.
+
+    ``#id`` is the database id every history tool and ``#<id>`` ref takes; the handles make what the line shows
+    usable as is.
+    """
+    who = people.who(m.user_id, m.sender_name, is_self=m.is_self)
+    return f"[{_ts(m.sent_at)}] #{m.id} {who}: {people.mentions(m.text)}{handles.register(m.segments or [])}"
+
+
+async def _quoted_row(group_id: int | None, target: "TargetMessage") -> "MessageView | None":
+    from yggdrasil.memory import search
+
+    if group_id is None:
+        return None
+    try:
+        return await search.find_by_qq_id(group_id, target.qq_message_id)
+    except Exception:
+        LOGGER.exception("quoted message lookup failed")
+        return None
+
+
+async def _reply_chain(group_id: int, reply_to: int | None) -> list["MessageView"]:
+    """The messages a quoted message replies to, up its chain (oldest first), as far as the history has them."""
+    from yggdrasil.memory import search
+
+    chain: list[MessageView] = []
+    while reply_to is not None and len(chain) < _QUOTE_LEVELS - 1:
+        try:
+            m = await search.find_by_qq_id(group_id, reply_to)
+        except Exception:
+            LOGGER.exception("reply chain lookup failed")
+            break
+        if m is None or any(c.id == m.id for c in chain):
+            break
+        chain.append(m)
+        reply_to = m.reply_to_qq_id
+    return chain[::-1]
 
 
 async def build_context(
@@ -203,6 +240,7 @@ async def build_context(
     # the asker or the group's theme); it can pull recent chat with the recent_chat tool when needed.
     background = resolved.handler != "tldr"
 
+    quoted = target.qq_message_id != trigger.qq_message_id
     mentioned = normalize(trigger.segments).mentions
     if group_id is not None:
         await WRITER.flush()  # also lets recent_chat / search tools see the latest messages
@@ -212,14 +250,26 @@ async def build_context(
             recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
             LOGGER.exception("recent_messages failed")
+    quoted_row = await _quoted_row(group_id, target) if quoted else None
+    chain: list[search.MessageView] = []
+    if quoted and group_id is not None:
+        reply_to = quoted_row.reply_to_qq_id if quoted_row else normalize(target.segments).reply_to
+        chain = await _reply_chain(group_id, reply_to)
     # One alias lookup for everyone this prompt names: senders, @mentions, quoted authors.
     try:
         people = await resolve(
             group_id,
-            {trigger.user_id, target.user_id, *mentioned, *normalize(target.segments).mentions},
+            {
+                trigger.user_id,
+                target.user_id,
+                *mentioned,
+                *normalize(target.segments).mentions,
+                *(m.user_id for m in chain),
+                *(u for m in chain for u in normalize(m.segments or []).mentions),
+            },
             bot_name=bot_name,
             self_id=self_id,
-            texts=[request_text, *(m.text for m in recent)],
+            texts=[request_text, *(m.text for m in recent), *(m.text for m in chain)],
         )
     except Exception:
         LOGGER.exception("name lookup failed")
@@ -229,13 +279,15 @@ async def build_context(
     target.text = trigger.text if target is trigger else normalize(target.segments, people.mention).text
     request_text = people.mentions(request_text)
 
+    # The messages the request is about register first: their handles are focus (attached up front).
+    chain_lines = [chat_line(m, people, handles) for m in chain]
+    target_suffix = handles.register(target.segments, urls=True) if quoted else ""
+    trigger_suffix = handles.register(trigger.segments, urls=True)
+    focus = list(handles.items)
+
     recent_ids: list[int] = []
     if recent:
-        lines = [
-            f"[{_ts(m.sent_at)}] #{m.id} {people.who(m.user_id, m.sender_name, is_self=m.is_self)}: "
-            f"{people.mentions(m.text)}"
-            for m in recent
-        ]
+        lines = [chat_line(m, people, handles) for m in recent]
         text = "\n".join(lines)
         first = 0
         if len(text) > cfg.max_context_chars:
@@ -249,15 +301,16 @@ async def build_context(
         recent_ids = [m.id for m in recent[first:]]
         blocks.add("最近群聊", text)
 
-    if target.qq_message_id != trigger.qq_message_id:
-        suffix = _attach(handles, target)
+    if chain_lines:
+        blocks.add("被引用消息回复的消息", "\n".join(chain_lines))
+    if quoted:
+        number = f' 编号="#{quoted_row.id}"' if quoted_row else ""
         blocks.add(
             "被引用的消息",
-            f"{target.text}{suffix}",
+            f"{target.text}{target_suffix}",
             f' 发送者="{people.who(target.user_id, target.sender_name, is_self=target.is_self)}" '
-            f'时间="{_ts(target.sent_at)}"',
+            f'时间="{_ts(target.sent_at)}"{number}',
         )
-    trigger_suffix = _attach(handles, trigger)
 
     if group_id is not None:
         others = {trigger.user_id, target.user_id, *mentioned} - {self_id}
@@ -298,16 +351,13 @@ async def build_context(
             if listing is not None:
                 blocks.add("工作区", listing or "本群还没有工作区。")
 
-    available = ", ".join(f"{k}({v.kind})" for k, v in handles.items.items())
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
-    focused = resolved.handler == "tldr" and target.qq_message_id != trigger.qq_message_id and bool(request_text)
+    focused = resolved.handler == "tldr" and quoted and bool(request_text)
     if focused:
         # "tldr <words>" on a quoted message: the words say what to focus on.
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:
         blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
-    if available:
-        blocks.note(f"可用句柄：{available}")
     if resolved.handler == "tldr":
         ia = settings.interaction
         blocks.note(
@@ -317,9 +367,21 @@ async def build_context(
         )
     display = QQContextDisplay(
         recent=recent_ids,
-        quoted=target.snapshot() if target.qq_message_id != trigger.qq_message_id else None,
+        quoted=target.snapshot() if quoted else None,
         trigger=trigger.snapshot(),
         blocks=blocks.tags,
+        chain=[
+            QQMessage(
+                id=m.id,
+                qq_message_id=m.qq_message_id,
+                user_id=m.user_id,
+                sender_name=m.sender_name,
+                sent_at=m.sent_at,
+                segments=m.segments or [],
+                is_self=m.is_self,
+            )
+            for m in chain
+        ],
     )
     return BuiltContext(
         "\n\n".join(blocks.parts),
@@ -330,4 +392,5 @@ async def build_context(
         mentioned,
         nonce=blocks.nonce,
         display=display,
+        focus=focus,
     )

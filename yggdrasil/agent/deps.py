@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from yggdrasil.ingest.normalize import normalize
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.settings import Settings
 from yggdrasil.transcript.notes import TraceNotes
@@ -16,19 +17,23 @@ _PREFIX = {"image": "img", "file": "file", "forward": "fwd", "card": "card", "ur
 @dataclass(slots=True)
 class Handle:
     key: str
-    kind: str  # image | file | forward | card | url | record | video | mface
+    kind: str  # image | file | forward | card | url (voice, video and mface have no tool, so no handle)
     data: dict[str, Any]
-    source_qq_msg: int | None = None
 
 
 @dataclass
 class Handles:
-    """Short handles (img#1, file#1, fwd#1, url#1, ...) the model uses instead of raw QQ ids."""
+    """Short per-run handles (img#1, fwd#1, file#1, card#1, url#1) for the rich content the model is shown.
+
+    Every rendering of a QQ message for the model registers its attachments here and writes the keys next to it
+    (``register``), so anything visible can be passed to a tool; ``#<message id>`` refs into the chat history are
+    resolved into handles on demand (``agent.tools._resolve``).
+    """
 
     items: dict[str, Handle] = field(default_factory=dict)
     _counters: Counter[str] = field(default_factory=Counter)
 
-    def add(self, kind: str, data: dict[str, Any], source_qq_msg: int | None = None) -> str | None:
+    def add(self, kind: str, data: dict[str, Any]) -> str | None:
         prefix = _PREFIX.get(kind)
         if prefix is None:
             return None
@@ -43,8 +48,17 @@ class Handles:
                 return h.key
         self._counters[prefix] += 1
         key = f"{prefix}#{self._counters[prefix]}"
-        self.items[key] = Handle(key, kind, data, source_qq_msg)
+        self.items[key] = Handle(key, kind, data)
         return key
+
+    def register(self, segments: list[dict[str, Any]], *, urls: bool = False) -> str:
+        """Register a message's attachments (and, with ``urls``, the links in its text); the ``" (fwd#1, img#2)"``
+        suffix to write after it, or ``""``."""
+        norm = normalize(segments)
+        keys = [key for att in norm.attachments if (key := self.add(att.kind, att.data))]
+        if urls:
+            keys += [key for url in norm.urls if (key := self.add("url", {"url": url}))]
+        return f" ({', '.join(dict.fromkeys(keys))})" if keys else ""
 
     def get(self, key: str) -> Handle | None:
         return self.items.get(key.strip())

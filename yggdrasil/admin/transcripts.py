@@ -157,7 +157,7 @@ async def build(
     shown: list[list[dict[str, Any]]] = [m.segments for m in messages.values()]
     for e in items:
         if isinstance(e.display, QQContextDisplay):
-            shown += [m.segments for m in (e.display.trigger, e.display.quoted) if m is not None]
+            shown += [m.segments for m in (e.display.trigger, e.display.quoted, *e.display.chain) if m is not None]
         elif isinstance(e.display, QQForwardDisplay):
             shown += [n.segments for n in e.display.nodes]
     sources = _Sources(context.get("image_keys") or {}, await _stickers([s for segs in shown for s in segs]))
@@ -168,6 +168,7 @@ async def build(
                 update={
                     "trigger": sources.message(d.trigger) if d.trigger else None,
                     "quoted": sources.message(d.quoted) if d.quoted else None,
+                    "chain": [sources.message(m) for m in d.chain],
                 }
             )
         elif isinstance(e.display, QQForwardDisplay):

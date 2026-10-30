@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from PIL import Image
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
-from yggdrasil.agent.deps import Deps, Handle
+from yggdrasil.agent.context import chat_line
+from yggdrasil.agent.deps import Deps, Handle, Handles
 from yggdrasil.agent.media import ModelImage, compact_image, fit_image, load_image, media_bytes, media_type
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
@@ -77,12 +78,48 @@ def _tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], Call
     return deco
 
 
-def _handle(ctx: RunContext[Deps], key: str, *kinds: str) -> Handle:
-    h = ctx.deps.handles.get(key)
-    if h is None or (kinds and h.kind not in kinds):
-        known = ", ".join(k for k, v in ctx.deps.handles.items.items() if not kinds or v.kind in kinds) or "无"
-        raise ToolError(f"找不到句柄 {key}，可用的有：{known}")
-    return h
+_KIND_LABELS = {"image": "图片", "file": "文件", "forward": "合并转发", "card": "卡片", "url": "链接"}
+_MESSAGE_REF = re.compile(r"#(\d+)(?:/(\d+))?")
+
+
+async def _resolve(ctx: RunContext[Deps], ref: str, *kinds: str) -> Handle:
+    """What a tool argument points at: a handle (img#1, fwd#2, ...), or ``#<message id>[/<k>]`` from this group's
+    chat history, meaning the k-th attachment of the wanted kinds in that message (registered as a handle).
+
+    Every tool that takes rich content resolves it here, so one ref form works everywhere.
+    """
+    from yggdrasil.memory.search import message_segments
+
+    ref = ref.strip()
+    wanted = "或".join(_KIND_LABELS[k] for k in kinds)
+    if (h := ctx.deps.handles.get(ref)) is not None:
+        if h.kind not in kinds:
+            raise ToolError(f"{ref} 是{_KIND_LABELS.get(h.kind, h.kind)}，不是{wanted}")
+        return h
+    m = _MESSAGE_REF.fullmatch(ref)
+    if m is None:
+        known = ", ".join(k for k, v in ctx.deps.handles.items.items() if v.kind in kinds) or "无"
+        raise ToolError(
+            f"找不到 {ref}。这次能用的{wanted}句柄：{known}；聊天记录里的内容用消息编号 #N（第 k 个用 #N/k）"
+        )
+    if ctx.deps.group_id is None:
+        raise ToolError("私聊里没有群聊记录，只能用句柄")
+    msg_id, k = int(m.group(1)), int(m.group(2) or 1)
+    segments = (await message_segments(ctx.deps.group_id, [msg_id])).get(msg_id)
+    if segments is None:
+        raise ToolError(f"本群聊天记录里没有消息 #{msg_id}（或者已撤回）")
+    norm = normalize(segments)
+    found = [(a.kind, a.data) for a in norm.attachments if a.kind in kinds]
+    if "url" in kinds:
+        found += [("url", {"url": url}) for url in norm.urls]
+    if not found:
+        raise ToolError(f"消息 #{msg_id} 里没有{wanted}")
+    if not 1 <= k <= len(found):
+        raise ToolError(f"消息 #{msg_id} 里只有 {len(found)} 个{wanted}")
+    kind, data = found[k - 1]
+    key = ctx.deps.handles.add(kind, data)
+    assert key is not None  # every kind in _KIND_LABELS has a handle prefix
+    return ctx.deps.handles.items[key]
 
 
 async def _vision(ctx: RunContext[Deps], images: list[ModelImage], question: str) -> str:
@@ -112,24 +149,20 @@ async def _people_for_messages(ctx: RunContext[Deps], msgs: "Sequence[MessageVie
     return await _people(ctx, [m.user_id for m in msgs], [m.text for m in msgs])
 
 
-def _chat_lines(msgs: "Sequence[MessageView]", people: People) -> str:
-    return "\n".join(
-        f"[{m.sent_at.astimezone():%m-%d %H:%M}] #{m.id} {people.who(m.user_id, m.sender_name, is_self=m.is_self)}: "
-        f"{people.mentions(m.text)}"
-        for m in msgs
-    )
+def _chat_lines(msgs: "Sequence[MessageView]", people: People, handles: Handles) -> str:
+    return "\n".join(chat_line(m, people, handles) for m in msgs)
 
 
 @_tool("read_url")
 async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> str:
-    """读取网页正文（支持分页）。参数可以是 URL 或 url#N / card#N 句柄。"""
+    """读取网页正文（支持分页）。参数可以是 URL、url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。"""
     from yggdrasil.runtime import snapshot
     from yggdrasil.tools.remote_fetch import remote_fetcher
     from yggdrasil.tools.web import read_url as _read
 
     url = url_or_handle
     if "#" in url_or_handle and not url_or_handle.startswith("http"):
-        h = _handle(ctx, url_or_handle, "url", "card")
+        h = await _resolve(ctx, url_or_handle, "url", "card")
         url = h.data.get("url") or ""
         if not url:
             raise ToolError("这个卡片没有链接")
@@ -159,14 +192,15 @@ def _image_handles(ctx: RunContext[Deps], urls: list[str], source: str) -> str:
 @_tool("read_x")
 async def read_x(ctx: RunContext[Deps], url_or_id: str, page: int = 1) -> str:
     """读 X（推特）上的一条帖子：作者、时间、互动数、全文（含长推和文章）、引用的帖子、投票、社区笔记，以及同一对话里的
-    其他帖子；图片注册成 img#N，用 view_image 看。参数是帖子链接（x.com、twitter.com 等）、帖子 id，或 url#N 句柄。"""
+    其他帖子；图片注册成 img#N，用 view_image 看。参数是帖子链接（x.com、twitter.com 等）、帖子 id、
+    url#N / card#N 句柄，或聊天记录里的消息编号 #N（那条消息里的链接）。"""
     from yggdrasil.runtime import snapshot
     from yggdrasil.tools import x
     from yggdrasil.tools.web import paginate
 
     ref = url_or_id.strip()
     if "#" in ref and not ref.startswith("http"):
-        ref = str(_handle(ctx, ref, "url", "card").data.get("url") or "")
+        ref = str((await _resolve(ctx, ref, "url", "card")).data.get("url") or "")
     pid = x.post_id(ref)
     if pid is None:
         raise ToolError("这不是 X 帖子的链接或 id")
@@ -235,10 +269,11 @@ async def web_search(ctx: RunContext[Deps], query: str) -> str:
 
 @_tool("read_file")
 async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
-    """读取文件内容（PDF/Office/文本/代码等），参数是 file#N 句柄。扫描版 PDF：能看图的模型直接收到页面图片。"""
+    """读取文件内容（PDF/Office/文本/代码等），参数是 file#N 句柄，或聊天记录里的消息编号 #N（那条消息里的文件）。
+    扫描版 PDF：能看图的模型直接收到页面图片。"""
     from yggdrasil.tools.docs import parse_document
 
-    h = _handle(ctx, handle, "file")
+    h = await _resolve(ctx, handle, "file")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
     doc = await asyncio.to_thread(parse_document, blob, name, max_pages=cfg.file_max_pages)
@@ -260,46 +295,11 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
     return f"{header}\n\n{text}"
 
 
-_HISTORY_REF = re.compile(r"#?(\d+)(?:/(\d+))?")
-
-
-async def _history_image(ctx: RunContext[Deps], ref: str) -> Handle:
-    """``#<message id>[/<n>]`` from the chat history: the n-th image of that message in this group, as a handle."""
-    from sqlalchemy import select
-
-    from yggdrasil.db.models import Message
-    from yggdrasil.db.session import get_session
-
-    m = _HISTORY_REF.fullmatch(ref.strip())
-    if m is None or ctx.deps.group_id is None:
-        raise ToolError(f"{ref} 不是 img#N 句柄，也不是本群聊天记录里的消息编号 #N")
-    msg_id, n = int(m.group(1)), int(m.group(2) or 1)
-    async with get_session() as session:
-        segments = await session.scalar(
-            select(Message.segments).where(
-                Message.group_id == ctx.deps.group_id, Message.id == msg_id, Message.recalled.is_(False)
-            )
-        )
-    if segments is None:
-        raise ToolError(f"本群聊天记录里没有消息 #{msg_id}（或者已撤回）")
-    images = [a for a in normalize(segments).attachments if a.kind == "image"]
-    if not images:
-        raise ToolError(f"消息 #{msg_id} 里没有图片")
-    if not 1 <= n <= len(images):
-        raise ToolError(f"消息 #{msg_id} 只有 {len(images)} 张图")
-    h = ctx.deps.handles.get(ctx.deps.handles.add("image", images[n - 1].data) or "")
-    if h is None:
-        raise ToolError(f"消息 #{msg_id} 的图片打不开")
-    return h
-
-
 @_tool("view_image")
 async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> ToolResult:
     """查看图片，可附带具体问题。handle 是 img#N 句柄，或聊天记录里的消息编号 #N（那条消息里的图；有多张时用 #N/2
     取第 2 张），所以群里之前发过的图也能看。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
-    h = ctx.deps.handles.get(handle) or await _history_image(ctx, handle)
-    if h.kind != "image":
-        raise ToolError(f"{handle} 不是图片")
+    h = await _resolve(ctx, handle, "image")
     img = await load_image(ctx.deps.api, ctx.deps.group_id, h)
     ctx.deps.notes.image(img.data, img.content.media_type, segment=h.data)
     if sees_images(ctx.deps.task):
@@ -316,8 +316,8 @@ async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> 
 
 @_tool("expand_forward")
 async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
-    """展开合并转发（聊天记录），参数是 fwd#N 句柄。嵌套的转发也会展开。"""
-    h = _handle(ctx, handle, "forward")
+    """展开合并转发（聊天记录），参数是 fwd#N 句柄，或聊天记录里的消息编号 #N（那条合并转发）。嵌套的转发也会展开。"""
+    h = await _resolve(ctx, handle, "forward")
     # (indent, time, sender id, sender name, segments, handle keys); rendered after one batched name lookup
     nodes: list[tuple[str, str, int, str, list[dict[str, Any]], list[str]]] = []
     shown: list[ForwardNode] = []  # the same nodes for the console
@@ -351,10 +351,8 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
                     segments=segs,
                 )
             )
+            keys += [k for att in norm.attachments if (k := ctx.deps.handles.add(att.kind, att.data))]
             for att in norm.attachments:
-                key = ctx.deps.handles.add(att.kind, att.data)
-                if key:
-                    keys.append(key)
                 if att.kind == "forward":
                     inner = att.data.get("content")
                     await walk(str(att.data.get("id", "")), depth + 1, inner if isinstance(inner, list) else None)
@@ -367,13 +365,14 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
     for indent, ts, uid, name, segs, keys in nodes:
         who = people.who(uid, name) if uid else clean_name(name) or "?"
         text = normalize(segs, people.mention).text
-        lines.append(f"{indent}[{ts}] {who}: {text}" + "".join(f" ({k})" for k in keys))
+        lines.append(f"{indent}[{ts}] {who}: {text}" + (f" ({', '.join(keys)})" if keys else ""))
     return "\n".join(lines) or "（空的合并转发）"
 
 
 @_tool("search_history")
 async def search_history(ctx: RunContext[Deps], query: str, days: int | None = None, user_id: int | None = None) -> str:
     """检索本群历史聊天记录和话题摘要（关键词+语义）。days 限定最近几天，user_id 限定发言人。"""
+    from yggdrasil.memory.search import message_segments
     from yggdrasil.memory.search import search_history as _search
 
     if ctx.deps.group_id is None:
@@ -388,12 +387,14 @@ async def search_history(ctx: RunContext[Deps], query: str, days: int | None = N
         return "没有找到相关记录"
     ctx.deps.notes.messages(ctx.tool_call_id, [h.msg_id for h in hits if h.msg_id])
     people = await _people(ctx, [h.user_id for h in hits if h.user_id], [h.text for h in hits])
+    segments = await message_segments(ctx.deps.group_id, [h.msg_id for h in hits if h.msg_id])
     out = []
     for h in hits:
         when = h.when.astimezone().strftime("%Y-%m-%d %H:%M") if h.when else ""
         ref = f"#{h.msg_id}" if h.msg_id else f"{h.kind}:{h.ref_id}"
         who = f"{people.who(h.user_id, h.sender_name)}: " if h.user_id else ""
-        out.append(f"[{when}] ({ref}) {who}{people.mentions(h.text)}")
+        keys = ctx.deps.handles.register(segments.get(h.msg_id) or []) if h.msg_id else ""
+        out.append(f"[{when}] ({ref}) {who}{people.mentions(h.text)}{keys}")
     return "\n".join(out)
 
 
@@ -406,7 +407,7 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
         raise ToolError("私聊里不能检索群历史")
     msgs = await messages_around(ctx.deps.group_id, message_id, min(before, 40), min(after, 40))
     ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
-    return _chat_lines(msgs, await _people_for_messages(ctx, msgs)) or "无"
+    return _chat_lines(msgs, await _people_for_messages(ctx, msgs), ctx.deps.handles) or "无"
 
 
 @_tool("recent_chat")
@@ -422,7 +423,7 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
     if not msgs:
         return "这段时间没有聊天记录"
     ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
-    text = _chat_lines(msgs, await _people_for_messages(ctx, msgs))
+    text = _chat_lines(msgs, await _people_for_messages(ctx, msgs), ctx.deps.handles)
     if len(text) > cfg.max_context_chars:
         text = text[-cfg.max_context_chars :]
         text = text[text.find("\n") + 1 :]
@@ -574,9 +575,7 @@ async def generate_image(
         raise ToolError(f"参考图最多 {MAX_REFERENCES} 张")
     refs: list[tuple[bytes, str]] = []
     for ref in references or []:
-        h = deps.handles.get(ref) or await _history_image(ctx, ref)
-        if h.kind != "image":
-            raise ToolError(f"{ref} 不是图片")
+        h = await _resolve(ctx, ref, "image")
         img = await load_image(deps.api, deps.group_id, h)
         deps.notes.image(img.data, img.content.media_type, segment=h.data)
         refs.append((img.data, img.content.media_type))

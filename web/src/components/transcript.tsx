@@ -268,11 +268,13 @@ function SubHeading({ children, actions }: { children: ReactNode; actions?: Reac
   );
 }
 
-/** The user turn of an invocation as the group saw it: recent chat, the quoted message and the trigger. */
+/** The user turn of an invocation as the group saw it: recent chat, what the quoted message replies to, the quoted
+ * message and the trigger. */
 function QQContext({ entry, display }: { entry: Entry; display: QqContextDisplay }) {
   const { messages, names, lookup } = useTranscript();
   const [all, setAll] = useState(false);
-  const own = new Set([display.trigger?.id, display.quoted?.id].filter((id) => id != null));
+  const chain = display.chain ?? [];
+  const own = new Set([display.trigger?.id, display.quoted?.id, ...chain.map((m) => m.id)].filter((id) => id != null));
   const recent = (display.recent ?? [])
     .map((id) => messages[String(id)])
     .filter((m): m is QqMessage => !!m && !(m.id != null && own.has(m.id)));
@@ -301,6 +303,12 @@ function QQContext({ entry, display }: { entry: Entry; display: QqContextDisplay
             最近群聊（{recent.length}）
           </SubHeading>
           <QQMessageList messages={recent.slice(hidden)} names={names} lookup={lookup} />
+        </div>
+      )}
+      {chain.length > 0 && (
+        <div className="grid gap-2">
+          <SubHeading>引用的消息回复的</SubHeading>
+          <QQMessageList messages={chain} names={names} lookup={lookup} />
         </div>
       )}
       {display.quoted && (
@@ -714,6 +722,7 @@ export function Transcript({ transcript: t, startedAt }: { transcript: Transcrip
       if (e.display?.kind === "qq_context") {
         add(e.display.quoted);
         add(e.display.trigger);
+        e.display.chain?.forEach(add);
       }
     }
     return {

@@ -7095,6 +7095,14 @@
             "type": "array",
             "title": "Blocks",
             "default": []
+          },
+          "chain": {
+            "items": {
+              "$ref": "#/components/schemas/QQMessage"
+            },
+            "type": "array",
+            "title": "Chain",
+            "default": []
           }
         },
         "type": "object",

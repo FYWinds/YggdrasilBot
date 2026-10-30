@@ -1896,6 +1896,10 @@ export type QqContextDisplay = {
      * Blocks
      */
     blocks?: Array<string>;
+    /**
+     * Chain
+     */
+    chain?: Array<QqMessage>;
 };
 
 /**

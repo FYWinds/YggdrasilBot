@@ -39,7 +39,7 @@ from yggdrasil.agent.media import ModelImage, media_bytes, model_image
 from yggdrasil.agent.tools import (
     MAX_IMAGES,
     ToolResult,
-    _handle,
+    _resolve,
     _tool,
     _vision,
     reserve_images,
@@ -400,12 +400,12 @@ async def py(
 
 @_tool("sandbox_put")
 async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
-    """把聊天里的文件或图片（file#N / img#N 句柄）放进工作区的 /workspace/in/，返回路径。
+    """把聊天里的文件或图片（file#N / img#N 句柄，或聊天记录里的消息编号 #N）放进工作区的 /workspace/in/，返回路径。
     要在工作区里处理群文件或图片时先调用它；不会自动上传附件。"""
     session = _session(ctx)
     with _sandbox_errors():
         await session.require()
-    h = _handle(ctx, handle, "file", "image")
+    h = await _resolve(ctx, handle, "file", "image")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
     with _sandbox_errors():

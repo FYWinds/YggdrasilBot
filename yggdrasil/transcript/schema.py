@@ -83,6 +83,8 @@ class QQContextDisplay(BaseModel):
     quoted: QQMessage | None = None
     trigger: QQMessage | None = None
     blocks: list[str] = []  # names of the prompt blocks, in order (最近群聊, 被引用的消息, 请求, ...)
+    # What the quoted message itself replies to, oldest first (up to two levels): QQ messages from the history
+    chain: list[QQMessage] = []
 
 
 class QQMessagesDisplay(BaseModel):

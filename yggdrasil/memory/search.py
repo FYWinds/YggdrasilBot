@@ -41,6 +41,7 @@ class MessageView:
     text: str
     reply_to_qq_id: int | None
     is_self: bool
+    segments: list[dict[str, Any]] | None = None  # loaded by the chat-history readers (CHAT_COLUMNS) only
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,8 @@ VIEW_COLUMNS = (
     Message.reply_to_qq_id,
     Message.is_self,
 )
+# Readers whose output the agent sees: the raw segments too, so attachments can get handles.
+CHAT_COLUMNS = (*VIEW_COLUMNS, Message.segments)
 
 
 def _view(row: Row[Any] | Sequence[Any]) -> MessageView:
@@ -114,7 +117,7 @@ def _visible(group_id: int) -> tuple[Any, ...]:
 async def recent_messages(group_id: int, *, limit: int = 40, minutes: int = 0) -> list[MessageView]:
     """The last ``limit`` messages, extended to everything from the last ``minutes`` minutes
     (capped at 300). Chronological."""
-    newest_first = select(*VIEW_COLUMNS).where(*_visible(group_id)).order_by(Message.sent_at.desc(), Message.id.desc())
+    newest_first = select(*CHAT_COLUMNS).where(*_visible(group_id)).order_by(Message.sent_at.desc(), Message.id.desc())
     async with get_session() as session:
         rows = list((await session.execute(newest_first.limit(limit))).all()) if limit > 0 else []
         if minutes > 0:
@@ -135,7 +138,7 @@ async def messages_around(group_id: int, message_id: int, before: int = 10, afte
         if anchor is None:
             return []
         key = tuple_(Message.sent_at, Message.id)
-        base = select(*VIEW_COLUMNS).where(*_visible(group_id))
+        base = select(*CHAT_COLUMNS).where(*_visible(group_id))
         older = await session.execute(
             base.where(key < tuple_(anchor, message_id))
             .order_by(Message.sent_at.desc(), Message.id.desc())
@@ -154,13 +157,24 @@ async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None
     async with get_session() as session:
         row = (
             await session.execute(
-                select(*VIEW_COLUMNS)
+                select(*CHAT_COLUMNS)
                 .where(*_visible(group_id), Message.qq_message_id == qq_message_id, Message.sent_at >= since)
                 .order_by(Message.sent_at.desc())
                 .limit(1)
             )
         ).first()
     return _view(row) if row else None
+
+
+async def message_segments(group_id: int, ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:
+    """Raw segments of these messages (recalled ones left out)."""
+    if not ids:
+        return {}
+    async with get_session() as session:
+        rows = await session.execute(
+            select(Message.id, Message.segments).where(*_visible(group_id), Message.id.in_(list(ids)))
+        )
+    return {r[0]: r[1] for r in rows}
 
 
 # --- hybrid history search --------------------------------------------------------------------

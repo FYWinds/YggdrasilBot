@@ -335,6 +335,7 @@ TECH_CHAT = [
     # Triggers of the invocations below.
     Line("ask_chart", 40, 20002, [_at(SELF), _t(" 老王那张图说明了什么？")]),
     Line("ask_fwd", 34, 20004, [Ref("fwd"), _at(SELF), _t(" 总结一下这段聊天记录")]),
+    Line("fwd_remark", 33, 20002, [Ref("fwd"), _t("JIT 那段说得挺清楚")]),
     Line("ask_tldr", 28, 20001, [Ref("card"), _t("tldr")]),
     Line("ask_silent", 24, 20005, [_at(SELF), _t(" 哈哈哈")]),
     Line("ask_recall", 22, 20001, [Ref("bot_old"), _at(SELF), _t(" 撤回这条吧，发错地方了")]),
@@ -345,6 +346,7 @@ TECH_CHAT = [
     Line("ask_draw", 12, 20003, [Ref("bench"), _at(SELF), _t(" 把这张图画成像素风海报")]),
     Line("ask_cancel", 11, 20002, [_at(SELF), _t(" 帮我看看这个表格"), SEGMENT_SAMPLES[2]]),
     Line("ask_rl", 9, 20005, [_at(SELF), _t(" 再来一个")]),
+    Line("ask_chain", 8, 20003, [Ref("fwd_remark"), _t("tldr")]),
     Line("ops_reviews", 7, SUPERUSER, [_at(SELF), _t(" 现在有几条待审核？")]),
     Line("ops_rate", 5, SUPERUSER, [_at(SELF), _t(" 把本群每人每分钟的次数调到 6")]),
     Line("ops_handoff", 3, SUPERUSER, [_at(SELF), _t(" 3.14t 和 3.14 有什么区别")]),
@@ -523,7 +525,11 @@ async def expand_forward(ctx: RunContext[SeedDeps], handle: str) -> str:
                 if seg["type"] == "forward":
                     walk(seg["data"]["content"], depth + 1)
 
-    forward = next(s for s in ctx.deps.target.segments if s["type"] == "forward")
+    # A tldr on a remark about the forward quotes the remark; the forward is one step up its reply chain.
+    target = ctx.deps.target.segments
+    forward = next((s for s in target if s["type"] == "forward"), None) or next(
+        s for s in ctx.deps.chat.keys["fwd"].segments if s["type"] == "forward"
+    )
     walk(forward["data"]["content"], 0)
     ctx.deps.notes.show(ctx.tool_call_id, QQForwardDisplay(nodes=shown))
     return "\n".join(lines)
@@ -742,6 +748,26 @@ RUNS: list[Run] = [
                     "free-threaded 构建转正（可以关掉 GIL），模板字符串 t-string，延迟求值的注解，"
                     "标准库加了 zstd 压缩。群里主要在讨论 free-threading 的性能。",
                     sources=[SourceRef(label="What's new in Python 3.14", url="https://example.com/python-3-14")],
+                )
+            ),
+        ],
+        quoted=True,
+        output_verdict=SAFE,
+    ),
+    Run(
+        "ask_chain",
+        "tldr",
+        "ok",
+        [
+            Turn(
+                [("expand_forward", {"handle": "fwd#1"})],
+                think="被引用的只是一句点评，它回复的是那段合并转发：总结转发本身。",
+            ),
+            Turn(
+                output=_reply(
+                    "JIT 讨论记录",
+                    "这段转发在聊 CPython 的 JIT：3.14 里还是实验性的，要用 --enable-experimental-jit 自己编译，"
+                    "默认构建没有。它用 copy-and-patch 拼机器码，目前收益不大。被引用的那句是在夸这段讲得清楚。",
                 )
             ),
         ],

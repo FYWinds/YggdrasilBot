@@ -171,13 +171,14 @@ class Invocator:
                     await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
 
     async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
-        """Attach the images of the quoted and trigger messages up front when the route can see them.
+        """Attach the images of the messages the request is about up front when the route can see them.
 
         They are almost always what the request is about ("总结一下" on a reply to three screenshots),
         and a view_image round trip per image costs a model turn.
         """
         limit = self.settings.context.inline_images
-        handles = [h for h in ctx.handles.items.values() if h.kind == "image"][:limit]
+        focus = (ctx.handles.get(key) for key in ctx.focus)
+        handles = [h for h in focus if h is not None and h.kind == "image"][:limit]
         if not handles or not sees_images(self.handler):
             return ctx.prompt
         with TRACER.start_as_current_span("ygg.inline_images") as span:
