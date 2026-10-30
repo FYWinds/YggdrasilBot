@@ -141,9 +141,7 @@ async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, mo
     remark_segs = [{"type": "reply", "data": {"id": "777"}}, {"type": "text", "data": {"text": "否定与自我否定"}}]
     remark = MessageView(73120, 2, t0, FRIEND, "阿明", "否定与自我否定", 777, False, remark_segs)
     forward_segs = [{"type": "forward", "data": {"id": "res-1"}}]
-    forward = MessageView(
-        73117, 777, t0 - timedelta(minutes=6), 10001, "老王", "[合并转发]", None, False, forward_segs
-    )
+    forward = MessageView(73117, 777, t0 - timedelta(minutes=6), 10001, "老王", "[合并转发]", None, False, forward_segs)
     rows = {2: remark, 777: forward}
 
     async def find_by_qq_id(_group_id: int, qq_message_id: int) -> MessageView | None:
