@@ -134,6 +134,37 @@ async def test_context_display_lists_only_the_recent_messages_the_prompt_kept(
     assert ctx.display.recent == shown
 
 
+async def test_a_bare_tldr_gets_the_recent_chat_as_its_target(offline: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The prod failure: a plain "tldr" right after someone posted a forward got no chat at all, so the model saw
+    # nothing to summarize and stayed silent.
+    t0 = datetime(2026, 10, 28, 16, 55, tzinfo=UTC)
+    forward = MessageView(
+        68950, 9, t0, 10001, "小红", "[合并转发]", None, False, [{"type": "forward", "data": {"id": "r"}}]
+    )
+
+    async def recent_messages(*_: Any, **__: Any) -> list[MessageView]:
+        return [forward]
+
+    monkeypatch.setattr(search, "recent_messages", recent_messages)
+    resolved = Resolved("tldr", 1, "", (), "self", 0, False)
+    bare = await context.build_context(
+        _event(Message("tldr")), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=""
+    )
+    assert "#68950 小红(10001): [合并转发] (fwd#1)" in bare.prompt
+    assert "目标是「最近群聊」里请求之前的内容" in bare.prompt
+
+    # "tldr <topic>" names its own target: no chat up front (it would slant the summary).
+    worded = await context.build_context(
+        _event(Message("tldr qemu microvm")),
+        resolved,
+        Settings(),
+        self_id=SELF,
+        bot_name="耶梦加得",
+        request_text="qemu microvm",
+    )
+    assert "#68950" not in worded.prompt
+
+
 async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, monkeypatch: pytest.MonkeyPatch) -> None:
     # The prod failure: "tldr" on a one-line remark that replies to a forward. Only the remark reached the prompt,
     # so the forward had no handle and the model could not open it.

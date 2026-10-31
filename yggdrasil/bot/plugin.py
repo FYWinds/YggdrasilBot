@@ -37,6 +37,7 @@ from yggdrasil.core.metrics import TRIGGERS_MATCHED
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.runtime import snapshot
+from yggdrasil.triggers.bots import sent_by_bot
 from yggdrasil.triggers.index import MatchInput, Resolved, current
 
 __plugin_meta__ = PluginMetadata(
@@ -110,6 +111,13 @@ async def _route(bot: Bot, event: Event, state: T_State) -> None:
         )
     )
     if resolved is None:
+        return
+    if (
+        isinstance(event, GroupMessageEvent)
+        and role != "superuser"
+        and await sent_by_bot(bot, event, snap.settings(event.group_id))
+    ):
+        LOGGER.info("ignored {} trigger from bot {} in group {}", resolved.handler, event.user_id, event.group_id)
         return
     if not await ratelimit.cooldown(resolved.rule_id, event.user_id, resolved.cooldown_s):
         return

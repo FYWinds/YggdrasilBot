@@ -17,7 +17,7 @@ class BotReply(BaseModel):
     """The structured answer of the chat / tldr agents."""
 
     mode: Literal["forward", "silent", "done"] = Field(
-        description="forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；"
+        description="forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；silent：不回复（不是在跟你说话、没有实际内容）；"
         "done：已经用操作类工具完成了请求（比如撤回），不再发消息"
     )
     title: str | None = Field(default=None, description="mode=forward 时这次回复的主题（≤20 字）")

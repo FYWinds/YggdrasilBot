@@ -2,11 +2,12 @@
 
     uv run python -m yggdrasil.devtools.seed [--reset]
 
-Two example groups (10001, 10002) get members, chat covering every QQ segment type, stickers, memory (topics, a
-digest, glossary, profiles), bot events, review items, the bot's invocations of every handler and outcome, and
-background jobs (archived ones and one running in Redis). Transcripts come from the real recorder: each invocation
-is a scripted ``FunctionModel`` run whose prompt is built by the real ``build_context`` and whose tools record what
-they showed the way the real ones do; job transcripts go through the real omp message conversion.
+Two example groups (10001, 10002) get members, chat covering every QQ segment type, stickers, memory (topics with
+curation scores, one archived; a digest; glossary; profiles with active, archived and restored facts), bot events,
+review items, the bot's invocations of every handler and outcome, and background jobs (archived ones and one running
+in Redis). Transcripts come from the real recorder: each invocation is a scripted ``FunctionModel`` run whose prompt
+is built by the real ``build_context`` and whose tools record what they showed the way the real ones do; job
+transcripts go through the real omp message conversion.
 
 Everything written is scoped (the two groups, members 20001-20009, ``seed-`` job ids, the seed provider, stickers
 and images), so running it again replaces the previous seed and ``--reset`` only removes it. Uses the usual
@@ -81,6 +82,8 @@ from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.kv import redis_client
 from yggdrasil.memory import search
+from yggdrasil.memory.common import fact_weight, topic_weight
+from yggdrasil.memory.digest import DigestDraft, DigestEvent, render_digest
 from yggdrasil.memory.search import MessageView
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
@@ -1326,6 +1329,29 @@ async def _memory(chats: dict[int, Chat]) -> None:
             msg_count=6,
             status="closed",
             closed_at=tech["gil_ans"].sent_at + timedelta(hours=1),
+            importance=4,
+            importance_reason="有实测数据和结论",
+            weight=topic_weight(4, 6, 4),
+            scored_at=tech["gil_ans"].sent_at + timedelta(hours=2),
+        )
+        # Scored low by curation and archived: hidden from the agent, restorable in the console.
+        banter = Topic(
+            group_id=TECH,
+            title="掷骰子和猜拳",
+            summary="路人甲掷了个骰子，阿明出了石头剪刀布，小红戳了一下。",
+            keywords=["骰子", "猜拳"],
+            participants=[20005, 20001, 20002],
+            start_at=tech["poke"].sent_at,
+            end_at=tech["rps"].sent_at,
+            first_msg_id=tech["poke"].id,
+            last_msg_id=tech["rps"].id,
+            msg_count=3,
+            status="archived",
+            closed_at=tech["rps"].sent_at + timedelta(hours=2),
+            importance=1,
+            importance_reason="只有互动表情，没有内容",
+            weight=topic_weight(1, 3, 3),
+            scored_at=tech["rps"].sent_at + timedelta(hours=3),
         )
         meetup = Topic(
             group_id=TECH,
@@ -1351,20 +1377,41 @@ async def _memory(chats: dict[int, Chat]) -> None:
             last_msg_id=game["g_long"].id,
             msg_count=4,
         )
-        s.add_all([closed, meetup, season])
+        s.add_all([closed, banter, meetup, season])
         await s.flush()
         members = {
             closed.id: ids(tech, "hello", "ft", "bench", "bench_note", "ask_gil", "gil_ans"),
+            banter.id: ids(tech, "poke", "dice", "rps"),
             meetup.id: ids(tech, "meetup", "meetup2", "pelican", "pelican2"),
             season.id: ids(game, "g_hi", "g_me", "g_shot", "g_long"),
         }
         s.add_all(TopicMessage(topic_id=t, message_id=m) for t, ms in members.items() for m in ms)
+        day = (NOW - timedelta(days=1)).astimezone().date()
+        draft = DigestDraft(
+            overview="主要聊 Python 3.14 的 free-threading 构建，顺便约了周末聚会",
+            events=[
+                DigestEvent(
+                    title="free-threading 实测",
+                    topic_ids=[closed.id],
+                    participants=[20003, 20004, 20002],
+                    what="老王贴了 benchmark：单线程慢 5% 左右，8 线程快 5 倍；Neko 确认多线程是关掉 GIL 跑的",
+                    conclusion="C 扩展还要等适配",
+                ),
+                DigestEvent(
+                    title="周末聚会改期",
+                    topic_ids=[meetup.id],
+                    participants=[20001, 20003],
+                    what="阿明通知聚会改到周日下午，地点不变；老王会带他的旧服务器「鹈鹕」",
+                ),
+            ],
+        )
+        topics = {closed.id: closed, meetup.id: meetup}
         s.add(
             DailyDigest(
                 group_id=TECH,
-                day=(NOW - timedelta(days=1)).astimezone().date(),
-                summary="昨天群里主要聊了 Python 3.14 的发布和 free-threading 的 benchmark，顺便约了周末聚会。",
-                topic_ids=[closed.id],
+                day=day,
+                summary=render_digest(day, len(chats[TECH].rows), draft, topics, MEMBERS) or "",
+                topic_ids=list(topics),
             )
         )
         s.add_all(
@@ -1407,6 +1454,31 @@ async def _memory(chats: dict[int, Chat]) -> None:
                 ),
             ]
         )
+        scored = NOW - timedelta(hours=1)
+
+        def fact(
+            user_id: int,
+            text: str,
+            keys: list[str],
+            importance: int,
+            archived: str | None = None,
+            *,
+            locked: bool = False,
+        ) -> UserProfileFact:
+            sources = ids(tech, *keys)
+            return UserProfileFact(
+                group_id=TECH,
+                user_id=user_id,
+                fact=text,
+                source_msg_ids=sources,
+                importance=importance,
+                weight=fact_weight(importance, len(sources)),
+                scored_at=scored,
+                archived_at=scored if archived else None,
+                archive_reason=archived,
+                locked=locked,
+            )
+
         s.add_all(
             [
                 UserProfile(
@@ -1428,12 +1500,14 @@ async def _memory(chats: dict[int, Chat]) -> None:
                     traits=["热心"],
                 ),
                 UserProfile(group_id=GAME, user_id=20004, display_name="Neko", opted_out=True),
-                UserProfileFact(
-                    group_id=TECH,
-                    user_id=20003,
-                    fact="在 3.14t 上跑过多线程 benchmark",
-                    source_msg_ids=ids(tech, "bench_note"),
-                ),
+                # Curation merged a duplicate into the first fact (sources unioned) and archived a one-off plan.
+                fact(20003, "在 3.14t 上跑过多线程 benchmark", ["bench_note", "bench"], 3),
+                fact(20003, "有台叫「鹈鹕」的旧服务器", ["meetup2"], 4),
+                fact(20003, "跑过 free-threading 的 benchmark", ["bench"], 3, "duplicate"),
+                fact(20003, "周日下午要去线下聚会", ["meetup2"], 1, "low"),
+                fact(20001, "群主，负责组织线下聚会", ["meetup"], 5),
+                # Archived for low importance, then restored by an admin: locked, curation keeps it.
+                fact(20001, "关注 Python 新版本", ["hello"], 2, locked=True),
             ]
         )
         s.add(

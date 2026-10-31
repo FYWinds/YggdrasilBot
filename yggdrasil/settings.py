@@ -54,6 +54,11 @@ class InteractionSettings(BaseModel):
     metadata_fields: list[Literal["model", "tokens", "tools", "latency", "moderation", "trace"]] = Field(
         default_factory=lambda: ["model", "tokens", "tools", "latency", "moderation", "trace"]
     )
+    ignore_users: list[int] = Field(
+        default_factory=list,
+        description="不响应这些 QQ 号（比如群里别的 bot）：消息照常记录，但不会触发任何指令。"
+        "群名片或昵称里带 [bot] 的账号和 QQ 官方机器人自动忽略，不用列；超级管理员不受影响",
+    )
 
 
 class ModerationCategoryRule(BaseModel):
@@ -95,6 +100,12 @@ class RateLimitSettings(BaseModel):
     max_concurrent_per_user: int = Field(default=2, ge=1, description="每个人同时运行的请求数，超出排队")
     max_queued_per_user: int = Field(default=3, ge=0, description="每个人最多排队几个请求，再多就丢弃")
     queue_timeout_s: float = Field(default=180, gt=0, description="排队超过这个时间就放弃")
+    repeat_window_s: int = Field(
+        default=300,
+        ge=0,
+        description="同一目标的 tldr（回复同一条消息，或发同一个链接/同一段文字，关注点也相同）在这段时间内只做一次，"
+        "重复的请求只贴 interaction.silent_emoji（超级管理员不受限；0：不去重）",
+    )
 
 
 class ContextSettings(BaseModel):
@@ -265,8 +276,29 @@ class MemorySettings(BaseModel):
     topic_archive_below_participants: int = Field(
         default=3, ge=0, description="归档条件：参与人数少于这个值（和消息数条件同时满足才归档）"
     )
+    topic_archive_below_weight: float = Field(
+        default=3.0,
+        ge=0,
+        description="整理任务每小时给已结束的话题打重要度（1–5），权重 = 重要度 × 规模系数（消息和参与人越多越大，"
+        "50 条消息 9 个人约 1.6）。权重低于这个值的话题归档（0：不按权重归档）",
+    )
     digest_hour: int = Field(default=4, ge=0, le=23, description="每日摘要生成时间（Asia/Shanghai）")
     profile_min_messages: int = 15
+    fact_archive_below_importance: int = Field(
+        default=3,
+        ge=0,
+        description="画像事实的重要度（1–5；5 是身份、技能、长期项目、稳定偏好，1 是一次性的饭局、心情、玩笑）"
+        "低于这个值的归档：agent 和画像更新都看不到，控制台可恢复（0：不按重要度归档）",
+    )
+    facts_per_user: int = Field(
+        default=40, ge=0, description="每人最多保留的有效事实，多出的按权重（含时间衰减）从低到高归档（0：不限）"
+    )
+    weight_half_life_days: int = Field(
+        default=180,
+        ge=1,
+        description="排序用的时间衰减：画像事实和话题搜索结果按 权重 × 衰减 排序，"
+        "过了这么多天的打 75 折，越旧越接近 5 折",
+    )
     glossary_min_count: int = 6
     glossary_max_candidates: int = 30
     backfill_messages: int = Field(default=3000, description="群加入白名单时回填的历史消息数")

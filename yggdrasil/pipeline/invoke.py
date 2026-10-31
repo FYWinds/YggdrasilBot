@@ -37,7 +37,7 @@ from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.people import self_label
 from yggdrasil.pipeline import ack as ack_mod
-from yggdrasil.pipeline import ratelimit
+from yggdrasil.pipeline import ratelimit, repeats
 from yggdrasil.prompts import render
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
@@ -57,27 +57,42 @@ async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handle
     role = speaker_role(event, snap.superusers)
     superuser = role == "superuser"
     api = NapCatAPI(bot)
-    if reason := await ratelimit.check(group_id, event.user_id, settings.ratelimit, superuser=superuser):
-        LOGGER.info("rate limited ({}) user={} group={}", reason, event.user_id, group_id)
-        INVOCATIONS.add(1, {"handler": handler, "outcome": "ratelimited"})
-        if settings.interaction.ratelimited_emoji:
-            await react(api, event.message_id, settings.interaction.ratelimited_emoji)
+    repeat = None if superuser else repeats.key(event, resolved, handler, request_text)
+    if repeat is not None and not await repeats.first(repeat, settings.ratelimit.repeat_window_s):
+        LOGGER.info("repeated {} request ignored user={} group={}", handler, event.user_id, group_id)
+        INVOCATIONS.add(1, {"handler": handler, "outcome": "repeat"})
+        if settings.interaction.silent_emoji:
+            await react(api, event.message_id, settings.interaction.silent_emoji)
         return
-    async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
-        if not granted:
-            LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
-            INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
+    answered = False
+    try:
+        if reason := await ratelimit.check(group_id, event.user_id, settings.ratelimit, superuser=superuser):
+            LOGGER.info("rate limited ({}) user={} group={}", reason, event.user_id, group_id)
+            INVOCATIONS.add(1, {"handler": handler, "outcome": "ratelimited"})
             if settings.interaction.ratelimited_emoji:
                 await react(api, event.message_id, settings.interaction.ratelimited_emoji)
             return
-        if handler == "chat" and superuser and group_id is not None:
-            # A superuser talking to the bot may be giving an admin instruction: the ops agent
-            # (fast model) acts on it, or hands it back here when it's an ordinary question.
-            from yggdrasil.ops.agent import run_ops
-
-            if await run_ops(bot, event) != "handoff":
+        async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
+            if not granted:
+                LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
+                INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
+                if settings.interaction.ratelimited_emoji:
+                    await react(api, event.message_id, settings.interaction.ratelimited_emoji)
                 return
-        await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role).run()
+            if handler == "chat" and superuser and group_id is not None:
+                # A superuser talking to the bot may be giving an admin instruction: the ops agent
+                # (fast model) acts on it, or hands it back here when it's an ordinary question.
+                from yggdrasil.ops.agent import run_ops
+
+                if await run_ops(bot, event) != "handoff":
+                    return
+            status = await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role).run()
+            answered = status != "failed"
+    finally:
+        if repeat is not None and not answered:
+            # Nothing came of it (rate limited, queue full, failed): asking again must work.
+            with contextlib.suppress(Exception):
+                await repeats.forget(repeat)
 
 
 class Invocator:
@@ -135,7 +150,8 @@ class Invocator:
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
 
-    async def run(self) -> None:
+    async def run(self) -> str:
+        """Run, record and return the status (``failed`` when it raised)."""
         attrs = {
             "ygg.handler": self.record_handler,
             "ygg.group_id": self.group_id or 0,
@@ -169,6 +185,7 @@ class Invocator:
                         await self.sandbox.close()
                 if self.invocation_id is not None and (self.recorder.history or self.recorder.tools):
                     await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
+        return status
 
     async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
         """Attach the images of the messages the request is about up front when the route can see them.

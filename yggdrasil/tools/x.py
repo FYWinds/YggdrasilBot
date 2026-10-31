@@ -51,7 +51,6 @@ _ID_RE = re.compile(r"^\d{1,20}$")
 _TIMEOUT = 15.0
 _CACHE_TTL = 600.0
 _CACHE_SIZE = 64
-_THREAD_LINE_CHARS = 280
 _NEWS_POST_LINKS = 3
 # Wire names follow the data dictionary (tweet.*); the OpenAPI spec's post.* names are accepted too (probed 2026-10).
 _POST_PARAMS = {
@@ -112,8 +111,8 @@ class Post:
         return f"https://x.com/{self.handle or 'i'}/status/{self.id}"
 
     def images(self) -> list[Media]:
-        """Media of the post, then of its quoted post: the numbering ``format_post`` uses."""
-        return self.media + (self.quote.media if self.quote else [])
+        """Media of the post and its quoted post, then of each thread post: the numbering ``format_post`` uses."""
+        return [m for p in (self, *self.thread) for m in (p.media + (p.quote.media if p.quote else []))]
 
 
 @dataclass(slots=True)
@@ -488,23 +487,37 @@ async def api_get(
 
 
 def format_post(post: Post) -> str:
-    """The post as labelled text; images are numbered in :meth:`Post.images` order (图 1, 图 2, ...)."""
+    """The post as labelled text; images are numbered in :meth:`Post.images` order (图 1, 图 2, ...).
+
+    The other posts of the conversation (usually the author's own thread) are shown in full, with their media: a
+    thread is often the whole point of the link, and they can't be read one by one.
+    """
     lines = _post_lines(post, image_no=1)
+    image_no = 1 + len(post.media) + (len(post.quote.media) if post.quote else 0)
     if post.thread:
         lines += ["", f"同一对话里的其他帖子（共 {len(post.thread)} 条，按时间）："]
-        lines += [f"- {who(p)}：{_one_line(p.text)}" for p in post.thread]
+    for k, p in enumerate(post.thread, 1):
+        when = f" {p.created_at.astimezone(_CN_TZ):%m-%d %H:%M}（北京时间）" if p.created_at else ""
+        lines += ["", f"【第 {k} 条】{who(p)}{when}", *_body_lines(p, image_no=image_no)]
+        image_no += len(p.media) + (len(p.quote.media) if p.quote else 0)
     return "\n".join(lines)
 
 
 def _post_lines(post: Post, *, image_no: int) -> list[str]:
     lines = [f"作者：{who(post)}"]
     if post.created_at:
-        lines.append(f"发布时间：{post.created_at.astimezone(_CN_TZ):%Y-%m-%d %H:%M}")
+        lines.append(f"发布时间：{post.created_at.astimezone(_CN_TZ):%Y-%m-%d %H:%M}（北京时间）")
     if stats := _stats(post):
         lines.append(f"数据：{stats}")
     if post.replying_to:
         lines.append(f"回复给：@{post.replying_to}")
-    lines += ["", post.text or "（没有文字）"]
+    return [*lines, "", *_body_lines(post, image_no=image_no)]
+
+
+def _body_lines(post: Post, *, image_no: int) -> list[str]:
+    """Text, article, poll, media, note and quoted post: everything below the header."""
+    lines = [post.text or "（没有文字）"]
+
     if post.article_title or post.article_text:
         lines += ["", f"文章《{post.article_title}》：" if post.article_title else "文章：", post.article_text]
     if post.poll:
@@ -518,7 +531,7 @@ def _post_lines(post: Post, *, image_no: int) -> list[str]:
     if post.community_note:
         lines += ["", f"社区笔记：{post.community_note}"]
     if post.quote:
-        quoted = _post_lines(post.quote, image_no=image_no + len(post.media))
+        quoted = "\n".join(_post_lines(post.quote, image_no=image_no + len(post.media))).split("\n")
         lines += ["", "引用的帖子：", *(f"> {line}" if line else ">" for line in quoted)]
     elif post.quote_gone:
         lines += ["", f"引用的帖子：{post.quote_gone}"]
@@ -530,7 +543,7 @@ def format_news(stories: Sequence[NewsStory]) -> str:
     for i, s in enumerate(stories, 1):
         head = f"{i}. {s.name}"
         if s.updated_at:
-            head += f"（更新于 {s.updated_at.astimezone(_CN_TZ):%m-%d %H:%M}）"
+            head += f"（更新于北京时间 {s.updated_at.astimezone(_CN_TZ):%m-%d %H:%M}）"
         block = [head, s.summary]
         if s.topics:
             block.append("话题：" + "、".join(s.topics))
@@ -538,7 +551,10 @@ def format_news(stories: Sequence[NewsStory]) -> str:
             links = " ".join(f"https://x.com/i/status/{pid}" for pid in s.post_ids[:_NEWS_POST_LINKS])
             block.append(f"相关帖子（共 {len(s.post_ids)} 条）：{links}")
         blocks.append("\n".join(block))
-    note = "（以下是 X 用 Grok 根据帖子写的新闻摘要，可能有误；要核实细节就用 read_x 读相关帖子）"
+    note = (
+        "（以下是 X 用 Grok 根据帖子写的新闻摘要，可能有误；要核实细节就用 read_x 读相关帖子。"
+        "摘要正文里提到的时间没有注明时区，多半是事发地或 UTC 时间，不是北京时间）"
+    )
     return note + "\n\n" + "\n\n".join(blocks)
 
 
@@ -547,7 +563,7 @@ def format_posts(posts: Sequence[Post]) -> str:
     for i, p in enumerate(posts, 1):
         head = f"{i}. {who(p)}"
         if p.created_at:
-            head += f" {p.created_at.astimezone(_CN_TZ):%m-%d %H:%M}"
+            head += f" {p.created_at.astimezone(_CN_TZ):%m-%d %H:%M}（北京时间）"
         if stats := _stats(p):
             head += f" · {stats}"
         blocks.append(f"{head}\n{p.text}\n{p.url}")
@@ -588,11 +604,6 @@ def _media_label(m: Media) -> str:
         minutes, seconds = divmod(round(m.duration_s), 60)
         label += f"，时长 {minutes}:{seconds:02d}"
     return label
-
-
-def _one_line(text: str) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= _THREAD_LINE_CHARS else flat[: _THREAD_LINE_CHARS - 1] + "…"
 
 
 # --------------------------------------------------------------------------- helpers

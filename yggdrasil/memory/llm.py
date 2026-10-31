@@ -28,7 +28,7 @@ def override_models(**models: Model) -> Iterator[None]:
 
 
 # Delimiter tags wrapping untrusted group content in the memory_* prompts.
-DATA_TAGS = ("chat_log", "open_topics", "topics", "candidates", "terms", "profile")
+DATA_TAGS = ("chat_log", "open_topics", "topics", "candidates", "terms", "profile", "facts")
 
 
 def fence(text: str) -> str:

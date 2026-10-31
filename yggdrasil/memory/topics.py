@@ -6,13 +6,14 @@ are closed (small ones archived: hidden from the agent, kept for the dashboard),
 topics marked dirty by a recall are recomputed without the recalled messages.
 """
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai.exceptions import IncompleteToolCall
-from sqlalchemy import ColumnElement, and_, delete, exists, func, select, update
+from sqlalchemy import ColumnElement, and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +21,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Topic, TopicMessage
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
-from yggdrasil.memory.common import format_line, people_for, pipeline_state
+from yggdrasil.memory.common import format_line, people_for, pipeline_state, topic_weight
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.memory.vectors import delete_vectors, topic_text, try_embed
 from yggdrasil.people import People
@@ -35,8 +36,11 @@ MAX_OPEN_TOPICS = 10
 MAX_DIRTY_PER_RUN = 10
 LINE_MAX_CHARS = 300
 TOPIC_CONTEXT_LINES = 3
+TITLE_MAX_CHARS = 60
 # A window whose ops don't fit in the model's output limit is retried with half the messages, down to this size.
 MIN_WINDOW_MESSAGES = 25
+# "：" or ":" between the parts of a title (not the one in "12:30").
+_TITLE_SEP = re.compile(r"(\s*(?:：|:(?!\d))\s*)")
 
 
 class ContinueTopic(BaseModel):
@@ -74,6 +78,28 @@ class TopicRewrite(BaseModel):
     keywords: list[str] = Field(default_factory=list)
 
 
+def clean_title(title: str) -> str:
+    """One line, each "X：" part once: title updates used to stack the old title in front ("X：X：…")."""
+    pieces = _TITLE_SEP.split(" ".join(title.split()))  # part, separator, part, …
+    out, seen = "", set()
+    for i in range(0, len(pieces), 2):
+        part = pieces[i]
+        if part and part not in seen:
+            seen.add(part)
+            out += (pieces[i - 1] if out else "") + part
+    return out[:TITLE_MAX_CHARS]
+
+
+def clean_summary(summary: str, title: str) -> str:
+    """The summary without the title repeated in front of it (the topic block showed "标题：标题：…")."""
+    summary = summary.strip()
+    if title:
+        lead = re.compile(rf"{re.escape(title)}\s*[：:。，,]\s*")
+        while (m := lead.match(summary)) and m.end() < len(summary):
+            summary = summary[m.end() :]
+    return summary
+
+
 def validate_ops(
     ops: Sequence[ContinueTopic | NewTopic], window_ids: Collection[int], open_topic_ids: Collection[int]
 ) -> list[ContinueTopic | NewTopic]:
@@ -85,7 +111,7 @@ def validate_ops(
     for op in ops:
         if isinstance(op, ContinueTopic) and op.topic_id not in open_ids:
             continue
-        if isinstance(op, NewTopic) and not op.title.strip():
+        if isinstance(op, NewTopic) and not clean_title(op.title):
             continue
         ids = [i for i in dict.fromkeys(op.message_ids) if i in window and i not in assigned]
         if not ids:
@@ -143,10 +169,11 @@ async def _apply(
         first, last = min(m.id for m in msgs), max(m.id for m in msgs)
         start, end = min(m.sent_at for m in msgs), max(m.sent_at for m in msgs)
         if isinstance(op, NewTopic):
+            title = clean_title(op.title)
             topic = Topic(
                 group_id=group_id,
-                title=op.title.strip()[:60],
-                summary=op.summary.strip(),
+                title=title,
+                summary=clean_summary(op.summary, title),
                 keywords=[k.strip() for k in op.keywords if k.strip()][:10],
                 participants=participants_of(op.message_ids, views, op.participants),
                 start_at=start,
@@ -173,10 +200,10 @@ async def _apply(
                 or 0
             )
             topic.participants = participants_of(op.message_ids, views, existing=topic.participants)
-            if op.title and op.title.strip():
-                topic.title = op.title.strip()[:60]
-            if op.summary and op.summary.strip():
-                topic.summary = op.summary.strip()
+            if op.title and (title := clean_title(op.title)):
+                topic.title = title
+            if op.summary and (summary := clean_summary(op.summary, topic.title)):
+                topic.summary = summary
             if op.keywords:
                 topic.keywords = [k.strip() for k in op.keywords if k.strip()][:10]
             topic.status = "open"
@@ -280,23 +307,30 @@ async def _recompute_dirty(group_id: int) -> tuple[int, int]:
                 delete(TopicMessage).where(TopicMessage.topic_id == topic.id, TopicMessage.message_id.notin_(keep))
             )
             speakers = list(dict.fromkeys(v.user_id for v in remaining if not v.is_self))
+            participants = [u for u in topic.participants if u in speakers]
+            title = clean_title(rewrite.title) or topic.title
+            summary = clean_summary(rewrite.summary, title) or topic.summary
+            keywords = [k.strip() for k in rewrite.keywords if k.strip()][:10] or topic.keywords
             await session.execute(
                 update(Topic)
                 .where(Topic.id == topic.id)
                 .values(
-                    title=rewrite.title.strip()[:60] or topic.title,
-                    summary=rewrite.summary.strip() or topic.summary,
-                    keywords=[k.strip() for k in rewrite.keywords if k.strip()][:10] or topic.keywords,
-                    participants=[u for u in topic.participants if u in speakers],
+                    title=title,
+                    summary=summary,
+                    keywords=keywords,
+                    participants=participants,
                     start_at=min(v.sent_at for v in remaining),
                     end_at=max(v.sent_at for v in remaining),
                     first_msg_id=remaining[0].id,
                     last_msg_id=remaining[-1].id,
                     msg_count=len(remaining),
                     dirty=False,
+                    weight=topic.weight
+                    if topic.importance is None
+                    else topic_weight(topic.importance, len(remaining), len(participants)),
                 )
             )
-            text = topic_text(rewrite.title, rewrite.summary, rewrite.keywords)
+            text = topic_text(title, summary, keywords)
         recomputed += 1
         await try_embed("topic", [(topic.id, group_id, text)])
     return recomputed, deleted
@@ -362,10 +396,14 @@ async def consolidate_group(group_id: int, *, now: datetime | None = None) -> di
 
 
 def archivable(mem: MemorySettings) -> ColumnElement[bool]:
-    """Too small to be worth searching: below both the message and the participant threshold."""
-    return and_(
-        Topic.msg_count < mem.topic_archive_below_messages,
-        func.cardinality(Topic.participants) < mem.topic_archive_below_participants,
+    """Not worth searching: below both the message and the participant threshold, or scored by curation
+    (``memory.curation``) below the weight threshold."""
+    return or_(
+        and_(
+            Topic.msg_count < mem.topic_archive_below_messages,
+            func.cardinality(Topic.participants) < mem.topic_archive_below_participants,
+        ),
+        Topic.weight < mem.topic_archive_below_weight,
     )
 
 

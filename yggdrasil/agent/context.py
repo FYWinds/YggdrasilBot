@@ -22,6 +22,8 @@ from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from yggdrasil.memory.search import MessageView
 
 
@@ -187,6 +189,17 @@ def chat_line(m: "MessageView", people: People, handles: Handles) -> str:
     return f"[{_ts(m.sent_at)}] #{m.id} {who}: {people.mentions(m.text)}{handles.register(m.segments or [])}"
 
 
+def chat_tail(lines: "Sequence[str]", budget: int) -> tuple[int, str]:
+    """The newest whole ``lines`` (one per message) that fit in ``budget`` characters, and the index of the first
+    one kept: a cut never starts inside a multi-line message. The newest line always shows (cut short if it alone
+    is too long)."""
+    first, size = len(lines) - 1, len(lines[-1])
+    while first > 0 and size + 1 + len(lines[first - 1]) <= budget:
+        first -= 1
+        size += 1 + len(lines[first])
+    return first, "\n".join(lines[first:])[:budget]
+
+
 async def _quoted_row(group_id: int | None, target: "TargetMessage") -> "MessageView | None":
     from yggdrasil.memory import search
 
@@ -241,11 +254,21 @@ async def build_context(
     background = resolved.handler != "tldr"
 
     quoted = target.qq_message_id != trigger.qq_message_id
-    mentioned = normalize(trigger.segments).mentions
+    trigger_norm = normalize(trigger.segments)
+    mentioned = trigger_norm.mentions
+    # A bare "tldr" (no quote, no words, nothing attached) means "what was just said": the recent chat is the
+    # target, so it goes in up front. Without it the model saw nothing and stayed silent.
+    bare_tldr = (
+        resolved.handler == "tldr"
+        and not quoted
+        and not request_text.strip()
+        and not trigger_norm.attachments
+        and not trigger_norm.urls
+    )
     if group_id is not None:
         await WRITER.flush()  # also lets recent_chat / search tools see the latest messages
     recent: list[search.MessageView] = []
-    if group_id is not None and background:
+    if group_id is not None and (background or bare_tldr):
         try:
             recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
@@ -288,16 +311,7 @@ async def build_context(
     recent_ids: list[int] = []
     if recent:
         lines = [chat_line(m, people, handles) for m in recent]
-        text = "\n".join(lines)
-        first = 0
-        if len(text) > cfg.max_context_chars:
-            text = text[-cfg.max_context_chars :]
-            text = text[text.find("\n") + 1 :]
-            # The messages whose lines survived the cut (a message's own text may contain newlines).
-            kept, first = 0, len(lines)
-            while first > 0 and kept + len(lines[first - 1]) <= len(text):
-                kept += len(lines[first - 1]) + 1
-                first -= 1
+        first, text = chat_tail(lines, cfg.max_context_chars)
         recent_ids = [m.id for m in recent[first:]]
         blocks.add("最近群聊", text)
 
@@ -358,6 +372,11 @@ async def build_context(
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:
         blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
+    if bare_tldr and recent_ids:
+        blocks.note(
+            "这条 tldr 没有引用消息：目标是「最近群聊」里请求之前的内容。请求前刚有人发了合并转发、链接、文件、"
+            "长消息或图片时就总结那一条；没有的话概括最近大家在聊什么。"
+        )
     if resolved.handler == "tldr":
         ia = settings.interaction
         blocks.note(

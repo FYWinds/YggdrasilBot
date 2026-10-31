@@ -2403,7 +2403,7 @@
           "memory"
         ],
         "summary": "Archive Small Topics",
-        "description": "Apply the group's current archive thresholds to its finished topics.",
+        "description": "Apply the group's current archive thresholds (size and curation weight) to its finished topics.",
         "operationId": "archive_small_topics",
         "requestBody": {
           "content": {
@@ -3013,6 +3013,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/memory/profiles/{group_id}/{user_id}/facts/{fact_id}/restore": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Restore Profile Fact",
+        "description": "Bring an archived fact back; it is locked, so curation never archives it again.",
+        "operationId": "restore_profile_fact",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactOut"
                 }
               }
             }
@@ -4251,7 +4312,7 @@
               "done"
             ],
             "title": "Mode",
-            "description": "forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；done：已经用操作类工具完成了请求（比如撤回），不再发消息"
+            "description": "forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息"
           },
           "title": {
             "anyOf": [
@@ -4837,6 +4898,60 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance",
+            "description": "重要度 1–5（画像更新或整理任务给的）；未评分为空"
+          },
+          "weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight",
+            "description": "重要度，佐证消息多的略高；排序时还会按时间衰减"
+          },
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At",
+            "description": "归档时间；归档的事实 agent 和画像更新都看不到"
+          },
+          "archive_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Reason",
+            "description": "low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻"
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "description": "管理员恢复过：整理任务不再归档它"
           }
         },
         "type": "object",
@@ -4844,7 +4959,12 @@
           "id",
           "fact",
           "source_msg_ids",
-          "created_at"
+          "created_at",
+          "importance",
+          "weight",
+          "archived_at",
+          "archive_reason",
+          "locked"
         ],
         "title": "FactOut"
       },
@@ -8491,6 +8611,41 @@
           "dirty": {
             "type": "boolean",
             "title": "Dirty"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance",
+            "description": "整理任务给的重要度 1–5；未评分为空"
+          },
+          "importance_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance Reason"
+          },
+          "weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight",
+            "description": "重要度 × 规模系数（消息数、参与人数）；未评分为空"
           }
         },
         "type": "object",
@@ -8505,7 +8660,10 @@
           "end_at",
           "msg_count",
           "status",
-          "dirty"
+          "dirty",
+          "importance",
+          "importance_reason",
+          "weight"
         ],
         "title": "TopicOut"
       },

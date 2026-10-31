@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from PIL import Image
 from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
-from yggdrasil.agent.context import chat_line
+from yggdrasil.agent.context import chat_line, chat_tail
 from yggdrasil.agent.deps import Deps, Handle, Handles
 from yggdrasil.agent.media import (
     ModelImage,
@@ -32,7 +32,7 @@ from yggdrasil.agent.media import (
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
-from yggdrasil.delivery.send import send_image
+from yggdrasil.delivery.send import META_TITLE, send_image
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import ImageError, TaskNotConfigured, chat_model, generate_images, sees_images
 from yggdrasil.llm.streaming import drain_events
@@ -351,6 +351,8 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
             if isinstance(segs, str):
                 segs = [{"type": "text", "data": {"text": segs}}]
             norm = normalize(segs)
+            if norm.text.startswith(META_TITLE + "\n"):  # run metadata, kept in our older forward records
+                continue
             ts = datetime.fromtimestamp(rec["time"]).strftime("%m-%d %H:%M") if rec.get("time") else ""
             name = sender.get("card") or sender.get("nickname") or rec.get("nickname") or ""
             uid = str(sender.get("user_id") or rec.get("user_id") or "")
@@ -380,14 +382,15 @@ async def expand_forward(ctx: RunContext[Deps], handle: str) -> str:
     for indent, ts, uid, name, segs, keys in nodes:
         who = people.who(uid, name) if uid else clean_name(name) or "?"
         text = normalize(segs, people.mention).text
-        lines.append(f"{indent}[{ts}] {who}: {text}" + (f" ({', '.join(keys)})" if keys else ""))
+        when = f"[{ts}] " if ts else ""
+        lines.append(f"{indent}{when}{who}: {text}" + (f" ({', '.join(keys)})" if keys else ""))
     return "\n".join(lines) or "（空的合并转发）"
 
 
 @_tool("search_history")
 async def search_history(ctx: RunContext[Deps], query: str, days: int | None = None, user_id: int | None = None) -> str:
     """检索本群历史聊天记录和话题摘要（关键词+语义）。days 限定最近几天，user_id 限定发言人。"""
-    from yggdrasil.memory.search import message_segments
+    from yggdrasil.memory.search import find_by_qq_id, message_segments
     from yggdrasil.memory.search import search_history as _search
 
     if ctx.deps.group_id is None:
@@ -395,8 +398,15 @@ async def search_history(ctx: RunContext[Deps], query: str, days: int | None = N
     since = None
     if days:
         since = datetime.now().astimezone() - timedelta(days=days)
+    # Only what came before the request: the asking message itself is no search result.
+    asked = await find_by_qq_id(ctx.deps.group_id, ctx.deps.trigger_message_id) if ctx.deps.trigger_message_id else None
     hits = await _search(
-        ctx.deps.group_id, query, since=since, user_id=user_id, top_k=ctx.deps.settings.tools.history_top_k
+        ctx.deps.group_id,
+        query,
+        since=since,
+        until=asked.sent_at if asked else None,
+        user_id=user_id,
+        top_k=ctx.deps.settings.tools.history_top_k,
     )
     if not hits:
         return "没有找到相关记录"
@@ -409,7 +419,8 @@ async def search_history(ctx: RunContext[Deps], query: str, days: int | None = N
         ref = f"#{h.msg_id}" if h.msg_id else f"{h.kind}:{h.ref_id}"
         who = f"{people.who(h.user_id, h.sender_name)}: " if h.user_id else ""
         keys = ctx.deps.handles.register(segments.get(h.msg_id) or []) if h.msg_id else ""
-        out.append(f"[{when}] ({ref}) {who}{people.mentions(h.text)}{keys}")
+        body = f"{who}{people.mentions(h.text)}{keys}"
+        out.append(f"[{when}] ({ref})" + (f"\n{body}" if h.kind == "chunk" else f" {body}"))
     return "\n".join(out)
 
 
@@ -437,11 +448,10 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
     msgs = await recent_messages(ctx.deps.group_id, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
     if not msgs:
         return "这段时间没有聊天记录"
-    ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
-    text = _chat_lines(msgs, await _people_for_messages(ctx, msgs), ctx.deps.handles)
-    if len(text) > cfg.max_context_chars:
-        text = text[-cfg.max_context_chars :]
-        text = text[text.find("\n") + 1 :]
+    people = await _people_for_messages(ctx, msgs)
+    lines = [chat_line(m, people, ctx.deps.handles) for m in msgs]
+    first, text = chat_tail(lines, cfg.max_context_chars)
+    ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs[first:]])
     return text
 
 
@@ -460,7 +470,7 @@ async def lookup_glossary(ctx: RunContext[Deps], term: str) -> str:
 
 @_tool("get_profile")
 async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
-    """查群友画像（昵称、兴趣、常聊话题）。user_id 是 QQ 号，即「名字(QQ号)」括号里的数字。"""
+    """查群友画像（昵称、兴趣、常聊话题、最重要的几条事实）。user_id 是 QQ 号，即「名字(QQ号)」括号里的数字。"""
     from yggdrasil.memory.search import get_profile as _get
 
     if ctx.deps.group_id is None:
@@ -469,7 +479,10 @@ async def get_profile(ctx: RunContext[Deps], user_id: int) -> str:
     if p is None:
         return "没有这个人的画像（可能选择了不被记录）"
     who = (await _people(ctx, [user_id])).who(p.user_id, p.display_name)
-    return f"{who}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
+    out = f"{who}：{p.summary}\n兴趣：{'、'.join(p.interests)}\n特点：{'、'.join(p.traits)}"
+    if p.facts:
+        out += "\n事实：\n" + "\n".join(f"- {f}" for f in p.facts)
+    return out
 
 
 MAX_IMAGES = 4  # images per reply, shared by render_* and the workspace's show()

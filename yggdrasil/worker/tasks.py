@@ -19,6 +19,7 @@ from yggdrasil.kv import redis_client
 from yggdrasil.memory import vectors
 from yggdrasil.memory.chunking import chunk_group
 from yggdrasil.memory.common import memory_groups
+from yggdrasil.memory.curation import curate_group
 from yggdrasil.memory.digest import digest_group
 from yggdrasil.memory.glossary import define_group, mine_group
 from yggdrasil.memory.profiles import update_group
@@ -102,6 +103,12 @@ async def consolidate_topics() -> dict[int, Any]:
 @broker.task(task_name="daily_digest", schedule=_cron("5 * * * *"))
 async def daily_digest() -> dict[int, Any]:
     return await for_each_group("daily_digest", digest_group)
+
+
+# Before update_profiles, so topics closed by then are scored and the low ones archived before profiles read them.
+@broker.task(task_name="curate_memory", schedule=_cron("20 * * * *"))
+async def curate_memory() -> dict[int, Any]:
+    return await for_each_group("curate_memory", curate_group, lock_ttl=3600)
 
 
 @broker.task(task_name="update_profiles", schedule=_cron("25 * * * *"))

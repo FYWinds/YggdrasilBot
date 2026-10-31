@@ -439,7 +439,7 @@ async def test_github_non_repo_pages_use_generic_path() -> None:
         raise AssertionError("adapter should not fetch")
 
     async with _client(handler) as client:
-        for url in ("https://github.com/o/r/issues/1", "https://github.com/advisories/GHSA-9v8h-qqgm-4m35"):
+        for url in ("https://github.com/o/r/pull/1/files", "https://github.com/advisories/GHSA-9v8h-qqgm-4m35"):
             assert await web._github(client, httpx.URL(url)) is None
 
 
@@ -576,8 +576,7 @@ def test_youtube_watch_page_yields_metadata_description_and_chapters() -> None:
     assert result.text == (
         "频道：Zed（1.89万位订阅者）\n发布时间：2026年10月9日\n播放：12,632次观看\n\n"
         "简介：\nTalk at the Rust meetup.\nfn x() {};\n\n"
-        "章节（共 2 个）：\n0:00 Intro\n1:33 Design\n\n"
-        "（只有页面信息，没有字幕，无法得知视频里具体说了什么）"
+        "章节（共 2 个）：\n0:00 Intro\n1:33 Design"
     )
     # No ytInitialData, or no video in it (removed / private): leave it to the generic path.
     assert web.parse_youtube_watch("<html>consent</html>", "https://www.youtube.com/watch?v=x") is None
@@ -588,7 +587,8 @@ async def test_youtube_adapter_reads_video_links_and_skips_other_pages() -> None
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
+        if request.url.path == "/watch":  # the transcript requests are covered in test_read_url_sites
+            seen.append(str(request.url))
         return httpx.Response(200, html=YT_PAGE)
 
     video = "https://www.youtube.com/watch?v=yif2rday2bw&hl=zh-CN"

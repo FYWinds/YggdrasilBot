@@ -51,7 +51,7 @@ FX_THREAD: dict[str, Any] = {
         "quote": {
             "type": "status",
             "id": "100000000000000001",
-            "text": "the quoted claim",
+            "text": "the quoted\nclaim",
             "author": {"name": "Carol", "screen_name": "carol"},
             "media": {"photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/BBB.png"}]},
             "quote": {"type": "status", "id": "100000000000000000", "text": "nested quote", "author": {}},
@@ -65,6 +65,14 @@ FX_THREAD: dict[str, Any] = {
             "author": {"name": "Bob", "screen_name": "bob"},
         },
         {"type": "status", "id": PID, "text": "focal again", "author": {"name": "Alice", "screen_name": "alice"}},
+        {
+            "type": "status",
+            "id": "100000000000000004",
+            "text": "2/ " + "detail " * 60 + "the end",
+            "created_timestamp": 1793202040,
+            "author": {"name": "Alice", "screen_name": "alice"},
+            "media": {"photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/CCC.jpg"}]},
+        },
     ],
 }
 
@@ -161,7 +169,7 @@ def test_fx_thread_formats_post_quote_poll_note_and_conversation() -> None:
     text = x.format_post(post)
 
     assert "作者：Alice（@alice）" in text
-    assert "发布时间：2026-10-28 23:39" in text
+    assert "发布时间：2026-10-28 23:39（北京时间）" in text  # labelled: the model mixed it up with UTC web times
     assert "数据：赞 1.2万 · 转发 3 · 引用 1 · 回复 2 · 浏览 1533" in text
     assert "回复给：@bob" in text
     assert "see https://example.com/report" in text
@@ -176,10 +184,14 @@ def test_fx_thread_formats_post_quote_poll_note_and_conversation() -> None:
         "https://pbs.twimg.com/media/AAA.jpg?name=large",
         "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/v.jpg",
         "https://pbs.twimg.com/media/BBB.png?name=large",
+        "https://pbs.twimg.com/media/CCC.jpg?name=large",
     ]
     assert "nested quote" not in text  # one level of quotes only
-    # The conversation lists the other posts only, on one line each.
-    assert "同一对话里的其他帖子（共 1 条，按时间）：\n- Bob（@bob）：@alice what do you know?" in text
+    # The rest of the conversation is shown in full with its media (a thread was cut to 280 chars and its pictures
+    # were unreachable); the focal post is not repeated.
+    assert "同一对话里的其他帖子（共 2 条，按时间）：\n\n【第 1 条】Bob（@bob）\n@alice what do you\nknow?" in text
+    assert "【第 2 条】Alice（@alice） 10-28 23:40（北京时间）\n2/ " + "detail " * 60 + "the end" in text
+    assert "- 图 4：图片" in text
     assert "focal again" not in text
 
 
@@ -319,7 +331,7 @@ async def test_search_news_request_parse_and_cache() -> None:
     assert (len(seen), quota.calls, again) == (1, 1, stories)
     assert [s.name for s in stories] == ["Chip export rules change"]
     text = x.format_news(stories)
-    assert "1. Chip export rules change（更新于 10-28 10:58）" in text
+    assert "1. Chip export rules change（更新于北京时间 10-28 10:58）" in text
     assert "话题：Semiconductors" in text
     # Only the first three cluster posts are linked.
     assert (
@@ -394,8 +406,8 @@ async def test_read_url_adapter_returns_post_with_images() -> None:
         "Alice（@alice） 在 X 上的帖子",
         "fxtwitter",
     )
-    assert len(result.images) == 3
-    assert "the quoted claim" in result.text
+    assert len(result.images) == 4  # post, quote and the thread post's picture
+    assert "> the quoted\n> claim" in result.text  # every line of a multi-line quote stays inside the quote
 
 
 async def test_third_party_image_handle_goes_through_ssrf_guard() -> None:

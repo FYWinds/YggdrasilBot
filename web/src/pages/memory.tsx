@@ -18,6 +18,7 @@ import {
   listProfilesOptions,
   listTopicsOptions,
   lockGlossaryTermMutation,
+  restoreProfileFactMutation,
   updateGlossaryTermMutation,
 } from "@/client/@tanstack/react-query.gen";
 import type { GlossaryIn, GlossaryOut } from "@/client/types.gen";
@@ -227,7 +228,7 @@ function Topics({ groupId, group }: TabProps) {
                   variant="outline"
                   size="default"
                   title={`按当前阈值整理群 ${groupId} 的已结束话题？`}
-                  description="消息数和参与人数都低于阈值（设置 → memory.topic_archive_below_*）的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
+                  description="消息数和参与人数都低于阈值（设置 → memory.topic_archive_below_*），或整理任务算出的权重低于 memory.topic_archive_below_weight 的已结束话题会被归档，agent 搜不到，这里仍可查看。手动恢复过的话题也会再次归档。"
                   onConfirm={() => archiveSmall.mutate({ body: { group_id: groupId } })}
                 >
                   <ArchiveIcon data-icon="inline-start" /> 按阈值归档
@@ -252,6 +253,14 @@ function Topics({ groupId, group }: TabProps) {
               <div className="text-xs text-muted-foreground">
                 {fmtTime(t.start_at)} — {fmtTime(t.end_at)}
                 {groupId === null && ` · ${groupName(t.group_id)}`} · {t.msg_count} 条 · {t.participants.length} 人
+                {t.importance !== null && (
+                  <Hint content={t.importance_reason}>
+                    <span>
+                      {" "}
+                      · 重要度 {t.importance} · 权重 {t.weight?.toFixed(1)}
+                    </span>
+                  </Hint>
+                )}
               </div>
               <div className="flex items-center gap-2 font-medium">
                 {t.title}
@@ -590,11 +599,22 @@ function Profiles({ groupId, group }: TabProps) {
   );
 }
 
+const ARCHIVE_REASON: Record<string, string> = {
+  low: "重要度低",
+  duplicate: "与另一条重复",
+  cap: "超出每人上限",
+  outdated: "被新消息推翻",
+};
+
 function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_id: number; onClose: () => void }) {
   const groupName = useGroupName();
   const profile = useQuery(getProfileOptions({ path: { group_id, user_id } }));
   const removeFact = useMutation({ ...deleteProfileFactMutation(), onSuccess: () => toast.success("已删除") });
+  const restoreFact = useMutation({ ...restoreProfileFactMutation(), onSuccess: () => toast.success("已恢复") });
+  const [showArchived, setShowArchived] = useState(false);
   const p = profile.data;
+  const archived = p?.facts.filter((f) => f.archived_at !== null).length ?? 0;
+  const facts = p?.facts.filter((f) => showArchived || f.archived_at === null) ?? [];
   return (
     <DetailDialog
       open
@@ -618,27 +638,73 @@ function ProfileDialog({ group_id, user_id, onClose }: { group_id: number; user_
             <span className="text-muted-foreground">特点：</span>
             {p.traits.join("、") || "—"}
           </div>
-          <SectionHeader level={3} title="事实" />
-          {p.facts.length === 0 && <Empty>没有记录事实</Empty>}
-          {p.facts.length > 0 && (
+          <SectionHeader
+            level={3}
+            title="事实"
+            description="按权重排序；get_profile 给 agent 看权重（含时间衰减）最高的 10 条有效事实。归档的事实 agent 和画像更新都看不到，恢复后整理任务不再归档它。"
+            actions={
+              archived > 0 && (
+                <Button size="xs" variant="ghost" onClick={() => setShowArchived(!showArchived)}>
+                  {showArchived ? "隐藏已归档" : `显示已归档（${archived}）`}
+                </Button>
+              )
+            }
+          />
+          {facts.length === 0 && <Empty>{archived > 0 ? "有效事实都已归档" : "没有记录事实"}</Empty>}
+          {facts.length > 0 && (
             <ScrollArea viewportClassName="max-h-80">
               <div className="grid gap-1.5">
-                {p.facts.map((f) => (
-                  <div key={f.id} className="flex items-start justify-between gap-2 rounded-md border px-3 py-2">
+                {facts.map((f) => (
+                  <div
+                    key={f.id}
+                    className={cn(
+                      "flex items-start justify-between gap-2 rounded-md border px-3 py-2",
+                      f.archived_at !== null && "border-dashed text-muted-foreground",
+                    )}
+                  >
                     <div>
                       {f.fact}
-                      <div className="text-xs text-muted-foreground">{fmtTime(f.created_at)}</div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        {fmtTime(f.created_at)}
+                        {f.importance !== null && (
+                          <span>
+                            · 重要度 {f.importance} · 权重 {f.weight?.toFixed(1)}
+                          </span>
+                        )}
+                        {f.archived_at !== null && (
+                          <Badge variant="outline" className="border-dashed text-muted-foreground">
+                            <ArchiveIcon /> 已归档 · {ARCHIVE_REASON[f.archive_reason ?? ""] ?? "其他"}
+                          </Badge>
+                        )}
+                        {f.locked && (
+                          <Badge variant="outline">
+                            <LockIcon /> 管理员恢复
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                    <ConfirmButton
-                      size="xs"
-                      variant="ghost"
-                      title="删除这条事实？"
-                      description={f.fact}
-                      disabled={removeFact.isPending}
-                      onConfirm={() => removeFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
-                    >
-                      删除
-                    </ConfirmButton>
+                    <div className="flex shrink-0 gap-1">
+                      {f.archived_at !== null && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={restoreFact.isPending}
+                          onClick={() => restoreFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
+                        >
+                          <ArchiveRestoreIcon data-icon="inline-start" /> 恢复
+                        </Button>
+                      )}
+                      <ConfirmButton
+                        size="xs"
+                        variant="ghost"
+                        title="删除这条事实？"
+                        description={f.fact}
+                        disabled={removeFact.isPending}
+                        onConfirm={() => removeFact.mutate({ path: { group_id, user_id, fact_id: f.id } })}
+                      >
+                        删除
+                      </ConfirmButton>
+                    </div>
                   </div>
                 ))}
               </div>

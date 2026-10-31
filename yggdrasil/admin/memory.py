@@ -38,6 +38,9 @@ class TopicOut(BaseModel):
     msg_count: int
     status: str
     dirty: bool
+    importance: int | None = Field(description="整理任务给的重要度 1–5；未评分为空")
+    importance_reason: str | None
+    weight: float | None = Field(description="重要度 × 规模系数（消息数、参与人数）；未评分为空")
 
 
 def _topic_out(t: Topic) -> TopicOut:
@@ -53,6 +56,9 @@ def _topic_out(t: Topic) -> TopicOut:
         msg_count=t.msg_count,
         status=t.status,
         dirty=t.dirty,
+        importance=t.importance,
+        importance_reason=t.importance_reason,
+        weight=t.weight,
     )
 
 
@@ -123,8 +129,10 @@ async def archive_topic(topic_id: int, body: ArchiveIn, actor: Actor) -> TopicOu
         if body.archived:
             t.status = "archived"
         elif t.status == "archived":
-            # Profiles skip archived topics; a restored one is new to them (see Topic.closed_at).
+            # Profiles skip archived topics; a restored one is new to them (see Topic.closed_at). The restore
+            # also counts as its curation review, so the hourly curation won't archive it again.
             t.status, t.closed_at = "closed", datetime.now(UTC)
+            t.scored_at = t.scored_at or datetime.now(UTC)
         await c.session.flush()
         await c.session.refresh(t)
     return _topic_out(t)
@@ -140,7 +148,7 @@ class ArchiveSmallOut(BaseModel):
 
 @router.post("/topics/archive-small")
 async def archive_small_topics(body: ArchiveSmallIn, actor: Actor) -> ArchiveSmallOut:
-    """Apply the group's current archive thresholds to its finished topics."""
+    """Apply the group's current archive thresholds (size and curation weight) to its finished topics."""
     async with change(actor, "topic", "archive_small", body.group_id) as c:
         n = await topics.archive_closed(c.session, body.group_id)
         c.detail = {"group_id": body.group_id, "archived": n}
@@ -335,10 +343,31 @@ class FactOut(BaseModel):
     fact: str
     source_msg_ids: list[int]
     created_at: datetime
+    importance: int | None = Field(description="重要度 1–5（画像更新或整理任务给的）；未评分为空")
+    weight: float | None = Field(description="重要度，佐证消息多的略高；排序时还会按时间衰减")
+    archived_at: datetime | None = Field(description="归档时间；归档的事实 agent 和画像更新都看不到")
+    archive_reason: str | None = Field(
+        description="low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻"
+    )
+    locked: bool = Field(description="管理员恢复过：整理任务不再归档它")
 
 
 class ProfileDetail(ProfileOut):
     facts: list[FactOut]
+
+
+def _fact_out(f: UserProfileFact) -> FactOut:
+    return FactOut(
+        id=f.id,
+        fact=f.fact,
+        source_msg_ids=list(f.source_msg_ids),
+        created_at=f.created_at,
+        importance=f.importance,
+        weight=f.weight,
+        archived_at=f.archived_at,
+        archive_reason=f.archive_reason,
+        locked=f.locked,
+    )
 
 
 def _profile_out(p: UserProfile) -> ProfileOut:
@@ -390,12 +419,13 @@ async def get_profile(group_id: int, user_id: int) -> ProfileDetail:
         facts = await s.scalars(
             select(UserProfileFact)
             .where(UserProfileFact.group_id == group_id, UserProfileFact.user_id == user_id)
-            .order_by(UserProfileFact.id.desc())
+            .order_by(
+                UserProfileFact.archived_at.is_not(None),
+                UserProfileFact.weight.desc().nulls_last(),
+                UserProfileFact.id.desc(),
+            )
         )
-        fact_items = [
-            FactOut(id=f.id, fact=f.fact, source_msg_ids=list(f.source_msg_ids), created_at=f.created_at)
-            for f in facts.all()
-        ]
+        fact_items = [_fact_out(f) for f in facts.all()]
     return ProfileDetail(**_profile_out(p).model_dump(), facts=fact_items)
 
 
@@ -422,6 +452,22 @@ async def delete_profile_fact(group_id: int, user_id: int, fact_id: int, actor: 
         c.detail = {"group_id": group_id, "fact": f.fact}
         await c.session.delete(f)
     return Ok()
+
+
+@router.post("/profiles/{group_id}/{user_id}/facts/{fact_id}/restore")
+async def restore_profile_fact(group_id: int, user_id: int, fact_id: int, actor: Actor) -> FactOut:
+    """Bring an archived fact back; it is locked, so curation never archives it again."""
+    async with change(actor, "profile_fact", "restore", fact_id) as c:
+        f = await c.session.get(UserProfileFact, fact_id)
+        if f is None or f.group_id != group_id or f.user_id != user_id:
+            raise not_found("事实")
+        if f.archived_at is None:
+            raise conflict("这条事实没有归档")
+        c.detail = {"group_id": group_id, "fact": f.fact, "archive_reason": f.archive_reason}
+        f.archived_at, f.archive_reason, f.locked = None, None, True
+        await c.session.flush()
+        await c.session.refresh(f)
+    return _fact_out(f)
 
 
 class PipelineOut(BaseModel):

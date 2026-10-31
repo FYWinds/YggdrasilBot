@@ -10,8 +10,10 @@ from sqlalchemy import (
     Identity,
     Index,
     PrimaryKeyConstraint,
+    SmallInteger,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,6 +56,13 @@ class Topic(Base, TimestampMixin):
     # Set when the topic closes and again when an admin restores it from archived: profiles consume
     # closed topics in (closed_at, id) order, since topics close in a different order than they start.
     closed_at: Mapped[datetime | None]
+    # Curation (memory.curation): importance 1–5 from the model with its reason, and a weight that also counts
+    # messages and participants. scored_at: when curation rated it, or when an admin restored it from archived
+    # (then importance may be None; curation leaves it alone either way).
+    importance: Mapped[int | None] = mapped_column(SmallInteger)
+    importance_reason: Mapped[str | None] = mapped_column(Text)
+    weight: Mapped[float | None] = mapped_column(Float)
+    scored_at: Mapped[datetime | None]
 
 
 class TopicMessage(Base):
@@ -134,6 +143,14 @@ class UserProfileFact(Base, TimestampMixin):
     user_id: Mapped[int]
     fact: Mapped[str] = mapped_column(Text)
     source_msg_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    # Curation (memory.curation): importance 1–5 and a weight that also counts the supporting messages.
+    importance: Mapped[int | None] = mapped_column(SmallInteger)
+    weight: Mapped[float | None] = mapped_column(Float)
+    scored_at: Mapped[datetime | None]
+    # Archived facts are soft-deleted: hidden from the agent and the profile updater, restorable in the console.
+    archived_at: Mapped[datetime | None]
+    archive_reason: Mapped[str | None] = mapped_column(Text)  # low | duplicate | cap | outdated
+    locked: Mapped[bool] = mapped_column(default=False, server_default=false())  # restored by an admin: kept
 
 
 class MemoryVector(Base):

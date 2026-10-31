@@ -3,6 +3,8 @@
 Every query is scoped to one group and excludes recalled messages.
 """
 
+import math
+import re
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -17,6 +19,7 @@ from yggdrasil.db.base import EMBED_DIM
 from yggdrasil.db.models import GlossaryTerm, Message, Topic, UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.llm import registry
+from yggdrasil.memory.common import decay, fact_rank
 from yggdrasil.memory.vectors import query_text
 from yggdrasil.runtime import snapshot
 
@@ -28,7 +31,17 @@ RERANK_MAX_CHARS = 1200
 RECENT_CAP = 300
 QQ_ID_LOOKBACK = timedelta(days=7)
 GLOSSARY_MAX_DISTANCE = 0.45
-PROFILE_FACTS = 20
+PROFILE_FACTS = 10
+# Vector hits that share no word with the query need this cosine similarity (qwen3-embedding-0.6b on prod data:
+# unrelated chunks top out around 0.52, related ones without the query's words start near 0.62).
+SEMANTIC_MIN_SIMILARITY = 0.6
+HIT_MAX_CHARS = 800  # what one hit shows the model
+EXCERPT_MESSAGE_CHARS = 300  # one chat line inside a chunk excerpt
+_CHUNK_LINE = re.compile(r"^\[\d{2}-\d{2} \d{2}:\d{2}\] ", re.MULTILINE)  # a message's first line in chunk text
+# Topic hits rank by similarity × (1 + TOPIC_WEIGHT_SPREAD · log2(curation weight with decay / pivot)): of two
+# topics matching about as well, the more important one goes first. Unscored topics are neutral.
+TOPIC_WEIGHT_PIVOT = 5.0  # an average topic (50 messages, 9 people) of importance 3
+TOPIC_WEIGHT_SPREAD = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +250,8 @@ async def _query_vector(query: str) -> tuple[int, list[float]] | None:
 _VECTOR_SQL = """
 SELECT v.kind, v.ref_id, v.embedding <=> CAST(:qv AS halfvec) AS dist,
        COALESCE(c.text, t.title || E'\\n' || t.summary, d.summary) AS body,
-       COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') AS at
+       COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') AS at,
+       t.weight
 FROM memory_vectors v
 LEFT JOIN message_chunks c ON v.kind = 'chunk' AND c.id = v.ref_id
 LEFT JOIN topics t ON v.kind = 'topic' AND t.id = v.ref_id AND t.status <> 'archived'
@@ -261,8 +275,8 @@ async def _vector(
     if since is not None:
         conds.append("COALESCE(c.end_at, t.end_at, (d.day + 1)::timestamp AT TIME ZONE 'Asia/Shanghai') >= :since")
         params["since"] = since
-    if until is not None:
-        conds.append("COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') < :until")
+    if until is not None:  # a chunk must have ended before it: one running past it holds the asking message
+        conds.append("COALESCE(c.end_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') < :until")
         params["until"] = until
     if user_id is not None:
         conds.append(
@@ -276,7 +290,20 @@ async def _vector(
     await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
     stmt = text(sql).bindparams(bindparam("qv", type_=HALFVEC(EMBED_DIM)))
     rows = (await session.execute(stmt, params)).all()
-    return [HistoryHit(r.kind, r.ref_id, r.body, r.at, 1.0 - float(r.dist)) for r in rows]
+    half_life = snapshot().settings(group_id).memory.weight_half_life_days
+    now = datetime.now(UTC)
+    hits = [HistoryHit(r.kind, r.ref_id, r.body, r.at, 1.0 - float(r.dist)) for r in rows]
+    factors = [_topic_factor(r.weight, now - r.at, half_life) for r in rows]
+    # Scores stay plain similarities (SEMANTIC_MIN_SIMILARITY applies to them); only the order counts the weight.
+    order = sorted(range(len(hits)), key=lambda i: -hits[i].score * factors[i])
+    return [hits[i] for i in order]
+
+
+def _topic_factor(weight: float | None, age: timedelta, half_life_days: float) -> float:
+    if weight is None:
+        return 1.0
+    ranked = max(weight * decay(age, half_life_days), 0.1)
+    return 1 + TOPIC_WEIGHT_SPREAD * math.log2(ranked / TOPIC_WEIGHT_PIVOT)
 
 
 async def _rerank(query: str, hits: list[HistoryHit], top_k: int) -> list[HistoryHit] | None:
@@ -290,6 +317,83 @@ async def _rerank(query: str, hits: list[HistoryHit], top_k: int) -> list[Histor
     return [replace(hits[i], score=score) for i, score in ranked[:top_k] if 0 <= i < len(hits)]
 
 
+async def _query_terms(session: AsyncSession, query: str) -> list[str]:
+    """The query's words as the BM25 index tokenizes them (jieba, lowercased), without punctuation, and without
+    one-character words unless there is nothing else."""
+    rows = await session.scalars(text("SELECT unnest(CAST(CAST(:q AS pdb.jieba) AS text[]))"), {"q": query})
+    words = list(dict.fromkeys(w for w in rows if any(c.isalnum() for c in w)))
+    return [w for w in words if len(w) > 1] or words
+
+
+def _clip(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _around(s: str, terms: Sequence[str], limit: int, start: int = 0) -> str:
+    """``s`` within ``limit`` characters, showing its first query word from ``start`` on (``s[:start]``, e.g. a chat
+    line's time and sender, always stays), ``…`` marking the cuts."""
+    if len(s) <= limit:
+        return s
+    low = s.lower()
+    found = [(i, len(w)) for w in terms if (i := low.find(w, start)) >= 0]
+    room = limit - start - 2  # what is left between the head and the two ``…``
+    if not found or room < 20 or sum(min(found)) <= limit - 1:
+        return _clip(s, limit)
+    pos = min(found)[0]
+    end = min(len(s), max(start, pos - room // 3) + room)
+    begin = max(start, end - room)
+    return s[:start] + ("…" if begin > start else "") + s[begin:end] + ("…" if end < len(s) else "")
+
+
+def _said(line: str) -> int:
+    """Where what was said starts in a chat line (after ``[time] who: ``)."""
+    return line.find(": ") + 2 if ": " in line else 0
+
+
+def _excerpt(chunk: str, terms: Sequence[str]) -> str | None:
+    """The chunk's chat lines that contain query words, each with the lines next to it and ``…`` for the gaps,
+    within ``HIT_MAX_CHARS``; the lines with the most distinct words go in first. None: no line has one."""
+    starts = [m.start() for m in _CHUNK_LINE.finditer(chunk)]
+    if not starts or starts[0] != 0:
+        starts.insert(0, 0)
+    full = [chunk[a:b].strip() for a, b in zip(starts, [*starts[1:], len(chunk)])]
+    # Words count over whole messages (what was said, not who said it); long ones are cut around their match.
+    words = [sum(w in line[_said(line) :].lower() for w in terms) for line in full]
+    lines = [_around(line, terms, EXCERPT_MESSAGE_CHARS, _said(line)) for line in full]
+    ranked = sorted((i for i, n in enumerate(words) if n), key=lambda i: -words[i])
+    keep: set[int] = set()
+    size = 0
+    for i in ranked:
+        added = {j for j in (i - 1, i, i + 1) if 0 <= j < len(lines)} - keep
+        cost = sum(len(lines[j]) + 1 for j in added)
+        if keep and size + cost > HIT_MAX_CHARS:
+            break
+        keep |= added
+        size += cost
+    if not keep:
+        return None
+    out: list[str] = []
+    for j in sorted(keep):
+        if out and j - 1 not in keep:
+            out.append("…")
+        out.append(lines[j])
+    return _clip("\n".join(out), HIT_MAX_CHARS)
+
+
+def _shown(hit: HistoryHit, terms: Sequence[str]) -> HistoryHit | None:
+    """A vector hit as the model sees it: a chunk cut down to its lines with query words, topics and digests as is.
+    Hits without any query word stay only when the vectors are close (None: dropped)."""
+    if hit.kind == "chunk":
+        excerpt = _excerpt(hit.text, terms)
+        if excerpt is not None:
+            return replace(hit, text=excerpt)
+    elif any(w in hit.text.lower() for w in terms):
+        return replace(hit, text=_around(hit.text, terms, HIT_MAX_CHARS))
+    if hit.score < SEMANTIC_MIN_SIMILARITY:
+        return None
+    return replace(hit, text=_clip(hit.text, HIT_MAX_CHARS))
+
+
 async def search_history(
     group_id: int,
     query: str,
@@ -299,7 +403,10 @@ async def search_history(
     user_id: int | None = None,
     top_k: int = 12,
 ) -> list[HistoryHit]:
-    """BM25 over messages + vectors over chunks/topics/digests, RRF-fused, then reranked if a rerank route exists."""
+    """BM25 over messages + vectors over chunks/topics/digests, RRF-fused, then reranked if a rerank route exists.
+
+    ``until`` excludes messages from then on and chunks running past it (pass the asking message's time).
+    """
     query = query.strip()
     if not query or top_k <= 0:
         return []
@@ -311,6 +418,9 @@ async def search_history(
     async with get_session() as session:
         lexical = await _bm25(session, group_id, query, since, until, user_id)
         semantic = await _vector(session, group_id, *qv, since, until, user_id) if qv else []
+        terms = await _query_terms(session, query) if semantic or lexical else []
+    lexical = [replace(h, text=_around(h.text, terms, HIT_MAX_CHARS)) for h in lexical]
+    semantic = [s for h in semantic if (s := _shown(h, terms))]
     by_key = {(h.kind, h.ref_id): h for h in (*semantic, *lexical)}
     fused = rrf_fuse([[(h.kind, h.ref_id) for h in lexical], [(h.kind, h.ref_id) for h in semantic]])
     pool = [replace(by_key[key], score=score) for key, score in fused[: max(RERANK_POOL, top_k)]]
@@ -414,7 +524,8 @@ async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[Glos
 
 
 async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileView]:
-    """Profiles of the given users (missing and opted-out users are absent)."""
+    """Profiles of the given users (missing and opted-out users are absent), each with its ``PROFILE_FACTS``
+    highest-ranked active facts (weight with recency decay; archived facts never show)."""
     if not user_ids:
         return {}
     async with get_session() as session:
@@ -429,15 +540,23 @@ async def profiles(group_id: int, user_ids: Sequence[int]) -> dict[int, ProfileV
         ).all()
         if not rows:
             return {}
+        half_life = snapshot().settings(group_id).memory.weight_half_life_days
         ranked = (
             select(
                 UserProfileFact.user_id,
                 UserProfileFact.fact,
                 func.row_number()
-                .over(partition_by=UserProfileFact.user_id, order_by=UserProfileFact.id.desc())
+                .over(
+                    partition_by=UserProfileFact.user_id,
+                    order_by=(fact_rank(half_life).desc(), UserProfileFact.id.desc()),
+                )
                 .label("rn"),
             )
-            .where(UserProfileFact.group_id == group_id, UserProfileFact.user_id.in_([p.user_id for p in rows]))
+            .where(
+                UserProfileFact.group_id == group_id,
+                UserProfileFact.user_id.in_([p.user_id for p in rows]),
+                UserProfileFact.archived_at.is_(None),
+            )
             .subquery()
         )
         facts: dict[int, list[str]] = {}

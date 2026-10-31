@@ -5,20 +5,26 @@ wrote at least ``profile_min_messages`` messages. Topics are consumed in close o
 (``closed_at``, then id), not id order: topics close in a different order than they start,
 so an id watermark skipped a topic still open when a newer one was consumed. Every fact
 keeps the ids of the messages supporting it. Opted-out users are skipped entirely.
+
+The model sees the user's highest-ranked active facts (weight with recency decay) and rates
+each new fact itself; facts it rates below ``fact_archive_below_importance`` are stored archived,
+and facts it removes are archived too. Curation (``memory.curation``) rates whatever is left unrated,
+merges duplicates and caps the active facts per user.
 """
 
 from collections.abc import Collection, Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, exists, func, select, text, true, tuple_
+from sqlalchemy import exists, func, select, text, true, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message, Topic, TopicMessage, UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import llm
-from yggdrasil.memory.common import format_line, people_for
+from yggdrasil.memory.common import fact_rank, fact_weight, format_line, people_for
+from yggdrasil.memory.curation import clamp_importance
 from yggdrasil.memory.search import VIEW_COLUMNS, MessageView
 from yggdrasil.people import UNKNOWN_NAME, clean_name
 from yggdrasil.prompts import render
@@ -52,6 +58,9 @@ LIMIT :lim
 class NewFact(BaseModel):
     fact: str
     source_msg_ids: list[int]
+    importance: int | None = Field(
+        default=None, description="重要度 1–5：5 身份、技能、长期项目、稳定偏好；1 一次性的小事、玩笑"
+    )
 
 
 class ProfileUpdate(BaseModel):
@@ -69,7 +78,8 @@ def validate_update(update: ProfileUpdate, shown_msg_ids: Collection[int], fact_
     for f in update.new_facts:
         sources = [i for i in dict.fromkeys(f.source_msg_ids) if i in shown]
         if f.fact.strip() and sources:
-            facts.append(NewFact(fact=f.fact.strip(), source_msg_ids=sources))
+            importance = None if f.importance is None else clamp_importance(f.importance)
+            facts.append(NewFact(fact=f.fact.strip(), source_msg_ids=sources, importance=importance))
     return update.model_copy(
         update={
             "summary": update.summary.strip(),
@@ -84,6 +94,7 @@ def validate_update(update: ProfileUpdate, shown_msg_ids: Collection[int], fact_
 async def update_user(group_id: int, user_id: int) -> bool:
     """Update one profile from its new topics; False when skipped (opted out / nothing new)."""
     snap = snapshot()
+    mem = snap.settings(group_id).memory
     async with get_session() as session:
         profile = await session.get(UserProfile, (group_id, user_id))
         if profile is not None and profile.opted_out:
@@ -137,8 +148,12 @@ async def update_user(group_id: int, user_id: int) -> bool:
         facts = (
             await session.execute(
                 select(UserProfileFact.id, UserProfileFact.fact)
-                .where(UserProfileFact.group_id == group_id, UserProfileFact.user_id == user_id)
-                .order_by(UserProfileFact.id.desc())
+                .where(
+                    UserProfileFact.group_id == group_id,
+                    UserProfileFact.user_id == user_id,
+                    UserProfileFact.archived_at.is_(None),
+                )
+                .order_by(fact_rank(mem.weight_half_life_days).desc(), UserProfileFact.id.desc())
                 .limit(MAX_FACTS_IN_PROMPT)
             )
         ).all()
@@ -186,16 +201,33 @@ async def update_user(group_id: int, user_id: int) -> bool:
         await session.execute(stmt.on_conflict_do_update(index_elements=["group_id", "user_id"], set_=values))
         if result.remove_fact_ids:
             await session.execute(
-                delete(UserProfileFact).where(
+                update(UserProfileFact)
+                .where(
                     UserProfileFact.group_id == group_id,
                     UserProfileFact.user_id == user_id,
                     UserProfileFact.id.in_(result.remove_fact_ids),
+                    UserProfileFact.archived_at.is_(None),
+                    UserProfileFact.locked.is_(False),
+                )
+                .values(archived_at=func.now(), archive_reason="outdated")
+            )
+        now = datetime.now(UTC)
+        for f in result.new_facts:
+            low = f.importance is not None and f.importance < mem.fact_archive_below_importance
+            session.add(
+                UserProfileFact(
+                    group_id=group_id,
+                    user_id=user_id,
+                    fact=f.fact,
+                    source_msg_ids=f.source_msg_ids,
+                    # Unrated facts are left to curation.
+                    importance=f.importance,
+                    weight=None if f.importance is None else fact_weight(f.importance, len(f.source_msg_ids)),
+                    scored_at=None if f.importance is None else now,
+                    archived_at=now if low else None,
+                    archive_reason="low" if low else None,
                 )
             )
-        session.add_all(
-            UserProfileFact(group_id=group_id, user_id=user_id, fact=f.fact, source_msg_ids=f.source_msg_ids)
-            for f in result.new_facts
-        )
     return True
 
 

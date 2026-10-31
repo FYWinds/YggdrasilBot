@@ -80,9 +80,14 @@ class NapCatAPI:
     async def get_group_list(self) -> list[GroupInfo]:
         return [_parse(GroupInfo, g) for g in await self._call("get_group_list")]
 
-    async def get_group_member_info(self, *, group_id: int, user_id: int, no_cache: bool = False) -> MemberInfo:
+    async def get_group_member_info(
+        self, *, group_id: int, user_id: int, no_cache: bool = False, reply_timeout: float | None = None
+    ) -> MemberInfo:
         return _parse(
-            MemberInfo, await self._call("get_group_member_info", group_id=group_id, user_id=user_id, no_cache=no_cache)
+            MemberInfo,
+            await self._call(
+                "get_group_member_info", group_id=group_id, user_id=user_id, no_cache=no_cache, _timeout=reply_timeout
+            ),
         )
 
     # --- messages ---------------------------------------------------------
@@ -103,11 +108,21 @@ class NapCatAPI:
 
     # No source/summary/prompt/news overrides: a preview that doesn't match the nodes trips QQ's risk
     # control ("risky link" warnings); NapCat derives the real one from the node contents.
-    async def send_group_forward_msg(self, *, group_id: int, messages: Segments) -> ForwardResult:
-        return _parse(ForwardResult, await self._call("send_group_forward_msg", group_id=group_id, messages=messages))
+    async def send_group_forward_msg(
+        self, *, group_id: int, messages: Segments, reply_timeout: float | None = None
+    ) -> ForwardResult:
+        return _parse(
+            ForwardResult,
+            await self._call("send_group_forward_msg", group_id=group_id, messages=messages, _timeout=reply_timeout),
+        )
 
-    async def send_private_forward_msg(self, *, user_id: int, messages: Segments) -> ForwardResult:
-        return _parse(ForwardResult, await self._call("send_private_forward_msg", user_id=user_id, messages=messages))
+    async def send_private_forward_msg(
+        self, *, user_id: int, messages: Segments, reply_timeout: float | None = None
+    ) -> ForwardResult:
+        return _parse(
+            ForwardResult,
+            await self._call("send_private_forward_msg", user_id=user_id, messages=messages, _timeout=reply_timeout),
+        )
 
     async def get_msg(self, *, message_id: int) -> MessageRecord:
         return _parse(MessageRecord, await self._call("get_msg", message_id=message_id))

@@ -55,7 +55,7 @@ def _card(raw: str) -> tuple[str, str | None]:
     return str(title).strip() or "卡片", url
 
 
-def _multimsg_resid(raw: str) -> str | None:
+def multimsg_resid(raw: str) -> str | None:
     """Merged forwards the bot itself sent come back from get_msg as a ``com.tencent.multimsg``
     json card instead of a ``forward`` segment; its ``resid`` works with get_forward_msg."""
     try:
@@ -75,13 +75,19 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
     out = Normalized(text="")
     parts: list[str] = []
     rendered_at = False  # previous part is a mention rendered through ``mention``
+    # QQ follows a markdown segment or a market-face image with a plain-text fallback of the same content
+    # (the markdown source, the ``[summary]``); that copy is dropped so the content shows once.
+    echo: str | None = None
     for seg in segments:
         after_at, rendered_at = rendered_at, False
+        fallback, echo = echo, None
         kind = seg.get("type", "")
         data = seg.get("data") or {}
         match kind:
             case "text":
                 text = str(data.get("text", ""))
+                if text == fallback:
+                    continue
                 if after_at and text[:1].isspace():
                     text = text[1:]  # the at already ends with a space (the stored form keeps both)
                 parts.append(text)
@@ -110,10 +116,13 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
                 summary = str(data.get("summary") or "表情包").strip("[]")
                 parts.append(f"[表情包:{summary}]")
                 out.attachments.append(Attachment("mface", data))
+                echo = data.get("summary")
             case "image":
                 summary = str(data.get("summary") or "").strip("[]")
                 parts.append(f"[表情包:{summary or '动画表情'}]" if is_sticker_image(data) else "[图片]")
                 out.attachments.append(Attachment("image", data))
+                if data.get("emoji_id"):
+                    echo = data.get("summary")
             case "record" | "video":
                 parts.append(f"[{_RECORD_TYPES[kind]}]")
                 out.attachments.append(Attachment(kind, data))
@@ -123,7 +132,7 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
             case "forward":
                 parts.append("[合并转发]")
                 out.attachments.append(Attachment("forward", data))
-            case "json" if resid := _multimsg_resid(str(data.get("data", ""))):
+            case "json" if resid := multimsg_resid(str(data.get("data", ""))):
                 parts.append("[合并转发]")
                 out.attachments.append(Attachment("forward", {"id": resid}))
             case "json":
@@ -139,7 +148,9 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
             case "dice" | "rps":
                 parts.append(f"[{kind}:{data.get('result', '')}]")
             case "markdown":
-                parts.append(f"[markdown]{data.get('content', '')}")
+                content = str(data.get("content", ""))
+                parts.append(f"[markdown]{content}")
+                echo = content
             case _:
                 parts.append(f"[{kind}]")
     out.text = "".join(parts).strip()

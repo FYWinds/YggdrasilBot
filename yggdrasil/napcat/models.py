@@ -88,6 +88,8 @@ class MemberInfo(_Model):
     nickname: str = ""
     card: str = ""
     role: str = "member"
+    # An official QQ bot account, as QQ classifies it (SnowLuma checks Tencent's robot UIN ranges).
+    is_robot: bool = False
 
 
 class OcrText(_Model):

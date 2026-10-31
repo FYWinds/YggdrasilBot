@@ -20,6 +20,7 @@ import json
 import re
 import secrets
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from pydantic_ai.workspaces import WorkspaceError
 from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import ModelImage, media_bytes, model_image
+from yggdrasil.agent.media import ModelImage, is_image, media_bytes, media_type, model_image
 from yggdrasil.agent.tools import (
     MAX_IMAGES,
     ToolResult,
@@ -408,9 +409,34 @@ async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     h = await _resolve(ctx, handle, "file", "image")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
+    if not (h.data.get("file") or h.data.get("name")) and name == "file":
+        name = ""  # media_bytes' placeholder: nothing to go by
+    fallback = re.sub(r"\W+", "-", handle).strip("-") or "file"
+    if is_image(blob):
+        fallback += "." + media_type(blob).removeprefix("image/").replace("jpeg", "jpg")
     with _sandbox_errors():
-        path = await session.put_bytes(f"in/{safe_name(name, handle.replace('#', ''))}", blob)
+        rel = await _free_in_path(session, safe_name(name, fallback))
+        path = await session.put_bytes(rel, blob)
     return f"{handle} 已放到 {path}（{len(blob)} 字节）"
+
+
+# Paths handed out per session, so parallel sandbox_put calls in one run never pick the same name.
+_TAKEN: weakref.WeakKeyDictionary[Session, set[str]] = weakref.WeakKeyDictionary()
+
+
+async def _free_in_path(session: Session, name: str) -> str:
+    """``in/<name>``, or ``in/<stem>-2<suffix>``... when that file exists or this run already claimed it."""
+    taken = _TAKEN.setdefault(session, set())
+    stem, suffix = PurePosixPath(name).stem, PurePosixPath(name).suffix
+    n = 1
+    while True:
+        rel = f"in/{name}" if n == 1 else f"in/{stem}-{n}{suffix}"
+        n += 1
+        if rel in taken:
+            continue
+        taken.add(rel)  # claimed before awaiting, so a concurrent call skips it
+        if not await session.backend.exists(f"/workspace/{rel}"):
+            return rel
 
 
 async def attach_image(

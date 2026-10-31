@@ -181,7 +181,7 @@ export type BotReply = {
     /**
      * Mode
      *
-     * forward：查证后用合并转发作答；silent：不回复（没有实际问题、不是在跟你说话或不该接的请求）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
+     * forward：查证后用合并转发作答（不接或做不了的直接请求也用它简短说明）；silent：不回复（不是在跟你说话、没有实际内容）；done：已经用操作类工具完成了请求（比如撤回），不再发消息
      */
     mode: 'forward' | 'silent' | 'done';
     /**
@@ -471,6 +471,36 @@ export type FactOut = {
      * Created At
      */
     created_at: string;
+    /**
+     * Importance
+     *
+     * 重要度 1–5（画像更新或整理任务给的）；未评分为空
+     */
+    importance: number | null;
+    /**
+     * Weight
+     *
+     * 重要度，佐证消息多的略高；排序时还会按时间衰减
+     */
+    weight: number | null;
+    /**
+     * Archived At
+     *
+     * 归档时间；归档的事实 agent 和画像更新都看不到
+     */
+    archived_at: string | null;
+    /**
+     * Archive Reason
+     *
+     * low 重要度低于阈值，duplicate 与另一条重复，cap 超出每人上限，outdated 被新消息推翻
+     */
+    archive_reason: string | null;
+    /**
+     * Locked
+     *
+     * 管理员恢复过：整理任务不再归档它
+     */
+    locked: boolean;
 };
 
 /**
@@ -2757,6 +2787,22 @@ export type TopicOut = {
      * Dirty
      */
     dirty: boolean;
+    /**
+     * Importance
+     *
+     * 整理任务给的重要度 1–5；未评分为空
+     */
+    importance: number | null;
+    /**
+     * Importance Reason
+     */
+    importance_reason: string | null;
+    /**
+     * Weight
+     *
+     * 重要度 × 规模系数（消息数、参与人数）；未评分为空
+     */
+    weight: number | null;
 };
 
 /**
@@ -4963,6 +5009,44 @@ export type DeleteProfileFactResponses = {
 };
 
 export type DeleteProfileFactResponse = DeleteProfileFactResponses[keyof DeleteProfileFactResponses];
+
+export type RestoreProfileFactData = {
+    body?: never;
+    path: {
+        /**
+         * Group Id
+         */
+        group_id: number;
+        /**
+         * User Id
+         */
+        user_id: number;
+        /**
+         * Fact Id
+         */
+        fact_id: number;
+    };
+    query?: never;
+    url: '/memory/profiles/{group_id}/{user_id}/facts/{fact_id}/restore';
+};
+
+export type RestoreProfileFactErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RestoreProfileFactError = RestoreProfileFactErrors[keyof RestoreProfileFactErrors];
+
+export type RestoreProfileFactResponses = {
+    /**
+     * Successful Response
+     */
+    200: FactOut;
+};
+
+export type RestoreProfileFactResponse = RestoreProfileFactResponses[keyof RestoreProfileFactResponses];
 
 export type ListPipelinesData = {
     body?: never;

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 from typing import Any, cast
@@ -17,6 +18,7 @@ from yggdrasil.agent.sandbox_tools import (
     format_sh,
     py,
     safe_name,
+    sandbox_put,
     sh,
     suite_enabled,
 )
@@ -229,6 +231,9 @@ class FakeBackend:
     async def write_bytes(self, path: str, data: bytes) -> None:
         self.files[path] = data
 
+    async def exists(self, path: str) -> bool:
+        return path in self.files
+
     async def exec(self, argv: list[str], *, seconds: float = 60, audit: str | None = None, **_: Any) -> _Exec:
         self.calls.append(list(argv))
         if audit is not None:
@@ -249,6 +254,14 @@ class FakeSession:
         if path not in self.files:
             raise SandboxError(f"读取失败：文件不存在 {path}")
         return self.files[path]
+
+    async def require(self) -> str:
+        return "ws"
+
+    async def put_bytes(self, rel_path: str, data: bytes) -> str:
+        path = f"/workspace/{rel_path}"
+        await self.backend.write_bytes(path, data)
+        return path
 
     async def publish(self, port: int) -> Link:
         if port == 9999:
@@ -286,6 +299,33 @@ async def test_sh_writes_the_script_and_runs_the_helper():
     assert session.backend.audits[0].startswith(f"sh {step}: echo ok")
     assert text == "[工作区] 这是新建的空工作区。\n[工作区] 截到 100 秒\n[退出码 0，用时 0.2 秒]\nok"
     assert ctx.deps.tool_counts["sh"] == 1
+
+
+async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.MonkeyPatch):
+    async def fake_media(_api: Any, _gid: Any, h: Any, _max: int) -> tuple[bytes, str]:
+        return h.data["blob"], str(h.data.get("name") or "file")
+
+    monkeypatch.setattr(sandbox_tools, "media_bytes", fake_media)
+    session = FakeSession({})
+    session.backend.files["/workspace/in/report.csv"] = b"old"
+    ctx = _ctx(session)
+    img1 = ctx.deps.handles.add("image", {"blob": _png("red")})
+    img2 = ctx.deps.handles.add("image", {"blob": _png("blue")})
+    doc = ctx.deps.handles.add("file", {"blob": b"a,b\n", "name": "report.csv"})
+    named = ctx.deps.handles.add("file", {"blob": b"x", "name": "notes.txt"})
+    keys = [k for k in (img1, img2, doc, named) if k]
+    assert len(keys) == 4
+    parallel = await asyncio.gather(sandbox_put(ctx, keys[0]), sandbox_put(ctx, keys[1]))
+    texts = [str(t) for t in parallel] + [str(await sandbox_put(ctx, k)) for k in keys[2:]]
+    files = session.backend.files
+    assert files["/workspace/in/img-1.png"] == _png("red")
+    assert files["/workspace/in/img-2.png"] == _png("blue")
+    assert files["/workspace/in/report.csv"] == b"old"
+    assert files["/workspace/in/report-2.csv"] == b"a,b\n"
+    assert files["/workspace/in/notes.txt"] == b"x"
+    assert "/workspace/in/img-1.png" in texts[0]
+    assert "/workspace/in/img-2.png" in texts[1]
+    assert "/workspace/in/report-2.csv" in texts[2]
 
 
 async def test_helper_failure_is_a_tool_error_text():

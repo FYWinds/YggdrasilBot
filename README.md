@@ -29,9 +29,9 @@ Linux workspace. All of it is configured live from a web dashboard.
 
 | | |
 |---|---|
-| **Answers when addressed** | Triggers on an @mention, a reply to the bot, or its name in the text. Trigger rules (keywords, regex, scope, roles, cooldowns, priorities) are data, edited and tested in the dashboard. |
+| **Answers when addressed** | Triggers on an @mention, a reply to the bot, or its name in the text. Trigger rules (keywords, regex, scope, roles, cooldowns, priorities) are data, edited and tested in the dashboard. Other bots never trigger it: accounts tagged `[bot]`, official QQ bots and an ignore list. |
 | **Checks before it answers** | The chat agent searches the web, reads the sources, and looks up the group's own history before it writes. Replies are QQ merged-forward cards with sections and cited sources. The agent may also decide a message wasn't meant for it and stay silent. |
-| **TL;DR** | Reply `tldr` / `太长不看` / `总结一下` to a message, link, file or forwarded chat log and get a summary of it. |
+| **TL;DR** | Reply `tldr` / `太长不看` / `总结一下` to a message, link, file or forwarded chat log and get a summary of it. Asking again for the same target within a few minutes gets a reaction instead of a second summary. |
 | **Persona and prompts** | Name, voice, reply style, quoting and status reactions per group; every prompt is a Jinja template you can override. |
 | **Operations by chat** | Superusers can ask the ops agent in private chat to inspect or change configuration in natural language, and approve or reject held replies with `通过` / `拒绝` / `改`. |
 
@@ -39,7 +39,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 
 | Input | How |
 |---|---|
-| Links | `read_url`: fast HTTP extraction with a browser TLS fingerprint (curl_cffi) and site adapters (bilibili, GitHub, YouTube, Hacker News, Telegram, X, ...), then a real Chrome for JavaScript-only or blocked pages, then (optionally) the DeepSeek Fetch API for pages neither can read from your IP, such as many Chinese platforms. Login walls, captchas and anti-bot block pages come back as a clear error, not a hallucinated summary. |
+| Links | `read_url`: fast HTTP extraction with a browser TLS fingerprint (curl_cffi) and site adapters (bilibili and YouTube videos with their subtitles as a timed transcript, GitHub repos, folders, files, issues, pull requests and profiles through the public API, Tangled code, Hacker News, Telegram, X, Statuspage incidents, Ubuntu CVEs, Hugging Face model and dataset cards, MSN articles, ...), then a real Chrome for JavaScript-only or blocked pages, then (optionally) the DeepSeek Fetch API for pages neither can read from your IP, such as many Chinese platforms. A link's `#fragment` starts the text at that section, and JSON API responses are compacted (no ids, API cross-links or signatures). Login walls, captchas, cookie-consent walls and anti-bot block pages come back as a clear error, not a hallucinated summary. |
 | X | `read_x` reads a post with its full text, quoted post, poll, community note, conversation and images through FxTwitter, falling back to the official X API. `search_x` searches X News stories (Grok-written summaries) and recent posts through the official X API, which is pay per use; its bearer token is stored as a search provider. |
 | Files | PDF, Office documents, text and code via markitdown and pypdfium2. Scanned PDFs are sent to vision models as page images. |
 | Images | Vision models see the original; otherwise a vision route describes and transcribes it (OCR fallback). Animated GIF/WebP stickers become one sheet of up to 16 frames, sampled where the picture changes (every 0.1–0.3 s), because models only read an animation's first frame. Images from earlier in the chat can be opened by message id, and expired QQ image links are re-signed transparently. |
@@ -52,8 +52,9 @@ The worker turns the raw message stream into memory the agent can search:
 
 - **Topics**: messages are segmented into topics with titles, summaries, keywords and participants. Topics close when a conversation goes idle; recalled messages trigger a recompute.
 - **Glossary**: group slang and in-jokes are mined nightly and defined from real examples.
-- **Profiles**: per-member interests and recurring themes, built from closed topics.
-- **Daily digests**: one summary of each day.
+- **Profiles**: per-member interests, recurring themes and facts, built from closed topics. The `get_profile` tool shows the ten highest-weighted facts.
+- **Curation**: an hourly job rates closed topics and profile facts 1–5 with the topic and profile routes, weights them by size, supporting messages and age, merges duplicate facts, keeps at most `memory.facts_per_user` active facts per member, and archives what falls below `memory.topic_archive_below_weight` / `memory.fact_archive_below_importance`. Archived items leave search, digests, profile updates and prompts but stay in the console, where they can be restored.
+- **Daily digests**: one summary of each day in a fixed plain-text format (overview, then numbered events with message counts and participants).
 - **Hybrid search**: BM25 with the jieba tokenizer (ParadeDB `pg_search`) plus pgvector embeddings, fused with RRF, over messages, topics, glossary and digests.
 - **Stickers**: custom stickers seen in chat are saved on first sight (QQ image links expire quickly), counted per group, and described, tagged and moderation-flagged by a vision model (`sticker` route). Flagged stickers stay enabled unless `moderation.disable_unsafe_stickers` is on.
 - **Privacy**: members can say `不要记我` / `记得我` / `忘记我` (with an @mention) to opt out, opt back in, or delete what was stored about them.
