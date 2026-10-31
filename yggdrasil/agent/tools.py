@@ -19,7 +19,16 @@ from pydantic_ai import Agent, BinaryContent, RunContext, Tool, ToolReturn
 
 from yggdrasil.agent.context import chat_line
 from yggdrasil.agent.deps import Deps, Handle, Handles
-from yggdrasil.agent.media import ModelImage, compact_image, fit_image, load_image, media_bytes, media_type
+from yggdrasil.agent.media import (
+    ModelImage,
+    compact_image,
+    fit_image,
+    is_image,
+    load_image,
+    media_bytes,
+    media_type,
+    model_image,
+)
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
@@ -270,12 +279,14 @@ async def web_search(ctx: RunContext[Deps], query: str) -> str:
 @_tool("read_file")
 async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
     """读取文件内容（PDF/Office/文本/代码等），参数是 file#N 句柄，或聊天记录里的消息编号 #N（那条消息里的文件）。
-    扫描版 PDF：能看图的模型直接收到页面图片。"""
+    扫描版 PDF：能看图的模型直接收到页面图片。图片文件按看图处理。"""
     from yggdrasil.tools.docs import parse_document
 
     h = await _resolve(ctx, handle, "file")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
+    if is_image(blob):  # a picture sent as a group file
+        return await _show_image(ctx, handle, h, await asyncio.to_thread(model_image, blob), "")
     doc = await asyncio.to_thread(parse_document, blob, name, max_pages=cfg.file_max_pages)
     note = "（内容已截断）" if doc.truncated else ""
     header = f"文件：{name}（{doc.kind}，{doc.pages} 页）{note}"
@@ -297,15 +308,19 @@ async def read_file(ctx: RunContext[Deps], handle: str) -> ToolResult:
 
 @_tool("view_image")
 async def view_image(ctx: RunContext[Deps], handle: str, question: str = "") -> ToolResult:
-    """查看图片，可附带具体问题。handle 是 img#N 句柄，或聊天记录里的消息编号 #N（那条消息里的图；有多张时用 #N/2
-    取第 2 张），所以群里之前发过的图也能看。能看图的模型会直接收到原图，否则返回文字描述和转写。"""
-    h = await _resolve(ctx, handle, "image")
-    img = await load_image(ctx.deps.api, ctx.deps.group_id, h)
+    """查看图片，可附带具体问题。handle 是 img#N 句柄、图片格式的 file#N（当群文件发的图），或聊天记录里的消息编号
+    #N（那条消息里的图或文件；有多个时用 #N/2 取第 2 个），所以群里之前发过的图也能看。能看图的模型会直接收到原图，
+    否则返回文字描述和转写。"""
+    h = await _resolve(ctx, handle, "image", "file")
+    return await _show_image(ctx, handle, h, await load_image(ctx.deps.api, ctx.deps.group_id, h), question)
+
+
+async def _show_image(ctx: RunContext[Deps], ref: str, h: Handle, img: ModelImage, question: str) -> ToolResult:
     ctx.deps.notes.image(img.data, img.content.media_type, segment=h.data)
     if sees_images(ctx.deps.task):
         return ToolReturn(
-            return_value=f"{handle} 的原图附在下一条消息里，直接看图。",
-            content=[f"{handle}{img.note}：", img.content],
+            return_value=f"{ref} 的原图附在下一条消息里，直接看图。",
+            content=[f"{ref}{img.note}：", img.content],
         )
     try:
         return "（以下是另一个模型写的图片描述）\n" + await _vision(ctx, [img], question)
@@ -567,15 +582,15 @@ async def generate_image(
 ) -> str:
     """画图：按描述生成一张图，或参照群里的图改图。画好后直接作为一条图片消息回复到群里，不进合并转发。
     prompt 写清画面内容、风格、构图和图里要出现的文字；用户说得简单时按他的意思补全细节，不要改变意图。
-    references 是参考图（最多 4 张）：img#N 句柄，或聊天记录里的消息编号 #N（有多张时 #N/2 取第 2 张）；
-    “把这张图改成……”时传被引用的那张。aspect_ratio 是画幅，用户没要求就用 auto。text 是随图发的一句话，可以留空。
+    references 是参考图（最多 4 张）：img#N 句柄、图片格式的 file#N，或聊天记录里的消息编号 #N（有多张时 #N/2 取第 2
+    张）；“把这张图改成……”时传被引用的那张。aspect_ratio 是画幅，用户没要求就用 auto。text 是随图发的一句话，可以留空。
     生成要几十秒。发出后没有别的要说就选 mode=done，不要在合并转发里再描述这张图。"""
     deps = ctx.deps
     if len(references or []) > MAX_REFERENCES:
         raise ToolError(f"参考图最多 {MAX_REFERENCES} 张")
     refs: list[tuple[bytes, str]] = []
     for ref in references or []:
-        h = await _resolve(ctx, ref, "image")
+        h = await _resolve(ctx, ref, "image", "file")
         img = await load_image(deps.api, deps.group_id, h)
         deps.notes.image(img.data, img.content.media_type, segment=h.data)
         refs.append((img.data, img.content.media_type))

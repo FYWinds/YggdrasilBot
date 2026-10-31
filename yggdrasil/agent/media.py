@@ -6,6 +6,7 @@ import io
 import itertools
 import math
 from dataclasses import dataclass
+from pathlib import PurePath
 
 import httpx
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageSequence, ImageStat
@@ -30,6 +31,7 @@ _MIN_CHANGE = 0.015  # below this a frame counts as unchanged (dithering, compre
 _MAX_DECODE_FRAMES = 600
 _DEFAULT_FRAME_MS = 100  # browsers play GIF frames of 0-10 ms at 100 ms
 _SHEET_GAP = 4
+_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
 
 
 async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
@@ -82,6 +84,25 @@ async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes
     if not fresh or fresh == url:
         raise ToolError("图片链接已过期，也没能重新获取（可能太久了）")
     return await download(fresh, max_bytes), name
+
+
+def is_image(blob: bytes) -> bool:
+    """Whether Pillow recognises the bytes as a picture (reads the header only)."""
+    try:
+        Image.open(io.BytesIO(blob)).close()
+    except Image.UnidentifiedImageError:
+        return False
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return True  # recognised, just not decodable here; fit_image leaves it to the model API
+    return True
+
+
+def looks_like_image(h: Handle) -> bool:
+    """An image segment, or a file named like a picture (photos are often sent as group files to keep quality)."""
+    if h.kind == "image":
+        return True
+    name = str(h.data.get("name") or h.data.get("file") or "")
+    return h.kind == "file" and PurePath(name).suffix.lower() in _IMAGE_SUFFIXES
 
 
 def media_type(blob: bytes) -> str:
@@ -256,7 +277,10 @@ def _tile(frames: list[Image.Image], times: tuple[float, ...]) -> bytes:
 
 
 async def load_image(api: NapCatAPI, group_id: int | None, h: Handle) -> ModelImage:
-    blob, _ = await media_bytes(api, group_id, h, IMAGE_MAX_DOWNLOAD)
+    """An image handle, or a file handle whose content is a picture, ready for a vision model."""
+    blob, name = await media_bytes(api, group_id, h, IMAGE_MAX_DOWNLOAD)
+    if h.kind == "file" and not is_image(blob):
+        raise ToolError(f"{name} 不是图片，用 read_file 读")
     return await asyncio.to_thread(model_image, blob)
 
 

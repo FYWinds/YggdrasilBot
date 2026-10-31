@@ -1,13 +1,15 @@
 """Tool refs into the chat history (``#<message id>[/<k>]``), resolved the same way by every tool, and re-signing
 expired QQ image URLs."""
 
+import io
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
 import pytest
-from pydantic_ai import RunContext
+from PIL import Image
+from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from sqlalchemy import delete
@@ -17,7 +19,7 @@ from yggdrasil.agent.deps import Deps, Handle, Handles
 from yggdrasil.agent.tools import _resolve
 from yggdrasil.db.models import Message
 from yggdrasil.db.session import get_session
-from yggdrasil.napcat.models import FileInfo, ForwardMsg, MessageRecord, Segment, Sender
+from yggdrasil.napcat.models import FileInfo, FileUrl, ForwardMsg, MessageRecord, Segment, Sender
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
 
@@ -49,6 +51,8 @@ async def ids() -> AsyncIterator[dict[str, int]]:
         # A forward as QQ hands it over: only its id, the nodes are fetched when it is opened.
         "forward": (GROUP, [{"type": "forward", "data": {"id": "res-1"}}], False),
         "link": (GROUP, [{"type": "text", "data": {"text": "看看 https://example.com/post 这个"}}], False),
+        # A photo sent as a group file (as QQ delivers it: a file segment, not an image).
+        "photo_file": (GROUP, [_group_file("photo.jpg")], False),
     }
     async with get_session() as s:
         for key, (gid, segs, recalled) in rows.items():
@@ -128,6 +132,53 @@ async def test_a_forward_from_the_history_opens_by_message_number(ids: dict[str,
     result = await tools.expand_forward(_ctx(api=api), f"#{ids['forward']}")
     assert api.asked == ["res-1"]
     assert "节点内容" in str(result)
+
+
+def _group_file(name: str) -> dict[str, Any]:
+    url = f"https://files.example.com/{name}"
+    return {"type": "file", "data": {"id": f"/{name}", "url": url, "file": name, "name": name, "file_id": f"/{name}"}}
+
+
+def _png() -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(out, "PNG")
+    return out.getvalue()
+
+
+class _FileApi:
+    async def get_group_file_url(self, *, group_id: int, file_id: str, busid: int | None = None) -> FileUrl:
+        return FileUrl(url=f"https://files.example.com{file_id}?fresh")
+
+
+@pytest.fixture
+def group_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
+        return _png() if "photo.jpg" in url else b"just some notes\n"
+
+    monkeypatch.setattr(media, "download", fake)
+    monkeypatch.setattr(tools, "sees_images", lambda *_: True)
+
+
+def _shown_image(result: Any) -> BinaryContent:
+    assert isinstance(result, ToolReturn)
+    return next(c for c in cast(list[Any], result.content) if isinstance(c, BinaryContent))
+
+
+async def test_a_picture_sent_as_a_group_file_can_be_viewed(ids: dict[str, int], group_files: None) -> None:
+    # The prod failure: view_image refused file#1 ("是文件，不是图片") and read_file sent the model back to view_image.
+    ctx = _ctx(api=_FileApi())
+    by_number = _shown_image(await tools.view_image(ctx, f"#{ids['photo_file']}"))
+    assert by_number.media_type == "image/png"
+    by_handle = _shown_image(await tools.read_file(ctx, "file#1"))
+    assert by_handle.data == by_number.data
+
+
+async def test_view_image_on_a_file_that_is_not_a_picture_points_to_read_file(group_files: None) -> None:
+    ctx = _ctx(api=_FileApi())
+    key = ctx.deps.handles.add("file", _group_file("notes.txt")["data"])
+    assert key is not None
+    # Tools hand errors to the model as text.
+    assert await tools.view_image(ctx, key) == "[工具错误] notes.txt 不是图片，用 read_file 读"
 
 
 class _Api:

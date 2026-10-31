@@ -19,7 +19,7 @@ from sqlalchemy import update
 from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import load_images
+from yggdrasil.agent.media import load_images, looks_like_image
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, tool_names, tools_for
@@ -178,7 +178,7 @@ class Invocator:
         """
         limit = self.settings.context.inline_images
         focus = (ctx.handles.get(key) for key in ctx.focus)
-        handles = [h for h in focus if h is not None and h.kind == "image"][:limit]
+        handles = [h for h in focus if h is not None and looks_like_image(h)][:limit]
         if not handles or not sees_images(self.handler):
             return ctx.prompt
         with TRACER.start_as_current_span("ygg.inline_images") as span:
