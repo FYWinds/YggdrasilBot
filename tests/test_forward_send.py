@@ -41,10 +41,12 @@ class FakeAPI:
         forward: Exception | None = None,
         history: list[MessageRecord] | Exception,
         posted: dict[str, str | Exception] | None = None,
+        text_errors: list[Exception] | None = None,
     ) -> None:
         self.forward_error = forward
         self.history = history
         self.posted = posted or {}  # resid -> first node text of forwards in the group
+        self.text_errors = text_errors or []  # raised by the next text sends, in order
         self.forwards: list[list[dict[str, Any]]] = []
         self.timeouts: list[float | None] = []
         self.texts: list[list[dict[str, Any]]] = []
@@ -71,6 +73,8 @@ class FakeAPI:
 
     async def send_group_msg(self, *, group_id: int, message: list[dict[str, Any]]) -> SendResult:
         self.texts.append(message)
+        if self.text_errors:
+            raise self.text_errors.pop(0)
         return SendResult(message_id=TEXT_ID)
 
 
@@ -162,20 +166,43 @@ async def test_napcat_self_forward_card_is_recognised(recorded: list[IncomingMes
     assert record.segments[0]["data"]["id"] == "card-res"
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        "send group message failed: no response",
-        "group message delivery was not confirmed: QQ returned no message receipt; check the conversation before "
-        "retrying",
-    ],
-)
+@pytest.mark.parametrize("message", ["send group message failed: no response", "failed to decode SendMessageResponse"])
 async def test_snowluma_maybe_delivered_failure_checks_the_history(recorded: list[IncomingMessage], message: str):
     failed = ActionFailed(status="failed", retcode=100, data=None, message=message, wording=message)
     api = FakeAPI(forward=failed, history=[OLD_CHAT, _forward("late", 99)], posted={"late": OURS})
     assert await _send(api) == 99
     assert api.texts == []
     assert [m.qq_message_id for m in recorded] == [99]
+
+
+DROPPED = ActionFailed(
+    status="failed",
+    retcode=100,
+    data=None,
+    wording="group message delivery was not confirmed: QQ returned no message receipt; check the conversation before "
+    "retrying",
+)
+
+
+async def test_a_forward_qq_drops_gets_a_notice_not_a_text_copy(recorded: list[IncomingMessage]):
+    # 2026-11-01: QQ answered without a group sequence and posted nothing; the text copy of the same answer was
+    # dropped the same way, so the run failed and the group saw nothing at all.
+    api = FakeAPI(forward=DROPPED, history=[OLD_CHAT, _forward("late", 99)], posted={"late": OURS})
+    with pytest.raises(send.MessageDropped):
+        await _send(api)
+    assert len(api.forwards) == 1
+    assert [m[0]["data"]["text"] for m in api.texts] == [send.DROPPED_NOTICE]
+    assert [m.qq_message_id for m in recorded] == [TEXT_ID]
+
+
+async def test_a_text_reply_qq_drops_gets_a_notice(recorded: list[IncomingMessage]):
+    api = FakeAPI(history=[], text_errors=[DROPPED])
+    with pytest.raises(send.MessageDropped):
+        await send.send_text(
+            cast(Any, api), group_id=GROUP, user_id=20001, reply_to=None, text="答案", self_id=SELF, nickname="Y"
+        )
+    assert [m[0]["data"]["text"] for m in api.texts] == ["答案", send.DROPPED_NOTICE]
+    assert [m.qq_message_id for m in recorded] == [TEXT_ID]
 
 
 @pytest.mark.parametrize("history", ["unavailable", "busy"])

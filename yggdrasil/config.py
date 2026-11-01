@@ -21,6 +21,11 @@ class DbConfig(BaseSettings):
     password: str = Field(default="ygg", alias="POSTGRES_PASSWORD")
     database: str = Field(default="ygg", alias="POSTGRES_DB")
     pool_size: int = Field(default=10, alias="POSTGRES_POOL_SIZE")
+    # Every connection gives up waiting for a lock after this long, so a lock cycle the server can't see (one task
+    # waiting on its own second connection behind a queued DDL) fails instead of stalling everything (2026-11-01).
+    lock_timeout_ms: int = Field(default=30_000, alias="POSTGRES_LOCK_TIMEOUT_MS")
+    # Statement limit for the bot process only: a reply must not hang on the database. Worker jobs run longer queries.
+    bot_statement_timeout_ms: int = Field(default=60_000, alias="POSTGRES_BOT_STATEMENT_TIMEOUT_MS")
 
     @computed_field
     @cached_property

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 from sqlalchemy import text
 
-from yggdrasil.config import APP_CONFIG, LOG_CONFIG
+from yggdrasil.config import APP_CONFIG, DB_CONFIG, LOG_CONFIG
 from yggdrasil.core.log import LOGGER, setup_logging
 
 _tasks: list[asyncio.Task] = []
@@ -184,7 +184,7 @@ def main() -> None:
         from yggdrasil.sandbox.jobs import runner
         from yggdrasil.seed import seed_defaults
 
-        init_engine()
+        init_engine(statement_timeout_ms=DB_CONFIG.bot_statement_timeout_ms)
         await wait_for_dependencies()
         await seed_defaults()
         snap = await runtime.load()

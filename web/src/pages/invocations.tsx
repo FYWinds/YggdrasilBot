@@ -31,6 +31,7 @@ const STATUSES = [
   "blocked_input",
   "review",
   "rejected",
+  "dropped",
   "failed",
   "ratelimited",
   "cancelled",
@@ -40,7 +41,7 @@ const LIMIT = 50;
 
 export function statusVariant(status: string): "default" | "destructive" | "outline" | "secondary" {
   if (status === "ok") return "default";
-  if (status === "failed" || status === "rejected") return "destructive";
+  if (status === "failed" || status === "rejected" || status === "dropped") return "destructive";
   if (status === "running") return "secondary";
   return "outline";
 }

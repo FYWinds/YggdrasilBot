@@ -30,7 +30,7 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import Meta, react, send_forward, send_text
+from yggdrasil.delivery.send import MessageDropped, Meta, react, send_forward, send_text
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage, sees_images
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
@@ -474,7 +474,13 @@ class Invocator:
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
 
         if v_out.action == "pass":
-            await self.deliver(reply)
+            try:
+                await self.deliver(reply)
+            except MessageDropped:
+                # QQ swallowed it (content filter, most likely); the group got a short notice instead.
+                await self._status(self.settings.interaction.review_emoji)
+                await self._finish("dropped", None, **verdicts)
+                return "dropped"
             await self._status(self.settings.interaction.done_emoji)
             await self._finish("ok", None, reply_qq_message_id=self.reply_qq_message_id, **verdicts)
             return "ok"

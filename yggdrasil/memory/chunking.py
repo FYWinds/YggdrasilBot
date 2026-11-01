@@ -9,8 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, select, update
 
 from yggdrasil.db.models import Message, MessageChunk
 from yggdrasil.db.session import get_session
@@ -107,48 +106,66 @@ def split_chunks(
     return plan
 
 
-async def _rechunk_recalled(session: AsyncSession, group_id: int, checked_at: datetime) -> int:
-    """Rebuild chunks containing messages recalled since ``checked_at``; returns chunks touched."""
-    q = select(Message.id).where(
-        Message.group_id == group_id,
-        Message.recalled.is_(True),
-        Message.recalled_at > checked_at,
-        Message.sent_at >= checked_at - RECALL_LOOKBACK,
-    )
-    recalled_ids = list((await session.scalars(q)).all())
-    if not recalled_ids:
-        return 0
-    chunks: dict[int, MessageChunk] = {}
-    for mid in recalled_ids:
-        for c in await session.scalars(
-            select(MessageChunk).where(
-                MessageChunk.group_id == group_id,
-                MessageChunk.first_msg_id <= mid,
-                MessageChunk.last_msg_id >= mid,
-            )
-        ):
-            chunks[c.id] = c
-    for c in chunks.values():
-        rows = await session.execute(
-            select(*VIEW_COLUMNS)
-            .where(
-                Message.group_id == group_id,
-                Message.recalled.is_(False),
-                Message.id.between(c.first_msg_id, c.last_msg_id),
-                Message.sent_at.between(c.start_at, c.end_at),
-            )
-            .order_by(Message.id)
+async def _rechunk_recalled(group_id: int, checked_at: datetime) -> int:
+    """Rebuild chunks containing messages recalled since ``checked_at``; returns chunks touched.
+
+    Reads, the name lookup and the writes use separate transactions: ``people_for`` opens its own session and must not
+    wait on a lock while this one holds ``messages`` open.
+    """
+    async with get_session() as session:
+        q = select(Message.id).where(
+            Message.group_id == group_id,
+            Message.recalled.is_(True),
+            Message.recalled_at > checked_at,
+            Message.sent_at >= checked_at - RECALL_LOOKBACK,
         )
-        views = [MessageView(*r) for r in rows if r.plain_text.strip()]
-        await delete_vectors(session, "chunk", [c.id])
-        if not views:
-            await session.execute(delete(MessageChunk).where(MessageChunk.id == c.id))
-            continue
-        people = await people_for(group_id, views, bot_name=snapshot().settings(group_id).persona.name)
-        c.text = "\n".join(render(views, people))
-        c.first_msg_id, c.last_msg_id, c.msg_count = views[0].id, views[-1].id, len(views)
-        c.start_at, c.end_at = min(v.sent_at for v in views), max(v.sent_at for v in views)
-    return len(chunks)
+        recalled_ids = list((await session.scalars(q)).all())
+        if not recalled_ids:
+            return 0
+        chunks: dict[int, MessageChunk] = {}
+        for mid in recalled_ids:
+            for c in await session.scalars(
+                select(MessageChunk).where(
+                    MessageChunk.group_id == group_id,
+                    MessageChunk.first_msg_id <= mid,
+                    MessageChunk.last_msg_id >= mid,
+                )
+            ):
+                chunks[c.id] = c
+        kept: dict[int, list[MessageView]] = {}
+        for c in chunks.values():
+            rows = await session.execute(
+                select(*VIEW_COLUMNS)
+                .where(
+                    Message.group_id == group_id,
+                    Message.recalled.is_(False),
+                    Message.id.between(c.first_msg_id, c.last_msg_id),
+                    Message.sent_at.between(c.start_at, c.end_at),
+                )
+                .order_by(Message.id)
+            )
+            kept[c.id] = [MessageView(*r) for r in rows if r.plain_text.strip()]
+    bot_name = snapshot().settings(group_id).persona.name
+    people = await people_for(group_id, [v for views in kept.values() for v in views], bot_name=bot_name)
+    async with get_session() as session:
+        for chunk_id, views in kept.items():
+            await delete_vectors(session, "chunk", [chunk_id])
+            if not views:
+                await session.execute(delete(MessageChunk).where(MessageChunk.id == chunk_id))
+                continue
+            await session.execute(
+                update(MessageChunk)
+                .where(MessageChunk.id == chunk_id)
+                .values(
+                    text="\n".join(render(views, people)),
+                    first_msg_id=views[0].id,
+                    last_msg_id=views[-1].id,
+                    msg_count=len(views),
+                    start_at=min(v.sent_at for v in views),
+                    end_at=max(v.sent_at for v in views),
+                )
+            )
+    return len(kept)
 
 
 async def chunk_group(group_id: int, *, now: datetime | None = None) -> dict[str, int]:
@@ -161,25 +178,29 @@ async def chunk_group(group_id: int, *, now: datetime | None = None) -> dict[str
     created = 0
     while True:
         started = now or datetime.now(UTC)
+        # Read, look up names, then write: people_for opens its own session, so it must not run while this read
+        # transaction holds messages (a pending DDL lock between the two deadlocked the job on 2026-11-01).
         async with get_session() as session:
             st = await pipeline_state(session, PIPELINE, group_id)
+            watermark = st.last_msg_id
             rows = await session.execute(
                 select(*VIEW_COLUMNS)
-                .where(Message.group_id == group_id, Message.recalled.is_(False), Message.id > st.last_msg_id)
+                .where(Message.group_id == group_id, Message.recalled.is_(False), Message.id > watermark)
                 .order_by(Message.id)
                 .limit(BATCH)
             )
             views = [MessageView(*r) for r in rows]
-            people = await people_for(group_id, views, bot_name=snapshot().settings(group_id).persona.name)
-            plan = split_chunks(
-                views,
-                people,
-                gap=gap,
-                max_messages=mem.chunk_max_messages,
-                max_chars=mem.chunk_max_chars,
-                now=started,
-                more_pending=len(views) == BATCH,
-            )
+        people = await people_for(group_id, views, bot_name=snapshot().settings(group_id).persona.name)
+        plan = split_chunks(
+            views,
+            people,
+            gap=gap,
+            max_messages=mem.chunk_max_messages,
+            max_chars=mem.chunk_max_chars,
+            now=started,
+            more_pending=len(views) == BATCH,
+        )
+        async with get_session() as session:
             session.add_all(
                 MessageChunk(
                     group_id=group_id,
@@ -193,18 +214,18 @@ async def chunk_group(group_id: int, *, now: datetime | None = None) -> dict[str
                 for c in plan.chunks
             )
             if plan.watermark is not None:
+                st = await pipeline_state(session, PIPELINE, group_id)
                 st.last_msg_id = plan.watermark
         created += len(plan.chunks)
         if len(views) < BATCH or plan.watermark is None:
             break
 
-    rebuilt = 0
+    async with get_session() as session:
+        checked = (await pipeline_state(session, PIPELINE, group_id)).state.get("recall_checked_at")
+    started = datetime.now(UTC)
+    # On the first run every chunk was just built without recalled messages.
+    rebuilt = await _rechunk_recalled(group_id, datetime.fromisoformat(checked)) if checked else 0
     async with get_session() as session:
         st = await pipeline_state(session, PIPELINE, group_id)
-        checked = st.state.get("recall_checked_at")
-        started = datetime.now(UTC)
-        # On the first run every chunk was just built without recalled messages.
-        if checked:
-            rebuilt = await _rechunk_recalled(session, group_id, datetime.fromisoformat(checked))
         st.state = {**st.state, "recall_checked_at": started.isoformat()}
     return {"created": created, "rebuilt": rebuilt}

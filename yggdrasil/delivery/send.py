@@ -132,14 +132,48 @@ async def react(api: NapCatAPI, message_id: int, emoji_id: str) -> None:
         LOGGER.warning("reaction {} on {} failed: {}", emoji_id, message_id, e)
 
 
+class MessageDropped(Exception):
+    """QQ took the send but never posted it (no group sequence in its answer); a short notice went out instead."""
+
+
+# SnowLuma's wording when QQ answers a group send with result 0 but no group sequence. On 2026-11-01 both a forward and
+# its plain-text copy describing a proxy client were dropped this way within a second: QQ's content filter, as far
+# as we can tell, so sending the same content again in another form doesn't help.
+_DROPPED = "no message receipt"
+DROPPED_NOTICE = "这条回复没能发出来：QQ 收下了但没有发到群里，可能是内容触发了 QQ 的拦截。"
+
+
+def _dropped(e: Exception) -> bool:
+    return isinstance(e, ActionFailed) and _DROPPED in str(e.info.get("message") or e.info.get("wording") or "")
+
+
+async def _notify_dropped(api: NapCatAPI, group_id: int, self_id: int, nickname: str) -> None:
+    """Say in the group that the answer didn't get through (the notice carries none of the dropped content)."""
+    segments = [text_seg(DROPPED_NOTICE)]
+    try:
+        res = await api.send_group_msg(group_id=group_id, message=segments)
+    except (ActionFailed, NetworkError) as e:
+        LOGGER.warning("the dropped-reply notice to {} didn't go out either: {}", group_id, e)
+        return
+    _record_self(group_id, self_id, nickname, res.message_id, segments)
+
+
 async def send_text(
     api: NapCatAPI, *, group_id: int | None, user_id: int, reply_to: int | None, text: str, self_id: int, nickname: str
 ) -> int:
+    """Raises :class:`MessageDropped` (after posting a notice) when QQ swallows the group message."""
     segments = ([reply_seg(reply_to)] if reply_to else []) + [text_seg(text)]
     if group_id is None:
         res = await api.send_private_msg(user_id=user_id, message=segments)
     else:
-        res = await api.send_group_msg(group_id=group_id, message=segments)
+        try:
+            res = await api.send_group_msg(group_id=group_id, message=segments)
+        except ActionFailed as e:
+            if not _dropped(e):
+                raise
+            LOGGER.warning("text to {} was dropped by QQ: {}", group_id, e)
+            await _notify_dropped(api, group_id, self_id, nickname)
+            raise MessageDropped(str(e)) from e
         _record_self(group_id, self_id, nickname, res.message_id, segments)
     return res.message_id
 
@@ -256,8 +290,9 @@ SEND_FORWARD_TIMEOUT_S = SEND_IMAGE_TIMEOUT_S
 FORWARD_CHECK_DELAYS_S = (0.0, 5.0, 10.0)
 _HISTORY_PAGE = 30
 _CLOCK_SKEW_S = 5
-# SnowLuma reports a send packet that got no reply, or a reply without a receipt, as a failed action although the
-# message may be in the group (it says "check the conversation before retrying"); other failures are definite.
+# SnowLuma reports a send packet that got no reply, or an answer it couldn't decode, as a failed action although the
+# message may be in the group (it says "check the conversation before retrying"); other failures are definite. An answer
+# without a receipt (``_DROPPED``) is handled before this: QQ dropped that message.
 _MAYBE_SENT = re.compile(r"message failed: |not confirmed|failed to decode SendMessageResponse")
 
 
@@ -395,6 +430,11 @@ async def send_forward(
             return res.message_id
         res = await api.send_group_forward_msg(group_id=group_id, messages=nodes, reply_timeout=SEND_FORWARD_TIMEOUT_S)
     except (ActionFailed, NetworkError) as e:
+        if group_id is not None and _dropped(e):
+            # Not "maybe delivered": QQ answered and assigned no sequence. The text copy would carry the same content.
+            LOGGER.warning("forward to {} was dropped by QQ: {}", target, e)
+            await _notify_dropped(api, group_id, self_id, nickname)
+            raise MessageDropped(str(e)) from e
         maybe_sent = _maybe_sent(e)
         if isinstance(e, NetworkError) and not maybe_sent:
             raise

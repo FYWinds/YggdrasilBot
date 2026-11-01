@@ -83,10 +83,12 @@ async def resolve_space() -> EmbedSpaceInfo | None:
     return space
 
 
-async def store_vectors(
-    session: AsyncSession, space: EmbedSpaceInfo, kind: str, items: Sequence[tuple[int, int, str]]
-) -> int:
-    """Embed ``(ref_id, group_id, text)`` items into ``space`` (upsert). Raises on a dimension mismatch."""
+async def store_vectors(space: EmbedSpaceInfo, kind: str, items: Sequence[tuple[int, int, str]]) -> int:
+    """Embed ``(ref_id, group_id, text)`` items into ``space`` (upsert). Raises on a dimension mismatch.
+
+    The embedding call runs before the write transaction opens: a transaction left open across an HTTP call holds
+    its locks for that long (a 2026-11-01 outage started from one).
+    """
     if not items:
         return 0
     vectors = await registry.embed(
@@ -102,7 +104,8 @@ async def store_vectors(
         index_elements=["kind", "ref_id", "space_id"],
         set_={"embedding": stmt.excluded.embedding, "group_id": stmt.excluded.group_id},
     )
-    await session.execute(stmt)
+    async with get_session() as session:
+        await session.execute(stmt)
     return len(rows)
 
 
@@ -119,8 +122,7 @@ async def try_embed(kind: str, items: Sequence[tuple[int, int, str]]) -> None:
         space = await resolve_space()
         if space is None:
             return
-        async with get_session() as session:
-            await store_vectors(session, space, kind, items)
+        await store_vectors(space, kind, items)
     except Exception as e:
         LOGGER.warning("embedding {} {} rows deferred: {!r}", len(items), kind, e)
 
@@ -171,7 +173,7 @@ async def embed_missing(space: EmbedSpaceInfo, group_id: int | None = None) -> d
         while True:
             async with get_session() as session:
                 items = await _missing(session, kind, space.id, group_id, _BATCH)
-                counts[kind] += await store_vectors(session, space, kind, items)
+            counts[kind] += await store_vectors(space, kind, items)
             if len(items) < _BATCH:
                 break
     return counts

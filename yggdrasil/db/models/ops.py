@@ -27,7 +27,7 @@ class Invocation(Base):
     # e.g. to let the asker recall it. QQ ids repeat, so only look up recent rows.
     reply_qq_message_id: Mapped[int | None]
     request_text: Mapped[str] = mapped_column(Text, default="")
-    # ok | done | silent | blocked_input | review | rejected | failed | ratelimited | cancelled
+    # ok | done | silent | blocked_input | review | rejected | dropped | failed | ratelimited | cancelled
     # (ops runs: done | reply | handoff)
     status: Mapped[str] = mapped_column(Text, default="running")
     models: Mapped[list[Any]] = mapped_column(default=list)

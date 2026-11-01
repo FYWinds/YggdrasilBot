@@ -10,9 +10,13 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
-def init_engine() -> AsyncEngine:
+def init_engine(*, statement_timeout_ms: int = 0) -> AsyncEngine:
+    """The process-wide engine; ``statement_timeout_ms`` (0 = none) applies to every connection it opens."""
     global _engine, _sessionmaker
     if _engine is None:
+        server_settings = {"lock_timeout": str(DB_CONFIG.lock_timeout_ms)}
+        if statement_timeout_ms:
+            server_settings["statement_timeout"] = str(statement_timeout_ms)
         _engine = create_async_engine(
             DB_CONFIG.dsn,
             pool_size=DB_CONFIG.pool_size,
@@ -21,6 +25,7 @@ def init_engine() -> AsyncEngine:
             pool_recycle=1800,
             # Errors would otherwise echo bound parameters (chat text, names) into logs and traces.
             hide_parameters=True,
+            connect_args={"server_settings": server_settings},
         )
         instrument_engine(_engine)
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)

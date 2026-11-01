@@ -193,6 +193,7 @@ _OUTCOMES: dict[str, tuple[Literal["info", "warn", "error"], str]] = {
     "handoff": ("info", "不是管理操作，交给普通答疑"),
     "review": ("warn", "回复进入审核队列，等管理员处理"),
     "rejected": ("error", "回复没通过输出审核，没有发出"),
+    "dropped": ("error", "QQ 收下了回复但没有发到群里（可能被内容拦截），已在群里提示"),
     "blocked_input": ("warn", "请求被输入审核拦下"),
     "ratelimited": ("warn", "被限流"),
     "cancelled": ("warn", "已取消"),

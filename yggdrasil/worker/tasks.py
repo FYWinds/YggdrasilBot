@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from redis.exceptions import LockError
+from sqlalchemy import text
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.telemetry import TRACER
@@ -65,9 +66,14 @@ async def for_each_group(job: str, step: Callable[[int], Awaitable[Any]], *, loc
     return results
 
 
-@broker.task(task_name="maintain_partitions", schedule=_cron("10 3 * * *"))
+# Hourly at an odd minute, away from the */5 and */15 jobs; partitions are made three months ahead, so a run that gives
+# up on the lock just tries again an hour later.
+@broker.task(task_name="maintain_partitions", schedule=_cron("47 * * * *"))
 async def maintain_partitions() -> list[str]:
     async with engine().begin() as conn:
+        # Attaching a partition needs an exclusive lock on messages, and every later query on messages queues behind
+        # the waiting DDL: give up quickly instead of stalling ingest and replies (2026-11-01: 90 minutes).
+        await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
         names = await ensure_partitions(conn, ahead=3)
     LOGGER.info("message partitions ensured: {}", names)
     return names
