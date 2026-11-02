@@ -2,7 +2,7 @@ import math
 from types import SimpleNamespace
 
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
-from yggdrasil.delivery.send import build_nodes, split_text, strip_markdown
+from yggdrasil.delivery.forward import build_nodes, split_text, strip_markdown
 from yggdrasil.moderation.guard import decide_action, parse_verdict, score_from_logprobs
 from yggdrasil.settings import InteractionSettings, ModerationCategoryRule, ModerationSettings
 

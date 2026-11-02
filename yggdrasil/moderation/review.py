@@ -16,7 +16,8 @@ from yggdrasil.bot.state import any_bot, identity
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Invocation, ReviewItem
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import send_forward, send_text
+from yggdrasil.delivery.forward import send_forward
+from yggdrasil.delivery.send import send_text
 from yggdrasil.moderation.guard import Verdict
 from yggdrasil.napcat.api import NapCatAPI, node_seg, text_seg
 from yggdrasil.people import member_label

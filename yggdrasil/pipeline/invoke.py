@@ -30,7 +30,8 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.db.models import Invocation, ModerationResult
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery.send import MessageDropped, Meta, react, send_forward, send_text
+from yggdrasil.delivery.forward import send_forward
+from yggdrasil.delivery.send import MessageDropped, Meta, react, send_text
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage, sees_images
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate

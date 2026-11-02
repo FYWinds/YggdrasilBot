@@ -20,6 +20,7 @@ from yggdrasil.agent.tools.history import recent_chat, search_history
 from yggdrasil.db.models import MemoryVector, MessageChunk, Topic
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery import send
+from yggdrasil.delivery.forward import send_forward
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.napcat.api import node_seg, text_seg
 from yggdrasil.napcat.models import ForwardResult
@@ -56,7 +57,7 @@ async def test_the_bots_own_forward_shows_its_send_time_and_no_metadata(recorded
         sections=[Section(content="第一段正文"), Section(content="第二段")],
         sources=[SourceRef(label="gist", url="https://example.com/gist")],
     )
-    await send.send_forward(
+    await send_forward(
         FakeNapCat({"send_group_forward_msg": ForwardResult(message_id=41, res_id="res")}),
         group_id=GROUP,
         user_id=20001,

@@ -11,7 +11,7 @@ from nonebot.adapters.onebot.v11 import ActionFailed, NetworkError
 from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
-from yggdrasil.delivery import send
+from yggdrasil.delivery import forward, send
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.napcat.models import (
     ForwardMsg,
@@ -99,11 +99,11 @@ def _forward(resid: str, message_id: int) -> MessageRecord:
 
 @pytest.fixture(autouse=True)
 def _no_check_delays(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(send, "FORWARD_CHECK_DELAYS_S", (0.0, 0.0))
+    monkeypatch.setattr(forward, "FORWARD_CHECK_DELAYS_S", (0.0, 0.0))
 
 
 async def _send(api: FakeNapCat, reply: BotReply = REPLY, cfg: InteractionSettings | None = None) -> int | None:
-    return await send.send_forward(
+    return await forward.send_forward(
         api,
         group_id=GROUP,
         user_id=20001,
@@ -231,7 +231,7 @@ async def test_bot_forward_that_cant_be_checked_is_not_sent_again(recorded: list
 async def test_forward_with_pictures_missing_from_history_is_not_sent_as_text(recorded: list[IncomingMessage]):
     # Its pictures may still be uploading: a text copy now could be followed by the forward.
     api = _qq(forward=TIMEOUT, history=[OLD_CHAT])
-    result = await send.send_forward(
+    result = await forward.send_forward(
         api,
         group_id=GROUP,
         user_id=20001,
