@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from pydantic_ai import RunContext, Tool
 
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.tools import ToolResult, _tool
+from yggdrasil.agent.tools.base import ToolResult, chat_tool
 from yggdrasil.sandbox import SandboxError, Session
 from yggdrasil.sandbox.jobs import KIND_TEXT, STATUS_TEXT, Job, Requester, fmt_duration, relay_enabled, runner
 from yggdrasil.tools.errors import ToolError
@@ -44,7 +44,7 @@ def _started(job: Job) -> str:
     )
 
 
-@_tool("background")
+@chat_tool("background")
 async def background(ctx: RunContext[Deps], script: str, title: str) -> ToolResult:
     """在当前选中的工作区后台运行一段 bash 脚本，不等它结束：用于要跑几分钟以上的单个长命令（训练、批量下载、
     长测试、大文件转换）。脚本在 /workspace 下执行，输出记到文件里；结束后会自动在群里把结果（退出码和输出的
@@ -64,7 +64,7 @@ async def background(ctx: RunContext[Deps], script: str, title: str) -> ToolResu
     return _started(job)
 
 
-@_tool("delegate")
+@chat_tool("delegate")
 async def delegate(
     ctx: RunContext[Deps], task: str, title: str, workspace: str | None = None, new: bool = False, description: str = ""
 ) -> ToolResult:
@@ -117,7 +117,7 @@ def describe_job(job: Job, *, now: float, detail: bool = False) -> str:
     return "\n".join(lines)
 
 
-@_tool("jobs")
+@chat_tool("jobs")
 async def jobs(ctx: RunContext[Deps]) -> ToolResult:
     """查看本群的后台任务（运行中的和最近结束的）：编号、状态、用时、进度。"""
     if ctx.deps.group_id is None:
@@ -129,7 +129,7 @@ async def jobs(ctx: RunContext[Deps]) -> ToolResult:
     return "\n".join(describe_job(j, now=now, detail=True) for j in items)
 
 
-@_tool("cancel_job")
+@chat_tool("cancel_job")
 async def cancel_job(ctx: RunContext[Deps], job_id: str) -> ToolResult:
     """取消本群一个正在运行的后台任务（job_id 是任务编号，可以先用 jobs 查）。群友要求停掉、取消时用。
     取消后不会再自动回报，这次回复里直接告诉群友已经停了。"""

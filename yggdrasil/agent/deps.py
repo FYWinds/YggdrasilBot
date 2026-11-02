@@ -27,7 +27,7 @@ class Handles:
 
     Every rendering of a QQ message for the model registers its attachments here and writes the keys next to it
     (``register``), so anything visible can be passed to a tool; ``#<message id>`` refs into the chat history are
-    resolved into handles on demand (``agent.tools._resolve``).
+    resolved into handles on demand (``agent.tools.base.resolve_ref``).
     """
 
     items: dict[str, Handle] = field(default_factory=dict)

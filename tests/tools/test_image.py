@@ -20,8 +20,8 @@ from tests.support.files import png
 from tests.support.onebot import FakeNapCat
 from tests.support.routes import Routes
 from yggdrasil import runtime
-from yggdrasil.agent import tools
 from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.tools import images
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
 from yggdrasil.moderation.image import ImageVerdict
@@ -88,7 +88,7 @@ def _ctx(api: FakeNapCat, *, moderated: bool = False) -> RunContext[Deps]:
 async def test_the_picture_is_sent_replying_to_the_trigger(upstream: Routes, recorded: list[IncomingMessage]):
     api = _qq()
     ctx = _ctx(api)
-    result = await tools.generate_image(ctx, "一只戴墨镜的猫", aspect_ratio="16:9", text="画好了")
+    result = await images.generate_image(ctx, "一只戴墨镜的猫", aspect_ratio="16:9", text="画好了")
 
     assert upstream.seen[0].url.path == "/api/v1/images"
     assert upstream.seen[0].headers["authorization"] == "Bearer sk-test"
@@ -122,7 +122,7 @@ async def test_an_unconfirmed_send_counts_as_sent(upstream: Routes, recorded: li
     # must end as done, and the model must not post it again.
     api = _qq(timeout=True)
     ctx = _ctx(api)
-    result = await tools.generate_image(ctx, "x")
+    result = await images.generate_image(ctx, "x")
     [call] = api.called("send_group_msg")
     assert call["_timeout"] > nonebot.get_driver().config.api_timeout
     assert "不要重发" in str(result)
@@ -135,7 +135,7 @@ async def test_a_large_picture_is_sent_as_jpeg(upstream: Routes, recorded: list[
     Image.frombytes("RGB", (800, 800), os.urandom(800 * 800 * 3)).save(noisy, "PNG")
     upstream.answers[IMAGES] = _ok(noisy.getvalue())
     api = _qq()
-    await tools.generate_image(_ctx(api), "x")
+    await images.generate_image(_ctx(api), "x")
     reply, image = _sent(api)[0]  # no text: the reply to the trigger, then the picture
     assert reply["type"] == "reply"
     sent = base64.b64decode(image["data"]["file"].removeprefix("base64://"))
@@ -157,7 +157,7 @@ async def test_a_refusal_reaches_the_model_and_nothing_is_sent(upstream: Routes)
     upstream.answers[IMAGES] = httpx.Response(400, json={"error": {"message": "Request rejected by the safety system"}})
     api = _qq()
     ctx = _ctx(api)
-    result = await tools.generate_image(ctx, "x")
+    result = await images.generate_image(ctx, "x")
     assert "画图失败：400 Request rejected by the safety system" in str(result)
     assert _sent(api) == []
     assert ctx.deps.actions == []
@@ -167,10 +167,10 @@ async def test_an_unsafe_picture_is_not_sent(upstream: Routes, monkeypatch: pyte
     async def unsafe(_blob: bytes) -> ImageVerdict:
         return ImageVerdict(False, "gore", "vision-model", 10, 2)
 
-    monkeypatch.setattr(tools, "check_image", unsafe)
+    monkeypatch.setattr(images, "check_image", unsafe)
     api = _qq()
     ctx = _ctx(api, moderated=True)
-    result = await tools.generate_image(ctx, "x")
+    result = await images.generate_image(ctx, "x")
     assert "审核没通过（gore）" in str(result)
     assert _sent(api) == []
     assert ctx.deps.actions == []

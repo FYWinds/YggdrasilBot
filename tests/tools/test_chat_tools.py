@@ -13,9 +13,10 @@ from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
 from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
-from yggdrasil.agent import tools
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
+from yggdrasil.agent.tools.attachments import expand_forward
+from yggdrasil.agent.tools.history import recent_chat, search_history
 from yggdrasil.db.models import MemoryVector, MessageChunk, Topic
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery import send
@@ -42,7 +43,7 @@ def _ctx(*, trigger: int | None = None, settings: Settings | None = None) -> Run
 async def _expand(ctx: RunContext[Deps], forward: dict[str, Any]) -> str:
     key = ctx.deps.handles.add("forward", forward["data"])
     assert key is not None
-    return str(await tools.expand_forward(ctx, key))
+    return str(await expand_forward(ctx, key))
 
 
 async def test_the_bots_own_forward_shows_its_send_time_and_no_metadata(recorded: list[IncomingMessage]) -> None:
@@ -159,7 +160,7 @@ async def test_search_history_leaves_out_the_request_and_shows_only_the_matching
     trigger = await _message("@Yggdrasil 泰山怎么走", ago=MINUTE, qq=777)
     later = await _message("泰山今天下雨了", ago=0 * MINUTE)
 
-    result = str(await tools.search_history(_ctx(trigger=777), "泰山"))
+    result = str(await search_history(_ctx(trigger=777), "泰山"))
 
     assert f"#{old}" in result
     assert f"#{trigger}" not in result
@@ -189,7 +190,7 @@ async def test_search_history_shows_a_match_late_in_a_long_message(history: None
     chunk = await _chunk(search_space, "\n".join(lines), 0.5, ago=240 * MINUTE)
     message = await _message(f"{filler}结论：泰山的西线人少一点", ago=200 * MINUTE)
 
-    result = str(await tools.search_history(_ctx(), "泰山"))
+    result = str(await search_history(_ctx(), "泰山"))
 
     assert f"chunk:{chunk}" in result
     assert "泰山的索道票价是一百二十元" in result
@@ -210,7 +211,7 @@ async def test_recent_chat_never_starts_inside_a_multi_line_message(history: Non
         await _message(f"后面的第{i}条消息" + "。" * 20, ago=(10 - i) * MINUTE)
     settings = Settings(context=ContextSettings(max_context_chars=1000))
 
-    result = str(await tools.recent_chat(_ctx(settings=settings), minutes=60))
+    result = str(await recent_chat(_ctx(settings=settings), minutes=60))
 
     assert re.match(r"^\[\d{2}-\d{2} \d{2}:\d{2}\] #\d+ ", result)
     assert f"#{long}" not in result  # dropped whole, not cut in half

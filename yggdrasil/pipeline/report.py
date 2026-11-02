@@ -13,11 +13,12 @@ from pydantic_ai import Tool
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.usage import RunUsage
 
-from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.deps import Deps, Handles
-from yggdrasil.agent.job_tools import JOB_CONTROL_TOOLS, jobs
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.agent.tools import MAX_IMAGES, tool_names, tools_for
+from yggdrasil.agent.tools import sandbox as sandbox_tools
+from yggdrasil.agent.tools import suite_enabled, tool_names, tools_for
+from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
+from yggdrasil.agent.tools.jobs import JOB_CONTROL_TOOLS, jobs
 from yggdrasil.bot.state import any_bot, identity
 from yggdrasil.core.log import LOGGER
 from yggdrasil.delivery.send import send_text
@@ -107,7 +108,7 @@ class ReportInvocator(Invocator):
         job = self.job
         ident = await identity(self.bot)
         self.notes.bot = (ident.self_id, self.settings.persona.name)
-        sandbox_on = sandbox_tools.suite_enabled(
+        sandbox_on = suite_enabled(
             self.settings,
             "chat",
             self.group_id,
@@ -181,7 +182,7 @@ class ReportInvocator(Invocator):
                 path, caption = item.get("path", ""), item.get("caption", "")
                 try:
                     blob = await backend.read_bytes(path)
-                    await sandbox_tools.attach_image(deps, blob, caption)
+                    await attach_image(deps, blob, caption)
                 except ToolError as e:
                     notes.append(f"{path}：{e}")
                 except (OSError, SandboxError) as e:

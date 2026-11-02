@@ -13,9 +13,10 @@ from tests.support.db import insert_message, purge_groups
 from tests.support.files import png
 from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
-from yggdrasil.agent import media, tools
+from yggdrasil.agent import media
 from yggdrasil.agent.deps import Handle
-from yggdrasil.agent.tools import _resolve
+from yggdrasil.agent.tools import attachments
+from yggdrasil.agent.tools.base import resolve_ref
 from yggdrasil.napcat.models import FileInfo, FileUrl, ForwardMsg, MessageRecord, Segment, Sender
 from yggdrasil.tools.errors import ToolError
 
@@ -50,23 +51,23 @@ async def ids() -> AsyncIterator[dict[str, int]]:
 @pytest.mark.db
 async def test_a_message_ref_picks_the_kth_attachment_of_the_wanted_kind(ids: dict[str, int]) -> None:
     ctx = run_ctx(group_id=GROUP)
-    first = await _resolve(ctx, f"#{ids['two']}", "image")
-    second = await _resolve(ctx, f"#{ids['two']}/2", "image")
+    first = await resolve_ref(ctx, f"#{ids['two']}", "image")
+    second = await resolve_ref(ctx, f"#{ids['two']}/2", "image")
     assert (first.kind, first.data["file"]) == ("image", "a.png")
     assert second.data["file"] == "b.png"
     # Registered like any attachment, so the model can keep using the img#N key.
     assert ctx.deps.handles.get(second.key) is second
-    assert (await _resolve(ctx, f"#{ids['forward']}", "forward")).data == {"id": "res-1"}
+    assert (await resolve_ref(ctx, f"#{ids['forward']}", "forward")).data == {"id": "res-1"}
     # Links in the text count for the link kinds (read_url / read_x).
-    assert (await _resolve(ctx, f"#{ids['link']}", "url", "card")).data == {"url": "https://example.com/post"}
+    assert (await resolve_ref(ctx, f"#{ids['link']}", "url", "card")).data == {"url": "https://example.com/post"}
 
 
 @pytest.mark.db
 async def test_a_handle_of_another_kind_says_what_it_is(ids: dict[str, int]) -> None:
     ctx = run_ctx(group_id=GROUP)
-    image = await _resolve(ctx, f"#{ids['two']}", "image")
+    image = await resolve_ref(ctx, f"#{ids['two']}", "image")
     with pytest.raises(ToolError, match="是图片，不是合并转发"):
-        await _resolve(ctx, image.key, "forward")
+        await resolve_ref(ctx, image.key, "forward")
 
 
 @pytest.mark.db
@@ -86,7 +87,7 @@ async def test_refusals_explain_what_is_missing(ids: dict[str, int], ref: str, w
     key, _, n = ref.partition("/")
     target = f"#{ids[key]}" + (f"/{n}" if n else "") if key in ids else ref
     with pytest.raises(ToolError, match=why):
-        await _resolve(run_ctx(group_id=GROUP), target, "image")
+        await resolve_ref(run_ctx(group_id=GROUP), target, "image")
 
 
 def _forwards() -> FakeNapCat:
@@ -103,7 +104,7 @@ async def test_a_forward_from_the_history_opens_by_message_number(ids: dict[str,
     # The prod failure: a remark replied to a forward that was only in the history; expand_forward("#<id>") said
     # "找不到句柄" because only fwd#N handles were accepted.
     api = _forwards()
-    result = await tools.expand_forward(run_ctx(group_id=GROUP, api=api), f"#{ids['forward']}")
+    result = await attachments.expand_forward(run_ctx(group_id=GROUP, api=api), f"#{ids['forward']}")
     assert [c["id"] for c in api.called("get_forward_msg")] == ["res-1"]
     assert "节点内容" in str(result)
 
@@ -125,7 +126,7 @@ def group_files(monkeypatch: pytest.MonkeyPatch) -> None:
         return png() if "photo.jpg" in url else b"just some notes\n"
 
     monkeypatch.setattr(media, "download", fake)
-    monkeypatch.setattr(tools, "sees_images", lambda *_: True)
+    monkeypatch.setattr(attachments, "sees_images", lambda *_: True)
 
 
 def _shown_image(result: Any) -> BinaryContent:
@@ -137,9 +138,9 @@ def _shown_image(result: Any) -> BinaryContent:
 async def test_a_picture_sent_as_a_group_file_can_be_viewed(ids: dict[str, int], group_files: None) -> None:
     # The prod failure: view_image refused file#1 ("是文件，不是图片") and read_file sent the model back to view_image.
     ctx = run_ctx(group_id=GROUP, api=_files())
-    by_number = _shown_image(await tools.view_image(ctx, f"#{ids['photo_file']}"))
+    by_number = _shown_image(await attachments.view_image(ctx, f"#{ids['photo_file']}"))
     assert by_number.media_type == "image/png"
-    by_handle = _shown_image(await tools.read_file(ctx, "file#1"))
+    by_handle = _shown_image(await attachments.read_file(ctx, "file#1"))
     assert by_handle.data == by_number.data
 
 
@@ -148,7 +149,7 @@ async def test_view_image_on_a_file_that_is_not_a_picture_points_to_read_file(gr
     key = ctx.deps.handles.add("file", _group_file("notes.txt")["data"])
     assert key is not None
     # Tools hand errors to the model as text.
-    assert await tools.view_image(ctx, key) == "[工具错误] notes.txt 不是图片，用 read_file 读"
+    assert await attachments.view_image(ctx, key) == "[工具错误] notes.txt 不是图片，用 read_file 读"
 
 
 def _images(fresh: str | None) -> FakeNapCat:

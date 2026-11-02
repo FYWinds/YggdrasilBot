@@ -16,7 +16,7 @@ from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
 from tests.support.groups import fresh_group
 from tests.support.models import prompt_of, streaming_model
-from yggdrasil.agent import tools
+from yggdrasil.agent.tools import history
 from yggdrasil.db.models import DailyDigest, MemoryVector, Topic, TopicMessage, UserAlias, UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import curation, digest, llm, profiles, search
@@ -389,7 +389,7 @@ async def test_get_profile_shows_the_ten_highest_weighted_active_facts(clean: No
     assert profile is not None
     assert profile.facts == top
 
-    out = str(await tools.get_profile(run_ctx(group_id=GROUP, user_id=20001, self_id=10000), USER))
+    out = str(await history.get_profile(run_ctx(group_id=GROUP, user_id=20001, self_id=10000), USER))
     assert out.split("事实：\n", 1)[1].splitlines() == [f"- {f}" for f in top]
     assert "归档了的身份" not in out
 

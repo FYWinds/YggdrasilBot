@@ -16,13 +16,13 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 from sqlalchemy import update
 
-from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.context import BuiltContext, build_context
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import load_images, looks_like_image
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.agent.tools import action_tools, tool_names, tools_for
+from yggdrasil.agent.tools import action_tools, suite_enabled, tool_names, tools_for
+from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
@@ -279,7 +279,7 @@ class Invocator:
         ident = await identity(self.bot)
         persona = self.settings.persona.name
         self.notes.bot = (ident.self_id, persona)
-        sandbox_on = sandbox_tools.suite_enabled(
+        sandbox_on = suite_enabled(
             self.settings,
             self.handler,
             self.group_id,

@@ -8,19 +8,11 @@ from pydantic_ai import BinaryContent, RunContext, ToolReturn
 
 from tests.support.agent import run_ctx
 from tests.support.files import png
-from yggdrasil.agent import sandbox_tools
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.sandbox_tools import (
-    attach_image,
-    format_py,
-    format_sh,
-    py,
-    safe_name,
-    sandbox_put,
-    sh,
-    suite_enabled,
-)
-from yggdrasil.agent.tools import MAX_IMAGES, tool_names
+from yggdrasil.agent.tools import sandbox as sandbox_tools
+from yggdrasil.agent.tools import suite_enabled, tool_names
+from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
+from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, safe_name, sandbox_put, sh
 from yggdrasil.moderation.image import ImageVerdict, parse_answer
 from yggdrasil.sandbox import SandboxError
 from yggdrasil.sandbox.backend import _Exec
@@ -378,7 +370,7 @@ async def test_py_without_vision_describes_images_and_forgets_a_dead_kernel(monk
         seen.append(len(images))
         return "一张红色方块"
 
-    monkeypatch.setattr(sandbox_tools, "_vision", vision)
+    monkeypatch.setattr(sandbox_tools, "vision", vision)
     session = FakeSession(
         _py_result(status="died", kernel={"pid": None, "started": False, "previous": "alive"}, images=["/w/a.png"]),
         {"/w/a.png": png()},

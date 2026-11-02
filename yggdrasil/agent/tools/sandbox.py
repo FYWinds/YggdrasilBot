@@ -37,22 +37,13 @@ from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import ModelImage, is_image, media_bytes, media_type, model_image
-from yggdrasil.agent.tools import (
-    MAX_IMAGES,
-    ToolResult,
-    _resolve,
-    _tool,
-    _vision,
-    reserve_images,
-    sandbox_requested,
-    screen_image,
-)
+from yggdrasil.agent.tools.base import ToolResult, chat_tool, resolve_ref, vision
+from yggdrasil.agent.tools.images import attach_image
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
-from yggdrasil.moderation.image import check_image
 from yggdrasil.sandbox import SandboxError, Session
-from yggdrasil.settings import Settings, ToolSettings
+from yggdrasil.settings import ToolSettings
 from yggdrasil.tools.errors import ToolError
 
 WS_PREFIX = "ws"
@@ -70,25 +61,12 @@ _RESULT_CHARS = 4000
 _TRACEBACK_CHARS = 4000
 
 
-def suite_enabled(
-    settings: Settings, handler: str, group_id: int | None, *, global_settings: Settings, configured: bool
-) -> bool:
-    """Whether this run gets the sandbox suite: group chat runs only, when the group's ``tools.enabled``
-    names ``sandbox``, the global kill switch is on and the deployment has a sandbox configured."""
-    return (
-        group_id is not None
-        and sandbox_requested(settings.tools.enabled, handler)
-        and global_settings.tools.sandbox_enabled
-        and configured
-    )
-
-
 # --- harness capabilities -------------------------------------------------------
 
 
 @dataclass
 class _HarnessAccounting(AbstractCapability[Deps]):
-    """Tool counts, wall time, metrics and the slow-tool reaction for harness tools, which bypass ``_tool``."""
+    """Tool counts, wall time, metrics and the slow-tool reaction for harness tools, which bypass ``chat_tool``."""
 
     async def wrap_tool_execute(
         self,
@@ -224,7 +202,7 @@ def format_sh(result: dict[str, Any], seconds: float) -> str:
     return "\n".join(parts)
 
 
-@_tool("sh")
+@chat_tool("sh")
 async def sh(ctx: RunContext[Deps], script: str, timeout: int | None = None) -> str:  # noqa: ASYNC109 - model-facing
     """在当前选中的工作区里用 bash 运行一整段脚本（工作目录 /workspace），返回退出码和输出（stdout、stderr 合在一起，
     太长时保留头尾）。
@@ -333,7 +311,7 @@ async def _images(session: Session, paths: list[Any]) -> list[ModelImage]:
     return out
 
 
-@_tool("py")
+@chat_tool("py")
 async def py(
     ctx: RunContext[Deps],
     code: str,
@@ -384,7 +362,7 @@ async def py(
             content += [f"图 {i}{img.note}：", img.content]
         return ToolReturn(return_value="\n".join(parts), content=content)
     try:
-        described = await _vision(
+        described = await vision(
             ctx, images, "这些是代码运行产生的图（截图或图表）。逐张详细描述画面内容、布局，并完整转写其中的文字。"
         )
         parts.append(
@@ -399,14 +377,14 @@ async def py(
 # --- bot tools ------------------------------------------------------------------
 
 
-@_tool("sandbox_put")
+@chat_tool("sandbox_put")
 async def sandbox_put(ctx: RunContext[Deps], handle: str) -> str:
     """把聊天里的文件或图片（file#N / img#N 句柄，或聊天记录里的消息编号 #N）放进工作区的 /workspace/in/，返回路径。
     要在工作区里处理群文件或图片时先调用它；不会自动上传附件。"""
     session = _session(ctx)
     with _sandbox_errors():
         await session.require()
-    h = await _resolve(ctx, handle, "file", "image")
+    h = await resolve_ref(ctx, handle, "file", "image")
     cfg = ctx.deps.settings.tools
     blob, name = await media_bytes(ctx.deps.api, ctx.deps.group_id, h, cfg.file_max_mb * 1024 * 1024)
     if not (h.data.get("file") or h.data.get("name")) and name == "file":
@@ -439,25 +417,7 @@ async def _free_in_path(session: Session, name: str) -> str:
             return rel
 
 
-async def attach_image(
-    deps: Deps, blob: bytes, caption: str, *, check: Any = check_image, call_id: str | None = None
-) -> str:
-    """Moderate (when the group moderates output) and queue one image for the reply's forward message."""
-    reserve_images(deps, 1)
-    try:
-        image = await screen_image(deps, blob, check=check)
-    finally:
-        deps.images_reserved -= 1
-    deps.images.append((image, caption.strip()))
-    deps.notes.shown(call_id, [(image, caption.strip())])
-    left = MAX_IMAGES - len(deps.images)
-    return (
-        f"已附上图 {len(deps.images)}（{caption.strip() or '无标题'}），会附在合并转发里，正文不用再重复图里的内容。"
-        f"这次回复还能再发 {left} 张图。"
-    )
-
-
-@_tool("open_workspace")
+@chat_tool("open_workspace")
 async def open_workspace(
     ctx: RunContext[Deps], name: str | None = None, new: bool = False, description: str = ""
 ) -> str:
@@ -480,7 +440,7 @@ async def open_workspace(
         return await session.summary(opened)
 
 
-@_tool("reset_workspace")
+@chat_tool("reset_workspace")
 async def reset_workspace(ctx: RunContext[Deps]) -> str:
     """清空当前选中的工作区（文件、装好的依赖、kernel、公开链接全部清掉），名字和说明不变，下次使用时从空白的
     新环境开始。只在群友明确要求重置、或工作区已经坏掉时用。"""
@@ -492,7 +452,7 @@ async def reset_workspace(ctx: RunContext[Deps]) -> str:
 def bot_tools() -> list[Tool[Deps]]:
     """``open_workspace``, ``sh`` / ``py``, the bot's own workspace tools and the background-job tools. Tools that
     switch or empty the selected workspace run alone, never overlapping another call in the same turn."""
-    from yggdrasil.agent.job_tools import job_tools
+    from yggdrasil.agent.tools.jobs import job_tools
 
     fns: list[Callable[..., Awaitable[ToolResult]]] = [sh, py, sandbox_put]
     return [

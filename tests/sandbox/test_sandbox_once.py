@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from tests.support.agent import run_ctx
-from yggdrasil.agent.sandbox_tools import sh
+from yggdrasil.agent.tools.sandbox import sh
 from yggdrasil.sandbox import SandboxToolError
 from yggdrasil.sandbox import backend as backend_mod
 from yggdrasil.sandbox.backend import UNKNOWN_OUTCOME, Endpoint, SandboxdWorkspace, StaticResolver, _Conn

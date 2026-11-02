@@ -12,9 +12,8 @@ from pydantic_ai import RunContext
 
 from tests.support.agent import run_ctx
 from tests.support.routes import Routes
-from yggdrasil.agent import tools
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.tools import MAX_IMAGES
+from yggdrasil.agent.tools.images import MAX_IMAGES, render_html, render_markdown, render_mermaid
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.tools import render as renderer
 
@@ -51,7 +50,7 @@ def _asked(service: Routes) -> list[dict[str, Any]]:
 async def test_pages_arrive_in_order_in_the_remaining_slots_with_captions(service: Routes) -> None:
     service.answers[RENDER] = _ok(3)
     ctx = _ctx(images=1)
-    result = await tools.render_markdown(ctx, "# long", " 对比 ")
+    result = await render_markdown(ctx, "# long", " 对比 ")
     assert _asked(service) == [{"kind": "markdown", "source": "# long", "max_images": MAX_IMAGES - 1}]
     assert ctx.deps.images[1:] == [(b"page0", "对比"), (b"page1", "对比（2/3）"), (b"page2", "对比（3/3）")]
     assert result == f"已生成图 2–4（共 3 页）（对比），{DONE}"
@@ -59,7 +58,7 @@ async def test_pages_arrive_in_order_in_the_remaining_slots_with_captions(servic
 
 async def test_a_single_page_without_caption(service: Routes) -> None:
     ctx = _ctx()
-    result = await tools.render_mermaid(ctx, "graph TD\nA-->B")
+    result = await render_mermaid(ctx, "graph TD\nA-->B")
     assert _asked(service) == [{"kind": "mermaid", "source": "graph TD\nA-->B", "max_images": 1}]
     assert ctx.deps.images == [(b"page0", "")]
     assert result == f"已生成图 1（无标题），{DONE}"
@@ -68,13 +67,13 @@ async def test_a_single_page_without_caption(service: Routes) -> None:
 async def test_pages_without_caption_stay_empty(service: Routes) -> None:
     service.answers[RENDER] = _ok(2)
     ctx = _ctx()
-    await tools.render_markdown(ctx, "# long")
+    await render_markdown(ctx, "# long")
     assert [caption for _, caption in ctx.deps.images] == ["", ""]
 
 
 async def test_service_warnings_reach_the_model(service: Routes) -> None:
     service.answers[RENDER] = _ok(1, ["第 3 个 mermaid 代码块语法错误，已按代码显示"])
-    result = str(await tools.render_markdown(_ctx(), "# x"))
+    result = str(await render_markdown(_ctx(), "# x"))
     assert result.endswith("改好内容后重新生成）：\n- 第 3 个 mermaid 代码块语法错误，已按代码显示")
 
 
@@ -82,7 +81,7 @@ async def test_service_warnings_reach_the_model(service: Routes) -> None:
 async def test_service_errors_pass_through(service: Routes, status: int) -> None:
     service.answers[RENDER] = httpx.Response(status, json={"error": "第 2 行语法错误"})
     ctx = _ctx()
-    assert await tools.render_mermaid(ctx, "graph TD\nA-->") == "[工具错误] 第 2 行语法错误"
+    assert await render_mermaid(ctx, "graph TD\nA-->") == "[工具错误] 第 2 行语法错误"
     assert ctx.deps.images == []
 
 
@@ -91,24 +90,24 @@ async def test_an_unreachable_service_is_unavailable(service: Routes) -> None:
         raise httpx.ConnectError("refused", request=request)
 
     service.answers[RENDER] = refuse
-    assert "渲染服务暂时不可用" in str(await tools.render_html(_ctx(), "<b>x</b>"))
+    assert "渲染服务暂时不可用" in str(await render_html(_ctx(), "<b>x</b>"))
 
 
 @pytest.mark.parametrize("source", ["  \n", "x" * (renderer.MAX_SOURCE_CHARS + 1)])
 async def test_sources_are_checked_before_the_service(service: Routes, source: str) -> None:
-    assert str(await tools.render_markdown(_ctx(), source)).startswith("[工具错误]")
+    assert str(await render_markdown(_ctx(), source)).startswith("[工具错误]")
     assert service.seen == []
 
 
 async def test_a_full_reply_refuses_without_asking_the_service(service: Routes) -> None:
-    result = await tools.render_html(_ctx(images=MAX_IMAGES), "<b>x</b>")
+    result = await render_html(_ctx(images=MAX_IMAGES), "<b>x</b>")
     assert result == f"[工具错误] 这次回复已经有 {MAX_IMAGES} 张图了"
     assert service.seen == []
 
 
 async def test_without_a_render_service(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(APP_CONFIG, "render_url", None)
-    assert await tools.render_mermaid(_ctx(), "graph TD\nA-->B") == "[工具错误] 没有配置渲染服务"
+    assert await render_mermaid(_ctx(), "graph TD\nA-->B") == "[工具错误] 没有配置渲染服务"
 
 
 async def test_concurrent_renders_never_overfill_the_reply(service: Routes) -> None:
@@ -124,9 +123,9 @@ async def test_concurrent_renders_never_overfill_the_reply(service: Routes) -> N
     service.answers[RENDER] = together
     ctx = _ctx(images=2)
     results = await asyncio.gather(
-        tools.render_mermaid(ctx, "graph TD\nA-->B", "a"),
-        tools.render_markdown(ctx, "# long", "b"),
-        tools.render_html(ctx, "<b>x</b>", "c"),
+        render_mermaid(ctx, "graph TD\nA-->B", "a"),
+        render_markdown(ctx, "# long", "b"),
+        render_html(ctx, "<b>x</b>", "c"),
     )
     assert len(ctx.deps.images) == MAX_IMAGES
     assert [body["max_images"] for body in _asked(service)] == [1, 1]
@@ -137,8 +136,8 @@ async def test_concurrent_renders_never_overfill_the_reply(service: Routes) -> N
 async def test_a_failed_render_releases_its_slots(service: Routes) -> None:
     service.answers[RENDER] = httpx.Response(422, json={"error": "太长"})
     ctx = _ctx()
-    assert await tools.render_markdown(ctx, "# x") == "[工具错误] 太长"
+    assert await render_markdown(ctx, "# x") == "[工具错误] 太长"
     assert ctx.deps.images_reserved == 0
     service.answers[RENDER] = _ok(1)
-    await tools.render_markdown(ctx, "# x")
+    await render_markdown(ctx, "# x")
     assert _asked(service)[-1]["max_images"] == MAX_IMAGES  # every slot is free again
