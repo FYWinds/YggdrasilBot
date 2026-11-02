@@ -11,14 +11,13 @@ import httpx
 import pytest
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.ssrf import GuardedResponse
-from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web import Extracted, fetch
 
 
 @pytest.fixture(autouse=True)
 def _empty_page_cache() -> None:
-    web._cache.clear()
+    fetch._cache.clear()
 
 
 def _skip_dns(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -27,7 +26,7 @@ def _skip_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     async def check(url: str) -> str:
         return url.partition("#")[0]
 
-    monkeypatch.setattr(web, "check_url", check)
+    monkeypatch.setattr(fetch, "check_url", check)
 
 
 @pytest.fixture
@@ -46,7 +45,7 @@ def web_page(monkeypatch: pytest.MonkeyPatch) -> Routes:
         lowered = {k.lower(): v for k, v in resp.headers.items()}
         yield GuardedResponse(url, resp.status_code, lowered, resp.charset_encoding, resp.aiter_bytes())
 
-    monkeypatch.setattr(web, "impersonated_stream", impersonated_stream)
+    monkeypatch.setattr(fetch, "impersonated_stream", impersonated_stream)
     return routes
 
 
@@ -59,13 +58,13 @@ def local_tier(monkeypatch: pytest.MonkeyPatch) -> Callable[[Extracted | Excepti
     def install(outcome: Extracted | Exception) -> list[str]:
         reads: list[str] = []
 
-        async def fetch(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
+        async def local(url: str, browser_url: str | None, timeout_s: float) -> Extracted:
             reads.append(url)
             if isinstance(outcome, Exception):
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(web, "_fetch", fetch)
+        monkeypatch.setattr(fetch, "_fetch", local)
         return reads
 
     return install
