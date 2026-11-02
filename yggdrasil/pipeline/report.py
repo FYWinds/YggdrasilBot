@@ -10,7 +10,6 @@ import secrets
 
 from nonebot.adapters.onebot.v11 import Bot
 from pydantic_ai import Tool
-from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.usage import RunUsage
 
 from yggdrasil.agent.deps import Deps, Handles
@@ -137,27 +136,24 @@ class ReportInvocator(Invocator):
         )
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, "chat")
-        prompt_tools = list(tool_list)
-        extra_tools: list[Tool[Deps]] = [Tool(jobs, takes_ctx=True)]
-        capabilities: list[AbstractCapability[Deps]] = []
         if sandbox_on and self.group_id is not None:
             # The job's workspace is pre-selected so the model can look at what the job left there.
             self.sandbox = deps.sandbox = manager().session(
                 self.group_id, invocation_id=deps.invocation_id, cfg=tools_cfg, workspace=job.workspace
             )
-            extra_tools = [t for t in sandbox_tools.bot_tools() if t.name not in JOB_CONTROL_TOOLS]
-            prompt_tools += list(sandbox_tools.HARNESS_TOOL_NAMES)
-            capabilities = sandbox_tools.capabilities()
-        prompt_tools += [t.name for t in extra_tools]
+            suite = sandbox_tools.suite(exclude=JOB_CONTROL_TOOLS)
+        else:
+            jobs_tool = Tool(jobs, takes_ctx=True)
+            suite = sandbox_tools.Suite(tools=[jobs_tool], names=[jobs_tool.name])
         image_notes = await self._attach_images(deps)
         nonce = secrets.token_hex(3)
         requester = await member_label(self.group_id, self.user_id)
         prompt = build_prompt(job, nonce=nonce, requester=requester, image_notes=image_notes)
         agent = self._agent(
             resolved_model,
-            tools=tools_for(tool_list) + extra_tools,
-            capabilities=capabilities,
-            prompt_tools=prompt_tools,
+            tools=tools_for(tool_list) + suite.tools,
+            capabilities=suite.capabilities,
+            prompt_tools=tool_list + suite.names,
             actions=[],
             recall_denied=False,
             nonce=nonce,

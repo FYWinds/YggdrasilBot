@@ -333,23 +333,19 @@ class Invocator:
         actions = action_tools(deps)
         tools_cfg = self.settings.tools
         tool_list = tool_names(tools_cfg.enabled, self.handler)
-        prompt_tools = list(tool_list)
-        extra_tools: list[Tool[Deps]] = []
-        capabilities: list[AbstractCapability[Deps]] = []
+        suite = sandbox_tools.Suite()
         if sandbox_on and self.group_id is not None:
             self.sandbox = deps.sandbox = manager().session(
                 self.group_id,
                 invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
                 cfg=tools_cfg,
             )
-            extra_tools = sandbox_tools.bot_tools()
-            prompt_tools += [*sandbox_tools.HARNESS_TOOL_NAMES, *(t.name for t in extra_tools)]
-            capabilities = sandbox_tools.capabilities()
+            suite = sandbox_tools.suite()
         agent = self._agent(
             resolved_model,
-            tools=tools_for(tool_list) + actions + extra_tools,
-            capabilities=capabilities,
-            prompt_tools=prompt_tools,
+            tools=tools_for(tool_list) + actions + suite.tools,
+            capabilities=suite.capabilities,
+            prompt_tools=tool_list + suite.names,
             actions=[t.name for t in actions],
             recall_denied=replied_bot_msg is not None and recall_target is None,
             nonce=ctx.nonce,

@@ -23,7 +23,7 @@ import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -447,3 +447,19 @@ def bot_tools() -> list[Tool[Deps]]:
         Tool(reset_workspace, takes_ctx=True, sequential=True),
         *job_tools(),
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class Suite:
+    """What the sandbox suite adds to one run's agent (nothing, by default)."""
+
+    tools: list[Tool[Deps]] = field(default_factory=list)
+    capabilities: list[AbstractCapability[Deps]] = field(default_factory=list)
+    names: list[str] = field(default_factory=list)
+    """The suite's tool names for the instructions, the harness file tools included."""
+
+
+def suite(exclude: frozenset[str] = frozenset()) -> Suite:
+    """The sandbox suite without the ``exclude``d tools, assembled for one run."""
+    tools = [t for t in bot_tools() if t.name not in exclude]
+    return Suite(tools, capabilities(), [*HARNESS_TOOL_NAMES, *(t.name for t in tools)])
