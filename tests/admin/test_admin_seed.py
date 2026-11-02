@@ -13,6 +13,8 @@ from tests.support.groups import fresh_group
 from yggdrasil.db.models import Invocation, Message, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.devtools import seed
+from yggdrasil.devtools.seed.data import GROUPS, JOB_IDS, TRACE_PREFIX
+from yggdrasil.devtools.seed.scenarios import RUNS
 
 pytestmark = pytest.mark.db
 
@@ -45,10 +47,8 @@ async def test_seed_round_trip(client: httpx.AsyncClient, unrelated: list[uuid.U
         await seed.seed()
         await seed.seed()
         async with get_session() as s:
-            seeded = (
-                await s.scalars(select(Invocation).where(Invocation.trace_id.startswith(seed.TRACE_PREFIX)))
-            ).all()
-        assert len(seeded) == len(seed.RUNS) + 2  # plus the private ops run and the job report
+            seeded = (await s.scalars(select(Invocation).where(Invocation.trace_id.startswith(TRACE_PREFIX)))).all()
+        assert len(seeded) == len(RUNS) + 2  # plus the private ops run and the job report
         for i in seeded:
             r = await client.get(f"/api/invocations/{i.id}/transcript")
             assert r.status_code == 200
@@ -56,12 +56,12 @@ async def test_seed_round_trip(client: httpx.AsyncClient, unrelated: list[uuid.U
             # Runs that reached the model were recorded; the others show their request.
             assert body["available"] is (i.status not in ("blocked_input", "ratelimited", "running")), i.status
             assert body["entries"]
-        for job_id in seed.JOB_IDS:
+        for job_id in JOB_IDS:
             assert (await client.get(f"/api/sandbox/jobs/{job_id}/transcript")).status_code == 200
     finally:
         await seed.reset()
-    assert await _count(Invocation, Invocation.trace_id.startswith(seed.TRACE_PREFIX)) == 0
-    assert await _count(Transcript, Transcript.job_id.in_(seed.JOB_IDS)) == 0
-    assert await _count(Message, Message.group_id.in_(list(seed.GROUPS))) == 0
+    assert await _count(Invocation, Invocation.trace_id.startswith(TRACE_PREFIX)) == 0
+    assert await _count(Transcript, Transcript.job_id.in_(JOB_IDS)) == 0
+    assert await _count(Message, Message.group_id.in_(list(GROUPS))) == 0
     assert await _count(Invocation, Invocation.id.in_(unrelated)) == 2
     assert await _count(Message, Message.group_id == OTHER) == 1
