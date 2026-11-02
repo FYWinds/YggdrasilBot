@@ -17,7 +17,7 @@ from yggdrasil.sandbox.backend import (
     shell_argv,
 )
 from yggdrasil.sandbox.errors import SandboxError, SandboxToolError
-from yggdrasil.sandbox.manager import _claim_ready, format_tree, format_workspaces, parse_listener, reap_argv
+from yggdrasil.sandbox.manager import _claim_ready, parse_listener, reap_argv
 from yggdrasil.sandbox.state import (
     Link,
     LinkRecord,
@@ -32,6 +32,7 @@ from yggdrasil.sandbox.state import (
     validate_port,
     ws_key,
 )
+from yggdrasil.sandbox.text import format_tree, format_workspaces
 
 WRAP = ["/bin/sh", "-c", 'exec "$@" </dev/null', "sh"]
 

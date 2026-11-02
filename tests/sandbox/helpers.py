@@ -15,7 +15,8 @@ from pydantic_ai.workspaces import CommandResult, FileEntry
 
 from tests.support.groups import fresh_group
 from yggdrasil.sandbox.backend import ExecResult, SandboxdWorkspace
-from yggdrasil.sandbox.manager import _TREE_SCRIPT, WorkspaceManager
+from yggdrasil.sandbox.manager import WorkspaceManager
+from yggdrasil.sandbox.text import TREE_SCRIPT
 from yggdrasil.settings import ToolSettings
 
 SANDBOXD_REST = os.environ.get("YGG_TEST_SANDBOXD_REST")
@@ -123,7 +124,7 @@ class MemorySandboxd:
 
         async def exec_(ws: SandboxdWorkspace, argv: Sequence[str], **_: Any) -> ExecResult:
             fs = await files(ws)
-            if list(argv[:3]) == ["/bin/sh", "-c", _TREE_SCRIPT]:
+            if list(argv[:3]) == ["/bin/sh", "-c", TREE_SCRIPT]:
                 root = argv[4].rstrip("/") + "/"
                 rows = [f"f\t{len(v)}\t0\t{k.removeprefix(root)}" for k, v in sorted(fs.items()) if k.startswith(root)]
                 return ExecResult(0, "\n".join(rows).encode(), b"")
