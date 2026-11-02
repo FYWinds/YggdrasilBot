@@ -1,9 +1,10 @@
 """What every agent tool module shares: the ``chat_tool`` decorator (failures are returned as text so the model
-can adapt), ref resolution, the vision sub-agent and name lookup."""
+can adapt) and the per-call ``accounting`` behind it, ref resolution, the vision sub-agent and name lookup."""
 
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
 from functools import wraps
 from typing import Any
 
@@ -23,37 +24,46 @@ from yggdrasil.tools.errors import ToolError
 type ToolResult = str | ToolReturn
 
 
+@asynccontextmanager
+async def accounting(deps: Deps, name: str) -> AsyncIterator[None]:
+    """One call of tool ``name``: its count, the run's slow-tool reaction, its wall time and the tool metrics. The
+    call failed when the body raises; the exception goes on, for the caller to turn into text or not."""
+    deps.tool_counts[name] += 1
+    if deps.on_slow_tool is not None and name in deps.settings.tools.slow_tools:
+        await deps.on_slow_tool()
+    started = time.perf_counter()
+    outcome = "ok"
+    try:
+        yield
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        elapsed = time.perf_counter() - started
+        deps.tool_seconds[name] += elapsed
+        TOOL_CALLS.add(1, {"tool": name, "outcome": outcome})
+        TOOL_DURATION.record(elapsed, {"tool": name})
+
+
 def chat_tool[**P](name: str) -> Callable[[Callable[P, Awaitable[ToolResult]]], Callable[P, Awaitable[ToolResult]]]:
     def deco(fn: Callable[P, Awaitable[ToolResult]]) -> Callable[P, Awaitable[ToolResult]]:
         @wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolResult:
             ctx = args[0]
             assert isinstance(ctx, RunContext)
-            ctx.deps.tool_counts[name] += 1
-            if ctx.deps.on_slow_tool is not None and name in ctx.deps.settings.tools.slow_tools:
-                await ctx.deps.on_slow_tool()
-            started = time.perf_counter()
-            outcome = "ok"
             try:
-                return await fn(*args, **kwargs)
+                async with accounting(ctx.deps, name):
+                    return await fn(*args, **kwargs)
             except ToolError as e:
-                outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[工具错误] {e}"
             except TaskNotConfigured as e:
-                outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
                 return f"[工具不可用] {e}"
             except Exception as e:
-                outcome = "error"
                 ctx.deps.notes.failed(ctx.tool_call_id)
                 LOGGER.opt(exception=e).warning("tool {} failed", name)
                 return f"[工具错误] {type(e).__name__}: {str(e)[:200]}"
-            finally:
-                elapsed = time.perf_counter() - started
-                ctx.deps.tool_seconds[name] += elapsed
-                TOOL_CALLS.add(1, {"tool": name, "outcome": outcome})
-                TOOL_DURATION.record(elapsed, {"tool": name})
 
         return wrapper
 

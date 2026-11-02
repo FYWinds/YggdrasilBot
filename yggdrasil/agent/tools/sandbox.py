@@ -37,10 +37,9 @@ from pydantic_ai_harness import FileSystem
 
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.media import ModelImage, is_image, media_bytes, media_type, model_image
-from yggdrasil.agent.tools.base import ToolResult, chat_tool, resolve_ref, vision
+from yggdrasil.agent.tools.base import ToolResult, accounting, chat_tool, resolve_ref, vision
 from yggdrasil.agent.tools.images import attach_image
 from yggdrasil.core.log import LOGGER
-from yggdrasil.core.metrics import TOOL_CALLS, TOOL_DURATION
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
 from yggdrasil.sandbox import SandboxError, Session
 from yggdrasil.settings import ToolSettings
@@ -66,7 +65,8 @@ _TRACEBACK_CHARS = 4000
 
 @dataclass
 class _HarnessAccounting(AbstractCapability[Deps]):
-    """Tool counts, wall time, metrics and the slow-tool reaction for harness tools, which bypass ``chat_tool``."""
+    """Tool counts, wall time, metrics and the slow-tool reaction for harness tools, which bypass ``chat_tool``;
+    unlike it, their exceptions are re-raised, not turned into text."""
 
     async def wrap_tool_execute(
         self,
@@ -80,22 +80,8 @@ class _HarnessAccounting(AbstractCapability[Deps]):
         name = call.tool_name
         if name not in HARNESS_TOOL_NAMES:
             return await handler(args)
-        deps = ctx.deps
-        deps.tool_counts[name] += 1
-        if deps.on_slow_tool is not None and name in deps.settings.tools.slow_tools:
-            await deps.on_slow_tool()
-        started = time.perf_counter()
-        outcome = "ok"
-        try:
+        async with accounting(ctx.deps, name):
             return await handler(args)
-        except Exception:
-            outcome = "error"
-            raise
-        finally:
-            elapsed = time.perf_counter() - started
-            deps.tool_seconds[name] += elapsed
-            TOOL_CALLS.add(1, {"tool": name, "outcome": outcome})
-            TOOL_DURATION.record(elapsed, {"tool": name})
 
 
 def capabilities() -> list[AbstractCapability[Deps]]:
