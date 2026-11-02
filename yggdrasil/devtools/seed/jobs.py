@@ -11,7 +11,8 @@ from yggdrasil.devtools.seed.replay import invoke
 from yggdrasil.devtools.seed.scenarios import SAFE, Run, Turn, bot_reply
 from yggdrasil.kv import redis_client
 from yggdrasil.sandbox import archive
-from yggdrasil.sandbox.jobs import ACTIVE_KEY, Job, JobEvent, events_key, group_key, job_key, render_rules, running_key
+from yggdrasil.sandbox.job_model import ACTIVE_KEY, Job, JobEvent, events_key, group_key, job_key, running_key
+from yggdrasil.sandbox.jobs import render_rules
 from yggdrasil.settings import Settings
 from yggdrasil.transcript import store
 from yggdrasil.transcript.capture import text_part

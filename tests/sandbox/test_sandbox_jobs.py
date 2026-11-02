@@ -17,20 +17,18 @@ from tests.sandbox.local_rpc import LocalRpc, fake_env
 from yggdrasil import relay
 from yggdrasil.sandbox import SandboxError, SandboxToolError, omp
 from yggdrasil.sandbox.backend import UNKNOWN_OUTCOME
-from yggdrasil.sandbox.jobs import (
+from yggdrasil.sandbox.job_model import (
     ACTIVE_KEY,
-    START_MARGIN_S,
     Job,
     JobEvent,
-    JobOps,
-    JobRunner,
-    Output,
     ReportDeferred,
     Requester,
     job_key,
     keep_field,
     running_key,
 )
+from yggdrasil.sandbox.job_ops import JobOps, Output
+from yggdrasil.sandbox.jobs import START_MARGIN_S, JobRunner
 from yggdrasil.sandbox.state import Link, keep_key
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import Blob

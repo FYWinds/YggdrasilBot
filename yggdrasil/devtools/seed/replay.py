@@ -34,7 +34,7 @@ from yggdrasil.memory import search
 from yggdrasil.memory.search import MessageView
 from yggdrasil.people import self_label
 from yggdrasil.prompts import render
-from yggdrasil.sandbox.jobs import Job
+from yggdrasil.sandbox.job_model import Job
 from yggdrasil.settings import Settings
 from yggdrasil.transcript import store
 from yggdrasil.transcript.capture import TranscriptRecorder

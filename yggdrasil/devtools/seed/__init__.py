@@ -60,7 +60,7 @@ from yggdrasil.devtools.seed.replay import invoke
 from yggdrasil.devtools.seed.scenarios import PRIVATE_OPS, RUNS
 from yggdrasil.devtools.seed.tables import add_base, add_events, add_memory, add_reviews, add_stickers
 from yggdrasil.kv import redis_client
-from yggdrasil.sandbox.jobs import ACTIVE_KEY, events_key, group_key, job_key, running_key
+from yggdrasil.sandbox.job_model import ACTIVE_KEY, events_key, group_key, job_key, running_key
 from yggdrasil.transcript.notes import blob_id
 
 

@@ -11,7 +11,8 @@ from yggdrasil.admin import transcripts
 from yggdrasil.admin.auth import Actor
 from yggdrasil.admin.common import Ok, Page, change, not_found, unavailable
 from yggdrasil.sandbox import WorkspaceInfo, WorkspaceManager, archive, manager
-from yggdrasil.sandbox.jobs import STATUS_TEXT, Job, JobEvent, runner
+from yggdrasil.sandbox.job_model import STATUS_TEXT, Job, JobEvent
+from yggdrasil.sandbox.jobs import runner
 from yggdrasil.transcript import store
 from yggdrasil.transcript.schema import Entry, TextPart
 

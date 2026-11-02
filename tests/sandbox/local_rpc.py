@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from yggdrasil.sandbox import omp
-from yggdrasil.sandbox.jobs import parse_exit
+from yggdrasil.sandbox.job_ops import parse_exit
 
 FAKE_OMP = Path(__file__).with_name("fake_omp.py")
 

@@ -10,7 +10,8 @@ from pydantic_ai import RunContext, Tool
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.tools.base import ToolResult, chat_tool
 from yggdrasil.sandbox import SandboxError, Session
-from yggdrasil.sandbox.jobs import KIND_TEXT, STATUS_TEXT, Job, Requester, fmt_duration, relay_enabled, runner
+from yggdrasil.sandbox.job_model import KIND_TEXT, STATUS_TEXT, Job, Requester, fmt_duration
+from yggdrasil.sandbox.jobs import relay_enabled, runner
 from yggdrasil.tools.errors import ToolError
 
 JOB_CONTROL_TOOLS = frozenset({"background", "delegate", "cancel_job"})

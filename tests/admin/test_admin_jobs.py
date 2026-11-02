@@ -14,7 +14,7 @@ from tests.support.groups import fresh_group
 from yggdrasil.db.models import SandboxJob, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.sandbox import archive
-from yggdrasil.sandbox.jobs import ACTIVE_KEY, Job, JobEvent, JobStatus, job_key
+from yggdrasil.sandbox.job_model import ACTIVE_KEY, Job, JobEvent, JobStatus, job_key
 from yggdrasil.transcript import store
 from yggdrasil.transcript.schema import Entry, TextPart
 

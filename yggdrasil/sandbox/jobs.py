@@ -16,20 +16,20 @@ Everything lives in files and Redis, nothing in long-lived connections, so a res
 While a job runs its supervisor pid sits in its workspace's keep hash (``job:<id>``), so the end-of-invocation
 reap spares it and the workspace is never evicted; starting a job pushes the workspace's hard cap out so the
 job fits. A workspace that is destroyed or replaced meanwhile fails the job on its next poll.
+
+This module is the poller; the record and its Redis keys are in ``job_model``, the in-workspace commands in
+``job_ops``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import posixpath
-import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from pydantic_ai.workspaces import WorkspaceError
 
@@ -38,6 +38,29 @@ from yggdrasil.kv import redis_client
 from yggdrasil.sandbox import omp
 from yggdrasil.sandbox.backend import DEFAULT_ROOT
 from yggdrasil.sandbox.errors import SandboxError
+from yggdrasil.sandbox.job_model import (
+    ACTIVE_KEY,
+    GROUP_PREFIX,
+    JOB_KEY_PREFIX,
+    KIND_TEXT,
+    LOCK_PREFIX,
+    RETENTION_S,
+    STATUS_TEXT,
+    TERMINAL,
+    Job,
+    JobEvent,
+    JobKind,
+    JobStatus,
+    ReportDeferred,
+    Requester,
+    events_key,
+    fmt_duration,
+    group_key,
+    job_key,
+    keep_field,
+    running_key,
+)
+from yggdrasil.sandbox.job_ops import JobBackend, JobChannel, JobOps
 from yggdrasil.sandbox.state import keep_key, random_id
 from yggdrasil.transcript.capture import text_part
 from yggdrasil.transcript.notes import Blob
@@ -50,17 +73,6 @@ if TYPE_CHECKING:
     from yggdrasil.sandbox.state import Link
     from yggdrasil.settings import Settings, ToolSettings
 
-YGG = "/opt/ygg/ygg"
-JOBS_ROOT = f"{DEFAULT_ROOT}/.ygg/jobs"
-
-JOB_KEY_PREFIX = "ygg:sandbox:job:"
-ACTIVE_KEY = "ygg:sandbox:jobs:active"
-RUNNING_PREFIX = "ygg:sandbox:jobs:running:"
-GROUP_PREFIX = "ygg:sandbox:jobs:group:"
-LOCK_PREFIX = "ygg:sandbox:joblock:"
-
-RETENTION_S = 7 * 86400
-"""How long a settled job's Redis record stays (the chat ``jobs`` tool reads it); the archive keeps it for good."""
 POLL_S = 3.0
 LOCK_TTL = 120
 """Seconds a poller holds a job; longer than any single visit (helper commands time out well before)."""
@@ -80,21 +92,7 @@ TAIL_CHARS = 6000
 MAX_SHOW_BYTES = 10 * 1024 * 1024
 MAX_SHOW = 4  # images a job can hand to its report (the reply's forward message carries 4)
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-_SEND_INLINE = 32 * 1024  # frames larger than this go through a file (``ygg rpc send --file``)
 
-JobKind = Literal["command", "agent"]
-JobStatus = Literal["starting", "running", "succeeded", "failed", "timeout", "cancelled"]
-ReportState = Literal["", "pending", "running", "done", "skipped", "failed"]
-TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "timeout", "cancelled"})
-STATUS_TEXT = {
-    "starting": "启动中",
-    "running": "运行中",
-    "succeeded": "已完成",
-    "failed": "失败",
-    "timeout": "超时",
-    "cancelled": "已取消",
-}
-KIND_TEXT = {"command": "后台命令", "agent": "后台大任务"}
 _GONE = "工作区已被回收或重置，任务中断，里面的文件都没了。"
 
 # Reserve a running slot and create the record: 0 ok, 1 group at its limit, 2 an agent job already runs.
@@ -118,333 +116,6 @@ _CAS_STATUS = (
     "if redis.call('HGET', KEYS[1], 'status') ~= ARGV[1] then return 0 end "
     "redis.call('HSET', KEYS[1], unpack(ARGV, 2)) return 1"
 )
-
-_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
-
-# $1 job dir, $2 events file name ("" for none), $3 byte offset, $4 max bytes. Exit 3: the dir is gone.
-# The exit file is read first, so events read after it are complete when the job has ended. A supervisor that
-# is gone without an exit file was SIGKILLed (no chance to write it): reported as signal 9.
-_POLL_SCRIPT = (
-    '[ -d "$1" ] || exit 3; '
-    'if [ -f "$1/exit" ]; then cat -- "$1/exit"; '
-    'else p=$(cat -- "$1/pid" 2>/dev/null); '
-    'if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then '
-    'if [ -f "$1/exit" ]; then cat -- "$1/exit"; else printf \'{"exit":null,"signal":9}\'; fi; fi; fi; '
-    'printf "\\0"; '
-    '[ -n "$2" ] || exit 0; '
-    'tail -c +"$(($3 + 1))" -- "$1/$2" 2>/dev/null | head -c "$4"; exit 0'
-)
-# $1 file, $2 head bytes, $3 tail bytes: "<size>\n" + head + tail (the tail never overlaps the head).
-_OUTPUT_SCRIPT = (
-    '[ -f "$1" ] || { printf "0\\n"; exit 0; }; s=$(stat -c %s -- "$1"); printf "%s\\n" "$s"; '
-    'head -c "$2" -- "$1"; r=$((s - $2)); [ "$r" -gt "$3" ] && r=$3; '
-    '[ "$r" -gt 0 ] && tail -c "$r" -- "$1"; exit 0'
-)
-_SIZE_SCRIPT = '[ -f "$1" ] || exit 3; stat -L -c %s -- "$1"'
-
-
-def job_dir(job_id: str) -> str:
-    return f"{JOBS_ROOT}/{job_id}"
-
-
-def job_key(job_id: str) -> str:
-    return f"{JOB_KEY_PREFIX}{job_id}"
-
-
-def events_key(job_id: str) -> str:
-    return f"{JOB_KEY_PREFIX}{job_id}:events"
-
-
-def running_key(group_id: int) -> str:
-    return f"{RUNNING_PREFIX}{group_id}"
-
-
-def group_key(group_id: int) -> str:
-    return f"{GROUP_PREFIX}{group_id}"
-
-
-def keep_field(job_id: str) -> str:
-    return f"job:{job_id}"
-
-
-def clean_output(raw: bytes) -> str:
-    """Terminal output as plain text: UTF-8 with replacement, ANSI escapes stripped, ``\\r`` progress bars
-    collapsed to their last state."""
-    text = _ANSI.sub("", raw.decode("utf-8", errors="replace"))
-    return "\n".join(line.rsplit("\r", 1)[-1] if "\r" in line else line for line in text.split("\n"))
-
-
-def fmt_duration(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds} 秒"
-    if seconds < 3600:
-        return f"{seconds // 60} 分 {seconds % 60} 秒"
-    return f"{seconds // 3600} 小时 {seconds % 3600 // 60} 分"
-
-
-# --- records ------------------------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Requester:
-    """Who started a job, from where: the report replies to ``trigger_message_id``."""
-
-    group_id: int
-    user_id: int
-    trigger_message_id: int | None
-    invocation_id: str | None
-    request_text: str
-
-
-@dataclass
-class Job:
-    id: str
-    kind: JobKind
-    group_id: int
-    user_id: int
-    trigger_message_id: int | None
-    invocation_id: str | None
-    request_text: str
-    title: str
-    spec: str  # the script (command) or the task (agent)
-    workspace: str  # the workspace's name in its group
-    claim: str
-    created_at: float
-    deadline: float
-    status: JobStatus = "starting"
-    pid: int | None = None
-    ended_at: float | None = None
-    exit_code: int | None = None
-    result: str = ""
-    error: str = ""
-    progress: str = ""
-    model: str = ""
-    driver: str = ""  # omp.DriverState as JSON (agent jobs)
-    images: list[dict[str, str]] = field(default_factory=list)  # {"path", "caption"} from omp's show
-    links: list[dict[str, Any]] = field(default_factory=list)  # {"port", "url"} from omp's publish
-    usage: dict[str, int] = field(default_factory=dict)  # relay usage (agent jobs)
-    renewed_at: float = 0.0
-    cancel: str = ""  # who asked to cancel: "chat:<qq>" / "admin:<email>"; written only by ``cancel``
-    report: ReportState = ""
-    report_at: float = 0.0
-    report_attempts: int = 0
-    report_invocation: str = ""
-
-    @property
-    def dir(self) -> str:
-        return job_dir(self.id)
-
-    @property
-    def running(self) -> bool:
-        return self.status in ("starting", "running")
-
-    def to_hash(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for key, value in asdict(self).items():
-            if isinstance(value, (list, dict)):
-                out[key] = json.dumps(value, ensure_ascii=False)
-            elif value is None:
-                out[key] = ""
-            else:
-                out[key] = str(value) if not isinstance(value, float) else repr(value)
-        return out
-
-    @classmethod
-    def from_hash(cls, data: dict[str, str]) -> Job | None:
-        if not data.get("id"):
-            return None
-
-        def opt_int(key: str) -> int | None:
-            raw = data.get(key, "")
-            return int(raw) if raw not in ("", "None") else None
-
-        def opt_float(key: str) -> float | None:
-            raw = data.get(key, "")
-            return float(raw) if raw not in ("", "None") else None
-
-        try:
-            return cls(
-                id=data["id"],
-                kind=cast(JobKind, data.get("kind", "command")),
-                group_id=int(data["group_id"]),
-                user_id=int(data.get("user_id") or 0),
-                trigger_message_id=opt_int("trigger_message_id"),
-                invocation_id=data.get("invocation_id") or None,
-                request_text=data.get("request_text", ""),
-                title=data.get("title", ""),
-                spec=data.get("spec", ""),
-                workspace=data.get("workspace", ""),
-                claim=data.get("claim", ""),
-                created_at=float(data.get("created_at") or 0),
-                deadline=float(data.get("deadline") or 0),
-                status=cast(JobStatus, data.get("status", "starting")),
-                pid=opt_int("pid"),
-                ended_at=opt_float("ended_at"),
-                exit_code=opt_int("exit_code"),
-                result=data.get("result", ""),
-                error=data.get("error", ""),
-                progress=data.get("progress", ""),
-                model=data.get("model", ""),
-                driver=data.get("driver", ""),
-                images=json.loads(data.get("images") or "[]"),
-                links=json.loads(data.get("links") or "[]"),
-                usage=json.loads(data.get("usage") or "{}"),
-                renewed_at=float(data.get("renewed_at") or 0),
-                cancel=data.get("cancel", ""),
-                report=cast(ReportState, data.get("report", "")),
-                report_at=float(data.get("report_at") or 0),
-                report_attempts=int(data.get("report_attempts") or 0),
-                report_invocation=data.get("report_invocation", ""),
-            )
-        except (ValueError, KeyError, TypeError):
-            LOGGER.warning("unreadable job record {}", data.get("id"))
-            return None
-
-
-@dataclass(frozen=True)
-class JobEvent:
-    at: float
-    text: str
-
-
-# --- in-workspace operations --------------------------------------------------------------------------------
-
-
-class Exec(Protocol):
-    exit_code: int
-    stdout: bytes
-    stderr: bytes
-
-
-class JobBackend(Protocol):
-    """The part of ``SandboxdWorkspace`` jobs use."""
-
-    async def exec(self, argv: Sequence[str], *, seconds: float = ..., retry: bool = ..., once: bool = ...) -> Exec: ...
-    async def write_bytes(self, path: str, data: bytes) -> None: ...
-    async def aclose(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class Output:
-    text: str
-    size: int
-    truncated: bool
-
-
-class JobOps:
-    """Job files and processes in one workspace, through ``/opt/ygg/ygg`` and small shell helpers."""
-
-    def __init__(self, backend: JobBackend) -> None:
-        self._b = backend
-
-    async def _ygg(self, *args: str, seconds: float = 30, once: bool = False) -> dict[str, Any]:
-        """Run ``/opt/ygg/ygg``; ``once`` for commands that must not run twice (they start a process or write
-        into omp's stdin): a connection lost after sending raises instead of re-running them."""
-        result = await self._b.exec([YGG, *args], seconds=seconds, once=once)
-        out = result.stdout.decode("utf-8", errors="replace").strip()
-        if result.exit_code != 0 or not out:
-            err = result.stderr.decode("utf-8", errors="replace").strip() or out or f"exit {result.exit_code}"
-            raise SandboxError(f"ygg {' '.join(args[:2])} 失败：{err[:500]}")
-        try:
-            return json.loads(out.splitlines()[-1])
-        except ValueError as e:
-            raise SandboxError(f"ygg {' '.join(args[:2])} 的输出看不懂：{out[:200]}") from e
-
-    async def write(self, path: str, data: bytes) -> None:
-        await self._b.write_bytes(path, data)
-
-    async def start_sh(self, directory: str) -> int:
-        return int((await self._ygg("sh", "start", directory, once=True))["pid"])
-
-    async def start_rpc(self, directory: str, argv: list[str], env: dict[str, str], *, cwd: str) -> int:
-        args = ["rpc", "start", directory, "--cwd", cwd]
-        for key, value in env.items():
-            args += ["--env", f"{key}={value}"]
-        return int((await self._ygg(*args, "--", *argv, once=True))["pid"])
-
-    async def kill(self, directory: str) -> None:
-        await self._ygg("proc", "kill", directory, seconds=20)
-
-    async def send(self, directory: str, frame: dict[str, Any]) -> None:
-        text = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
-        if len(text.encode()) <= _SEND_INLINE:
-            await self._ygg("rpc", "send", directory, "--json", text, once=True)
-            return
-        path = f"{directory}/send-{random_id(6)}.json"
-        await self.write(path, text.encode())
-        await self._ygg("rpc", "send", directory, "--file", path, once=True)
-
-    async def close_stdin(self, directory: str) -> None:
-        await self._ygg("rpc", "close", directory)
-
-    async def poll(self, directory: str, events: str = "", offset: int = 0, limit: int = 0) -> omp.Poll:
-        result = await self._b.exec(
-            ["/bin/sh", "-c", _POLL_SCRIPT, "sh", directory, events, str(offset), str(limit)], seconds=30
-        )
-        if result.exit_code == 3:
-            return omp.Poll(gone=True, exit=None, data=b"")
-        if result.exit_code != 0:
-            raise SandboxError(f"读任务状态失败：{result.stderr.decode('utf-8', 'replace')[:300]}")
-        raw_exit, _, data = result.stdout.partition(b"\0")
-        return omp.Poll(gone=False, exit=parse_exit(raw_exit), data=data)
-
-    async def output(self, path: str, *, head: int, tail: int) -> Output:
-        result = await self._b.exec(["/bin/sh", "-c", _OUTPUT_SCRIPT, "sh", path, str(head), str(tail)], seconds=30)
-        first, _, rest = result.stdout.partition(b"\n")
-        size = int(first) if first.strip().isdigit() else 0
-        head_bytes = rest[: min(head, size)]
-        tail_bytes = rest[min(head, size) :]
-        truncated = size > head + tail
-        text = clean_output(head_bytes)
-        if tail_bytes:
-            gap = size - len(head_bytes) - len(tail_bytes)
-            text += f"\n…（中间省略 {gap} 字节）…\n" if truncated else ""
-            text += clean_output(tail_bytes)
-        return Output(text=text, size=size, truncated=truncated)
-
-    async def tail_text(self, path: str, chars: int) -> str:
-        return (await self.output(path, head=0, tail=chars * 3)).text[-chars:]
-
-    async def file_size(self, path: str) -> int | None:
-        result = await self._b.exec(["/bin/sh", "-c", _SIZE_SCRIPT, "sh", path], seconds=20)
-        out = result.stdout.decode().strip()
-        return int(out) if result.exit_code == 0 and out.isdigit() else None
-
-
-def parse_exit(raw: bytes) -> omp.ExitInfo | None:
-    raw = raw.strip()
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return omp.ExitInfo(exit=None, signal=None)
-    code, sig = data.get("exit"), data.get("signal")
-    return omp.ExitInfo(exit=code if isinstance(code, int) else None, signal=sig if isinstance(sig, int) else None)
-
-
-class _Channel:
-    """``omp.RpcChannel`` over one job directory."""
-
-    def __init__(self, ops: JobOps, directory: str) -> None:
-        self._ops = ops
-        self._dir = directory
-
-    async def send(self, frame: dict[str, Any]) -> None:
-        await self._ops.send(self._dir, frame)
-
-    async def close_stdin(self) -> None:
-        await self._ops.close_stdin(self._dir)
-
-    async def kill(self) -> None:
-        await self._ops.kill(self._dir)
-
-    async def poll(self, offset: int, limit: int) -> omp.Poll:
-        return await self._ops.poll(self._dir, "events.jsonl", offset, limit)
-
-    async def stderr_tail(self, limit: int) -> str:
-        return await self._ops.tail_text(f"{self._dir}/stderr.log", limit)
 
 
 # --- relay (agent jobs) -------------------------------------------------------------------------------------
@@ -471,10 +142,6 @@ class Workspaces(Protocol):
     async def unpublish(
         self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]
     ) -> bool: ...
-
-
-class ReportDeferred(Exception):
-    """The report cannot start now (no bot connection, the requester's queue is full); retry later."""
 
 
 Reporter = Callable[[Job], Awaitable[str | None]]
@@ -985,7 +652,7 @@ class JobRunner:
 
         return omp.OmpDriver(
             omp.DriverState.from_json(job.driver),
-            _Channel(ops, job.dir),
+            JobChannel(ops, job.dir),
             host,
             session_dir=omp.session_dir(job.group_id),
             model=job.model,

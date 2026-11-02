@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from yggdrasil.db.models import SandboxJob
 from yggdrasil.db.session import get_session
-from yggdrasil.sandbox.jobs import Job, JobEvent
+from yggdrasil.sandbox.job_model import Job, JobEvent
 
 
 @dataclass(frozen=True)

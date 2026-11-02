@@ -36,6 +36,7 @@ from yggdrasil.sandbox.backend import (
     StaticResolver,
 )
 from yggdrasil.sandbox.errors import SandboxError, SandboxNotConfigured, SandboxToolError
+from yggdrasil.sandbox.job_model import job_key
 from yggdrasil.sandbox.k8s import KubeClient, KubeError
 from yggdrasil.sandbox.state import (
     INDEX_KEY_PREFIX,
@@ -766,8 +767,6 @@ class WorkspaceManager:
         return tuple(sorted(f.removeprefix("job:") for f in fields if f.startswith("job:")))
 
     async def _job_titles(self, ids: Iterable[str]) -> dict[str, str]:
-        from yggdrasil.sandbox.jobs import job_key
-
         return {i: str(await self._r().hget(job_key(i), "title") or "") for i in ids}  # pyright: ignore[reportGeneralTypeIssues]
 
     async def _save(self, m: Mapping, *fields: str) -> bool:

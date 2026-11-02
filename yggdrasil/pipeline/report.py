@@ -29,7 +29,7 @@ from yggdrasil.pipeline import ratelimit
 from yggdrasil.pipeline.invoke import Invocator
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import SandboxError, manager
-from yggdrasil.sandbox.jobs import KIND_TEXT, STATUS_TEXT, Job, ReportDeferred, fmt_duration
+from yggdrasil.sandbox.job_model import KIND_TEXT, STATUS_TEXT, Job, ReportDeferred, fmt_duration
 from yggdrasil.settings import Settings
 from yggdrasil.tools.errors import ToolError
 
