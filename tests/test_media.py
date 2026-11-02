@@ -52,10 +52,11 @@ def test_animation_that_never_changes_is_treated_as_a_still() -> None:
 
 
 def test_long_animation_keeps_at_most_sixteen_frames_from_start_to_end() -> None:
-    frames = [_solid(("red", "green", "blue")[i % 3], (400, 300)) for i in range(60)]
-    image = model_image(_gif(frames, [100] * 60))
+    # One frame over the cap, each big enough that the sheet has to be scaled down to fit.
+    frames = [_solid(("red", "green", "blue")[i % 3], (400, 300)) for i in range(17)]
+    image = model_image(_gif(frames, [100] * 17))
     assert len(image.times) == 16
-    assert (image.times[0], image.times[-1]) == pytest.approx((0.0, 5.9))
+    assert (image.times[0], image.times[-1]) == pytest.approx((0.0, 1.6))
     with Image.open(io.BytesIO(image.data)) as sheet:
         assert max(sheet.size) <= 1568
 

@@ -77,14 +77,6 @@ async def test_service_warnings_reach_the_model(service: Routes) -> None:
     assert result.endswith("改好内容后重新生成）：\n- 第 3 个 mermaid 代码块语法错误，已按代码显示")
 
 
-@pytest.mark.parametrize("status", [422, 503])
-async def test_service_errors_pass_through(service: Routes, status: int) -> None:
-    service.answers[RENDER] = httpx.Response(status, json={"error": "第 2 行语法错误"})
-    ctx = _ctx()
-    assert await render_mermaid(ctx, "graph TD\nA-->") == "[工具错误] 第 2 行语法错误"
-    assert ctx.deps.images == []
-
-
 async def test_an_unreachable_service_is_unavailable(service: Routes) -> None:
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)

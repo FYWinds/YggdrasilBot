@@ -14,6 +14,7 @@ from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef
 
 from tests.sandbox.helpers import GROUP, OTHER_GROUP, FakeKube, reserve
 from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, WorkspaceInfo, WorkspaceManager
+from yggdrasil.sandbox import records as records_mod
 from yggdrasil.sandbox.backend import ExecResult
 from yggdrasil.sandbox.manager import Listener
 from yggdrasil.sandbox.state import LinkRecord, group_lock_key, index_key, keep_key, links_json, lock_key, ws_key
@@ -60,6 +61,12 @@ class Locks:
         """Until someone has been refused ``key`` (a few seconds at most)."""
         async with asyncio.timeout(5):
             await self._refused[key].wait()
+
+
+@pytest.fixture(autouse=True)
+def fast_lock_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refused lock is retried every 0.2 s; these tests hold locks on purpose."""
+    monkeypatch.setattr(records_mod, "_LOCK_POLL", 0.01)
 
 
 @pytest.fixture

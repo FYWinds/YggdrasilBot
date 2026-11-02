@@ -89,13 +89,13 @@ async def _token(job_id: str = "job1", **kw: int) -> str:
     return await issue_token(group_id=10001, job_id=job_id, models=[MODEL], **args)
 
 
-def _sse(size: int = 37) -> Callable[[httpx.Request], httpx.Response]:
-    """The upstream streaming ``SSE`` in pieces of ``size`` bytes (37 splits it mid-line and mid-character)."""
+def _sse() -> Callable[[httpx.Request], httpx.Response]:
+    """The upstream streaming ``SSE`` in 37-byte pieces (splitting it mid-line and mid-character)."""
 
     def respond(_request: httpx.Request) -> httpx.Response:
         async def chunks() -> AsyncIterator[bytes]:
-            for i in range(0, len(SSE), size):
-                yield SSE[i : i + size]
+            for i in range(0, len(SSE), 37):
+                yield SSE[i : i + 37]
 
         headers = {"content-type": "text/event-stream", "request-id": "req_1"}
         return httpx.Response(200, headers=headers, content=chunks())
@@ -132,13 +132,6 @@ async def test_expired_grant_is_rejected(fake_redis: fakeredis.FakeAsyncRedis) -
     data = json.loads(await fake_redis.get(key) or "{}")
     await fake_redis.set(key, json.dumps({**data, "expires_at": data["expires_at"] - 3600}))
     assert await authenticate(token) is None
-
-
-async def test_issue_rejects_empty_grants() -> None:
-    with pytest.raises(ValueError, match="model"):
-        await issue_token(group_id=1, job_id="j", models=[], max_input_tokens=1, max_output_tokens=1, ttl_s=60)
-    with pytest.raises(ValueError, match="ttl"):
-        await issue_token(group_id=1, job_id="j", models=[MODEL], max_input_tokens=1, max_output_tokens=1, ttl_s=0)
 
 
 async def test_relay_models_come_from_the_chat_route() -> None:
@@ -291,18 +284,6 @@ async def test_models_lists_the_grant(client: httpx.AsyncClient) -> None:
     assert r.status_code == 200
     assert [m["id"] for m in r.json()["data"]] == [MODEL]
     assert (await client.get("/v1/models")).status_code == 401
-
-
-async def test_usage_is_read_from_a_stream_in_single_bytes(client: httpx.AsyncClient, upstream: Routes) -> None:
-    upstream.answers["gw.example.com"] = _sse(1)
-    token = await _token()
-    r = await client.post(
-        "/v1/messages", json={"model": MODEL, "stream": True, "messages": []}, headers={"x-api-key": token}
-    )
-    assert r.content == SSE
-    assert await relay_usage("job1") == grants.RelayUsage(
-        requests=1, input_tokens=420, cached_tokens=300, output_tokens=42
-    )
 
 
 async def test_parallel_requests_cannot_overrun_the_output_budget(

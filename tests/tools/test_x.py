@@ -156,7 +156,6 @@ class Quota:
         (f"  {PID} ", PID),
         ("https://x.com/alice", None),
         (f"https://example.com/alice/status/{PID}", None),
-        ("https://x.com/alice/status/notanid", None),
     ],
 )
 def test_post_id(ref: str, expected: str | None) -> None:

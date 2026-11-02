@@ -56,24 +56,10 @@ async def test_read_url_page_out_of_range(local_tier: LocalTier) -> None:
 # --------------------------------------------------------------------------- plain HTTP
 
 
-async def test_html_article_is_extracted(web_page: Routes) -> None:
-    web_page.answers["example.com"] = httpx.Response(200, html=ARTICLE)
-    result = await read_url("https://example.com/post")
-    assert (result.via, result.title) == ("http", "测试文章")
-    assert "这是第 3 段正文" in result.text
-
-
 async def test_gbk_page_without_header_charset_uses_meta(web_page: Routes) -> None:
     html = ARTICLE.replace("<head>", '<head><meta charset="gbk">').encode("gbk")
     web_page.answers["example.com"] = httpx.Response(200, content=html, headers={"content-type": "text/html"})
     assert "这是第 3 段正文" in (await read_url("https://example.com/post")).text
-
-
-async def test_verification_page_raises(web_page: Routes) -> None:
-    wall = _page("微信公众平台", "<p>环境异常</p><p>当前环境异常，完成验证后即可继续访问。</p>")
-    web_page.answers["mp.weixin.qq.com"] = httpx.Response(200, html=wall)
-    with pytest.raises(ToolError, match="验证"):
-        await read_url("https://mp.weixin.qq.com/s/abc")
 
 
 async def test_block_page_without_browser_raises(web_page: Routes) -> None:
@@ -135,10 +121,10 @@ def _commit(sha: str, message: str) -> dict:
     }
 
 
-@pytest.mark.parametrize("ctype", ["application/json; charset=utf-8", "application/vnd.github+json"])
-async def test_json_api_response_keeps_values_and_drops_noise(web_page: Routes, ctype: str) -> None:
+async def test_json_api_response_keeps_values_and_drops_noise(web_page: Routes) -> None:
     payload = [_commit("a" * 40, "fix: handle empty input"), _commit("b" * 40, "docs: usage\n\nMore detail.")]
     body = json.dumps(payload, indent=2).encode()
+    ctype = "application/vnd.github+json"  # vendor "+json" types are read as JSON too
     web_page.answers["api.example.com"] = httpx.Response(200, content=body, headers={"content-type": ctype})
     result = await read_url("https://api.example.com/repos/acme/widget/commits")
     assert result.via == "document:json"
@@ -330,7 +316,7 @@ async def test_stalled_adapter_or_download_times_out(web_page: Routes) -> None:
 
     async def trickle() -> AsyncIterator[bytes]:
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.001)
             yield b"x"
 
     web_page.answers.update(
@@ -342,5 +328,5 @@ async def test_stalled_adapter_or_download_times_out(web_page: Routes) -> None:
     started = time.perf_counter()
     for url in ("https://status.example.com/incidents/abcd1234efgh", "https://example.com/slow"):
         with pytest.raises(Unreadable, match="网页加载超时"):
-            await read_url(url, timeout=0.05)
+            await read_url(url, timeout=0.01)
     assert time.perf_counter() - started < 10

@@ -274,11 +274,11 @@ async def test_glossary_mining_catches_up_past_one_batch(
     insert: Insert, group_settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     group_settings({GLOSSARY_GROUP: {}})
-    monkeypatch.setattr(glossary, "MINE_BATCH", 40)
-    monkeypatch.setattr(glossary, "MINE_MIN_MESSAGES", 10)
+    monkeypatch.setattr(glossary, "MINE_BATCH", 4)
+    monkeypatch.setattr(glossary, "MINE_MIN_MESSAGES", 2)
+    # Two full batches, then a partial one that is still mined.
     ids = [
-        await insert(GLOSSARY_GROUP, 1 + i % 5, f"今晚开黑吗 第{i}局", ago=timedelta(minutes=200 - i))
-        for i in range(100)
+        await insert(GLOSSARY_GROUP, 1 + i % 5, f"今晚开黑吗 第{i}局", ago=timedelta(minutes=20 - i)) for i in range(11)
     ]
     await glossary.mine_group(GLOSSARY_GROUP)
     async with get_session() as session:

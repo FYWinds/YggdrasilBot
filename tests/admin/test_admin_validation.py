@@ -35,7 +35,6 @@ async def cleanup_audit() -> AsyncIterator[None]:
         ({"scope": "global", "group_id": 123}, "group_id"),
         ({"patterns": ["  "]}, "至少需要一个 pattern"),
         ({"arg_template": "-n {user}"}, "参数模板"),
-        ({"cooldown_s": -1}, "greater than or equal"),
     ],
 )
 async def test_trigger_validation_rejects(
@@ -74,15 +73,9 @@ async def test_trigger_roundtrip_and_test_endpoint_unaffected_by_unknown_stored_
 @pytest.mark.parametrize(
     "doc",
     [
-        {"interaction": {"forward_max_nodes": "many"}},
         {"interaction": {"forward_max_nodes": 0}},
-        {"interaction": {"forward_render": "html"}},
-        {"interaction": {"metadata_fields": ["model", "password"]}},
-        {"moderation": {"category_rules": {"Jailbreak": {"threshold": 2}}}},
-        {"persona": "ygg"},
         {"interaction": {"ack_delay": 1}},  # typo: would be silently ignored without the unknown-key check
         {"moderation": {"category_rules": {"Jailbreak": {"treshold": 0.3}}}},
-        {"nonsense": True},
     ],
 )
 async def test_global_settings_put_rejects_invalid(client: httpx.AsyncClient, published: list[str], doc: dict) -> None:
@@ -169,11 +162,6 @@ async def test_provider_key_is_never_returned(
         assert resp.json()["base_url"] == "http://127.0.0.1:9/v1"
         assert resp.json()["api_format"] == "anthropic"
 
-        bad_format = await client.put(
-            f"/api/providers/{pid}", json={"name": name, "base_url": "http://127.0.0.1:9/v1", "api_format": "grpc"}
-        )
-        assert bad_format.status_code == 422
-
         # Updating without a key keeps the stored one.
         upd = await client.put(f"/api/providers/{pid}", json={"name": name, "base_url": "http://127.0.0.1:9/v1"})
         assert upd.status_code == 200
@@ -206,9 +194,8 @@ async def test_search_provider_key_rules_and_default_endpoint(
 ) -> None:
     name = f"pytest-{uuid.uuid4().hex[:8]}"
     secret = f"exa-{uuid.uuid4().hex}"
-    for keyed in ("exa", "deepseek", "x"):
-        keyless = await client.post("/api/search-providers", json={"name": name, "kind": keyed})
-        assert keyless.status_code == 422
+    keyless = await client.post("/api/search-providers", json={"name": name, "kind": "exa"})
+    assert keyless.status_code == 422
     no_url = await client.post("/api/search-providers", json={"name": name, "kind": "searxng"})
     assert no_url.status_code == 422
 

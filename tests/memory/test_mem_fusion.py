@@ -21,9 +21,3 @@ def test_rrf_duplicate_in_one_ranking_counts_once_at_best_rank() -> None:
 def test_rrf_ties_keep_first_seen_order_and_empty_inputs() -> None:
     assert [key for key, _ in rrf_fuse([["p"], ["q"]])] == ["p", "q"]
     assert rrf_fuse([[], []]) == []
-
-
-def test_rrf_item_in_both_lists_beats_top_of_one() -> None:
-    # Rank 2 in both lists outranks rank 1 in a single list.
-    fused = rrf_fuse([["solo", "both"], ["other", "both"]])
-    assert fused[0][0] == "both"

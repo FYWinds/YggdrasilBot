@@ -132,7 +132,7 @@ async def test_an_unconfirmed_send_counts_as_sent(upstream: Routes, recorded: li
 
 async def test_a_large_picture_is_sent_as_jpeg(upstream: Routes, recorded: list[IncomingMessage]):
     noisy = io.BytesIO()
-    Image.frombytes("RGB", (800, 800), os.urandom(800 * 800 * 3)).save(noisy, "PNG")
+    Image.frombytes("RGB", (512, 512), os.urandom(512 * 512 * 3)).save(noisy, "PNG")  # over the 600 KB send limit
     upstream.answers[IMAGES] = _ok(noisy.getvalue())
     api = _qq()
     await images.generate_image(_ctx(api), "x")
@@ -141,7 +141,7 @@ async def test_a_large_picture_is_sent_as_jpeg(upstream: Routes, recorded: list[
     sent = base64.b64decode(image["data"]["file"].removeprefix("base64://"))
     assert sent[:2] == b"\xff\xd8"
     assert len(sent) < len(noisy.getvalue())
-    assert Image.open(io.BytesIO(sent)).size == (800, 800)
+    assert Image.open(io.BytesIO(sent)).size == (512, 512)
 
 
 async def test_reference_images_go_as_data_urls(upstream: Routes):

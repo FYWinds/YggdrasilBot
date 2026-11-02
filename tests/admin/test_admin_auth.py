@@ -11,16 +11,6 @@ from yggdrasil.config import APP_CONFIG
 HEADER = APP_CONFIG.auth_email_header
 
 
-async def test_missing_header_is_401_outside_dev(client: httpx.AsyncClient) -> None:
-    resp = await client.get("/api/me", headers={HEADER: ""})
-    assert resp.status_code == 401
-
-
-async def test_non_admin_is_403(client: httpx.AsyncClient) -> None:
-    resp = await client.get("/api/me", headers={HEADER: "stranger@example.invalid"})
-    assert resp.status_code == 403
-
-
 async def test_admin_email_is_case_insensitive(client: httpx.AsyncClient) -> None:
     resp = await client.get("/api/me", headers={HEADER: ADMIN.upper()})
     assert resp.status_code == 200

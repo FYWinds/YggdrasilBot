@@ -21,7 +21,7 @@ async def test_same_user_requests_queue_instead_of_dropping():
     first = asyncio.create_task(run("a", release_first))
     await asyncio.sleep(0)
     second = asyncio.create_task(run("b"))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0)
     assert order == ["start a"]  # b is waiting, not dropped
     release_first.set()
     assert await first
@@ -30,7 +30,7 @@ async def test_same_user_requests_queue_instead_of_dropping():
 
 
 async def test_queue_limit_and_timeout_reject():
-    cfg = RateLimitSettings(max_concurrent_per_user=1, max_queued_per_user=1, queue_timeout_s=0.1)
+    cfg = RateLimitSettings(max_concurrent_per_user=1, max_queued_per_user=1, queue_timeout_s=0.01)
     hold = asyncio.Event()
 
     async def holder() -> None:
@@ -47,7 +47,7 @@ async def test_queue_limit_and_timeout_reject():
     waiter = asyncio.create_task(try_slot())  # queues (1 allowed), then times out
     await asyncio.sleep(0)
     assert await try_slot() is False  # queue already full
-    assert await waiter is False  # timed out after 0.1s
+    assert await waiter is False  # timed out after 0.01s
     hold.set()
     await task
     assert await try_slot() is True  # slots were released

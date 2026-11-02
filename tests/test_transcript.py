@@ -22,7 +22,9 @@ def _returned(messages: list[ModelMessage]) -> list[str]:
     return [p.tool_name for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
 
 
-def _agent(respond: Any, recorder: TranscriptRecorder) -> Agent[TraceNotes, str]:
+def _agent(
+    respond: Any, recorder: TranscriptRecorder, slow_started: asyncio.Event | None = None
+) -> Agent[TraceNotes, str]:
     agent: Agent[TraceNotes, str] = Agent(
         FunctionModel(respond), deps_type=TraceNotes, instructions="你是群聊助手。", capabilities=[recorder]
     )
@@ -40,6 +42,8 @@ def _agent(respond: Any, recorder: TranscriptRecorder) -> Agent[TraceNotes, str]
 
     @agent.tool
     async def slow(ctx: RunContext[TraceNotes]) -> str:
+        if slow_started is not None:
+            slow_started.set()
         await asyncio.sleep(30)
         return "never"
 
@@ -117,17 +121,14 @@ async def test_a_failed_run_keeps_what_happened_before_the_failure() -> None:
 
 
 async def test_a_cancelled_run_marks_the_running_tool_cancelled() -> None:
-    started = asyncio.Event()
-
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        started.set()
         return ModelResponse(parts=[ToolCallPart("slow", {}, tool_call_id="c1")])
 
     recorder = TranscriptRecorder()
     notes = TraceNotes()
-    task = asyncio.create_task(_agent(respond, recorder).run("跑个慢的", deps=notes))
+    started = asyncio.Event()
+    task = asyncio.create_task(_agent(respond, recorder, started).run("跑个慢的", deps=notes))
     await started.wait()
-    await asyncio.sleep(0.1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

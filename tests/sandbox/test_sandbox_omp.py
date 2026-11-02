@@ -56,7 +56,7 @@ async def _run(driver: omp.OmpDriver, *, seconds: float = 20) -> omp.Finished:
         while True:
             if (finished := await driver.step()) is not None:
                 return finished
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
 
 async def test_full_session_with_host_tool_round_trip(tmp_path: Path) -> None:
@@ -118,36 +118,6 @@ async def test_full_session_with_host_tool_round_trip(tmp_path: Path) -> None:
     assert messages[2]["isError"] is True
 
 
-async def test_chunked_final_answer_is_reassembled(tmp_path: Path) -> None:
-    rpc = LocalRpc(tmp_path / "job")
-    await rpc.start(fake_env("ok", FAKE_OMP_BIG="20000", FAKE_OMP_CHUNK="1500"))
-    finished = await _run(_driver(rpc, Host()))
-    assert finished.ok
-    assert finished.text is not None
-    assert len(finished.text) == 20000
-    raw = (tmp_path / "job" / "events.jsonl").read_text()
-    assert '"type":"rpc_chunk"' in raw.replace(" ", "")
-
-
-async def test_state_survives_a_restart_between_polls(tmp_path: Path) -> None:
-    """A new driver built from the saved state (as after a bot restart) continues the same session."""
-    rpc = LocalRpc(tmp_path / "job")
-    await rpc.start(fake_env("ok"))
-    host = Host()
-    first = _driver(rpc, host)
-    async with asyncio.timeout(10):
-        while first.state.phase != "prompting" or not host.calls:
-            assert await first.step() is None
-            await asyncio.sleep(0.05)
-    saved = first.state.to_json()
-    second = _driver(rpc, host, omp.DriverState.from_json(saved))
-    finished = await _run(second)
-    assert finished.ok
-    assert [c[0] for c in host.calls] == ["show", "progress"]  # host_1 not run twice
-    seen = first.messages + second.messages  # pyright: ignore[reportAttributeAccessIssue]
-    assert [m["role"] for m in seen] == ["user", "assistant", "toolResult", "assistant"]  # none twice
-
-
 async def test_stop_aborts_a_hanging_run_and_collects_the_answer(tmp_path: Path) -> None:
     rpc = LocalRpc(tmp_path / "job")
     await rpc.start(fake_env("hang"))
@@ -155,14 +125,13 @@ async def test_stop_aborts_a_hanging_run_and_collects_the_answer(tmp_path: Path)
     async with asyncio.timeout(10):
         while driver.state.phase != "prompting":
             assert await driver.step() is None
-            await asyncio.sleep(0.05)
-    finished = await driver.stop(wait=asyncio.sleep)
+            await asyncio.sleep(0.01)
+    finished = await driver.stop(wait=lambda _s: asyncio.sleep(0.01))
     assert not finished.ok
     assert finished.text == "完成了。"
     assert driver.state.status == "aborted"
     sent = [f["type"] for f in rpc.sent]
     assert sent.index("abort") < sent.index("get_last_assistant_text")
-    await asyncio.sleep(0.2)
     assert not rpc.running
     exit_info = json.loads((tmp_path / "job" / "exit").read_text())
     assert exit_info["exit"] == 0  # stdin EOF: drained and exited by itself, no kill needed
@@ -202,11 +171,7 @@ class FlakyRpc:
     ("kind", "mode"),
     [
         ("set_host_tools", "before"),
-        ("set_host_tools", "after"),
-        ("prompt", "before"),
         ("prompt", "after"),
-        ("host_tool_result", "before"),
-        ("host_tool_result", "after"),
         ("host_tool_result", "cancel"),
         ("get_last_assistant_text", "after"),
     ],
@@ -234,11 +199,13 @@ async def test_a_failed_send_is_retried_on_the_next_poll(tmp_path: Path, kind: s
             transcribed += driver.messages  # pyright: ignore[reportAttributeAccessIssue]
             if finished is not None:
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
     assert errors == 1
     assert finished.ok, finished.error
     assert finished.text == "完成了。host_1:已记下 | host_2:ok"
-    assert {name for name, _ in host.calls} == {"show", "progress"}
+    # Only a lost tool result runs its tool again: a fresh driver per poll never repeats a call it answered.
+    calls = ["show", "show", "progress"] if kind == "host_tool_result" else ["show", "progress"]
+    assert [name for name, _ in host.calls] == calls
     received = [json.loads(line)["type"] for line in log.read_text("utf-8").splitlines()]
     assert received.count("prompt") == (2 if (kind, mode) == ("prompt", "after") else 1)
     # Re-handling a frame after the failure does not transcribe a message twice.

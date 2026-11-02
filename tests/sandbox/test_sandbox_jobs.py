@@ -321,6 +321,18 @@ def fake_relay(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return calls
 
 
+@pytest.fixture(autouse=True)
+def fast_agent_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runner stops an agent with ``OmpDriver.stop(wait=asyncio.sleep)``, half a second between polls; the fake
+    omp answers within milliseconds."""
+    stop = omp.OmpDriver.stop
+
+    async def fast(self: omp.OmpDriver, *, wait: Any, **kw: Any) -> omp.Finished:
+        return await stop(self, wait=lambda _s: asyncio.sleep(0.01), **kw)
+
+    monkeypatch.setattr(omp.OmpDriver, "stop", fast)
+
+
 async def _until(runner: JobRunner, job_id: str, *, done: bool = True, seconds: float = 20) -> Job:
     async with asyncio.timeout(seconds):
         while True:
@@ -329,7 +341,7 @@ async def _until(runner: JobRunner, job_id: str, *, done: bool = True, seconds: 
             assert job is not None
             if (not job.running) == done and job.report not in ("pending", "running"):
                 return job
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
 
 async def test_command_job_runs_and_reports(
@@ -672,7 +684,7 @@ async def test_agent_job_cancel_revokes_the_token(
     async with asyncio.timeout(10):
         while json.loads((await runner.get(job.id)).driver)["phase"] != "prompting":  # pyright: ignore[reportOptionalMemberAccess]
             await runner.tick(wait=True)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
     await runner.cancel(job.id, by="admin:ops@example.com")
     done = await _until(runner, job.id)
     assert done.status == "cancelled"

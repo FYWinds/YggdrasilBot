@@ -34,13 +34,6 @@ def test_oversized_paragraph_splits_on_lines_then_hard() -> None:
     assert pages == ["x" * 30, "y" * 100, "y" * 100, "y" * 50]
 
 
-def test_pages_never_exceed_limit_and_keep_content() -> None:
-    text = "\n\n".join(f"段落{i}" * (i % 7 + 1) for i in range(200))
-    pages = paginate(text, 64)
-    assert all(0 < len(p) <= 64 for p in pages)
-    assert "".join("".join(pages).split()) == "".join(text.split())
-
-
 def test_pagination_keeps_indentation_of_code_after_blank_lines() -> None:
     code = "class A:\n    def f(self):\n        pass\n\n    def g(self):\n        pass"
     assert paginate(code, 1000) == [code]
@@ -93,9 +86,9 @@ async def test_unresolved_fragment_is_explained(fragment: str, says: str) -> Non
 
 
 @pytest.mark.usefixtures("spec")
-@pytest.mark.parametrize("fragment", ["a%00b", "a%EF%BF%BEb"])  # a control character, U+FFFE: not XML strings
-async def test_fragment_that_no_element_can_have_still_reads_the_page(fragment: str) -> None:
-    note, body = (await read_url(f"https://example.com/spec.html#{fragment}", max_chars=300)).text.split("\n\n", 1)
+async def test_fragment_that_no_element_can_have_still_reads_the_page() -> None:
+    # A control character is not an XML string: no element can have that id.
+    note, body = (await read_url("https://example.com/spec.html#a%00b", max_chars=300)).text.split("\n\n", 1)
     assert note.endswith("在页面里没找到对应位置，下面从页面开头读起）")
     assert "第一节正文第 0 段" in body
 

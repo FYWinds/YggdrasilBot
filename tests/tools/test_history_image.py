@@ -27,8 +27,9 @@ def _img(name: str) -> dict[str, Any]:
     return {"type": "image", "data": {"file": name, "url": f"https://img.example.com/{name}?rkey=old"}}
 
 
-@pytest.fixture
-async def ids() -> AsyncIterator[dict[str, int]]:
+@pytest.fixture(scope="module")
+async def ids(_db_engine: None) -> AsyncIterator[dict[str, int]]:
+    """The history rows, stored once for the module: its tests only read them."""
     await purge_groups(GROUP, OTHER)
     rows = {
         "two": (GROUP, [_img("a.png"), {"type": "text", "data": {"text": "看这个"}}, _img("b.png")], False),

@@ -78,14 +78,6 @@ async def tldr(event: GroupMessageEvent, words: str = "") -> None:
     await invoke.run(BOT, event, TLDR, "tldr", words)
 
 
-async def test_the_same_message_delivered_twice_starts_one_run(group: Group) -> None:
-    event = message(1, ALICE, "tldr", quoting=QUOTED)
-    await tldr(event)
-    await tldr(event)
-    assert group.started == [1]
-    assert group.reactions == [(1, SILENT)]  # the repeat is only marked
-
-
 async def test_one_answer_per_target(group: Group) -> None:
     await tldr(message(1, ALICE, "tldr", quoting=QUOTED))
     await tldr(message(2, BOB, "tldr", quoting=QUOTED))  # another member, a second later

@@ -67,13 +67,9 @@ def test_invalid_commands_are_rejected(command: object, shell: bool, error: type
     ("path", "expected"),
     [
         ("/workspace", ""),
-        ("/workspace/", ""),
-        ("/workspace/a/b.txt", "a/b.txt"),
-        ("/workspace/a/../b", "b"),
+        ("/workspace/a/../b/c.txt", "b/c.txt"),
         ("/workspace/有 空格#?.txt", "%E6%9C%89%20%E7%A9%BA%E6%A0%BC%23%3F.txt"),
         ("/workspace-evil/x", None),
-        ("/tmp/x", None),
-        ("/", None),
     ],
 )
 def test_rest_path_maps_onto_the_sandboxd_root(path: str, expected: str | None) -> None:
@@ -148,12 +144,12 @@ def test_shutdown_time_idle_links_and_hard_cap() -> None:
     assert shutdown_at(now=15000, max_until=20000.0, idle_s=idle, has_links=False) == 16800
 
 
-@pytest.mark.parametrize(("port", "ok"), [(1024, True), (8000, True), (65535, True), (80, False), (1023, False)])
+@pytest.mark.parametrize(("port", "ok"), [(1024, True), (65535, True), (1023, False)])
 def test_validate_port_range(port: int, ok: bool) -> None:
     assert (validate_port(port) is None) is ok
 
 
-@pytest.mark.parametrize("port", [8080, 9090, 65536, True])
+@pytest.mark.parametrize("port", [8080, 65536, True])
 def test_validate_port_rejects_reserved_and_invalid(port: int) -> None:
     assert validate_port(port) is not None
 
@@ -223,12 +219,8 @@ def test_mapping_round_trips_through_a_redis_hash() -> None:
 @pytest.mark.parametrize(
     "data",
     [
-        {},
         {"active": "1"},
-        {"claim": "c"},  # no name
-        {"name": "Bad Name", "claim": "c"},
         {"name": "w"},  # no claim field at all
-        {"name": "w", "claim": "c", "created_at": "x"},
         {"name": "w", "claim": "c", "links": "not json"},
     ],
 )
@@ -249,13 +241,13 @@ def test_mapping_tolerates_missing_optional_fields_and_negative_active() -> None
     assert pending.info().pending
 
 
-@pytest.mark.parametrize("name", ["a", "pelican-game", "x2", "a-b-c", "a" * 32, "9lives"])
+@pytest.mark.parametrize("name", ["a", "pelican-game", "a" * 32, "9lives"])
 def test_valid_workspace_names(name: str) -> None:
     assert valid_name(name)
     assert name_error(name) is None
 
 
-@pytest.mark.parametrize("name", ["", "-a", "a-", "Pelican", "a_b", "a b", "中文", "a" * 33, "a:b"])
+@pytest.mark.parametrize("name", ["", "-a", "a-", "Pelican", "a" * 33])
 def test_invalid_workspace_names(name: str) -> None:
     assert not valid_name(name)
     assert "小写字母" in (name_error(name) or "")

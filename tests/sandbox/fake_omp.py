@@ -8,41 +8,21 @@ Behaviour is picked with ``FAKE_OMP_MODE``:
 - ``crash``: exits 3 right after acknowledging ``prompt``.
 - ``fail_setup``: rejects ``open_session``.
 
-``FAKE_OMP_BIG=N`` pads the final text to N characters (v2 sends it as ``rpc_chunk`` frames of
-``FAKE_OMP_CHUNK`` bytes). Every received frame is appended to ``FAKE_OMP_LOG`` when set.
+Every received frame is appended to ``FAKE_OMP_LOG`` when set.
 """
 
-import base64
 import json
 import os
 import sys
 
 MODE = os.environ.get("FAKE_OMP_MODE", "ok")
-BIG = int(os.environ.get("FAKE_OMP_BIG", "0"))
-CHUNK = int(os.environ.get("FAKE_OMP_CHUNK", "4096"))
 LOG = os.environ.get("FAKE_OMP_LOG")
 
-state = {"v2": False, "chunks": 0, "results": [], "prompt": None, "hanging": False}
+state = {"results": [], "prompt": None, "hanging": False}
 
 
 def emit(frame: dict) -> None:
-    line = json.dumps(frame, separators=(",", ":"))
-    data = line.encode()
-    if state["v2"] and len(data) > CHUNK:
-        state["chunks"] += 1
-        parts = [data[i : i + CHUNK] for i in range(0, len(data), CHUNK)]
-        for index, part in enumerate(parts):
-            chunk = {
-                "type": "rpc_chunk",
-                "chunkId": f"rpc-{state['chunks']}",
-                "index": index,
-                "count": len(parts),
-                "byteLength": len(data),
-                "data": base64.b64encode(part).decode(),
-            }
-            sys.stdout.write(json.dumps(chunk) + "\n")
-    else:
-        sys.stdout.write(line + "\n")
+    sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
 
@@ -75,7 +55,6 @@ def handle(frame: dict) -> None:
     kind = frame.get("type")
     if kind == "negotiate_protocol":
         respond(frame, {"protocolVersion": 2})
-        state["v2"] = True
     elif kind == "set_cache_warming":
         respond(frame, {"mode": frame.get("mode")})
     elif kind == "set_event_filter":
@@ -187,8 +166,6 @@ def handle(frame: dict) -> None:
             finish("aborted", settled=True)
     elif kind == "get_last_assistant_text":
         text = "完成了。" + " | ".join(state["results"])
-        if BIG:
-            text += "x" * max(0, BIG - len(text))
         respond(frame, {"text": text})
     else:
         respond(frame, ok=False, error=f"unknown command {kind}")

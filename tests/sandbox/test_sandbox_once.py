@@ -61,7 +61,7 @@ class FakeStub:
 @pytest.fixture(autouse=True)
 def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backend_mod, "_RETRY_DELAYS", (0.0, 0.0))
-    monkeypatch.setattr(backend_mod, "_READY_WAIT", 0.05)
+    monkeypatch.setattr(backend_mod, "_READY_WAIT", 0.01)
 
 
 def workspace(stub: FakeStub, channel: FakeChannel) -> SandboxdWorkspace:
