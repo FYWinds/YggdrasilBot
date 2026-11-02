@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import youtube
 
 
 def _yt_markers(*items: tuple[str, str]) -> dict:
@@ -57,12 +57,12 @@ YT_TEXT = (
 
 
 def test_youtube_watch_page_yields_metadata_description_and_chapters() -> None:
-    result = web.parse_youtube_watch(YT_PAGE, "https://www.youtube.com/watch?v=yif2rday2bw")
+    result = youtube.parse_youtube_watch(YT_PAGE, "https://www.youtube.com/watch?v=yif2rday2bw")
     assert result is not None
     assert (result.title, result.via, result.text) == ("CRDTs for Git", "youtube", YT_TEXT)
     # No ytInitialData, or no video in it (removed / private): leave it to the generic path.
-    assert web.parse_youtube_watch("<html>consent</html>", "https://www.youtube.com/watch?v=x") is None
-    assert web.parse_youtube_watch('<script>var ytInitialData = {"contents": {}};</script>', "u") is None
+    assert youtube.parse_youtube_watch("<html>consent</html>", "https://www.youtube.com/watch?v=x") is None
+    assert youtube.parse_youtube_watch('<script>var ytInitialData = {"contents": {}};</script>', "u") is None
 
 
 async def test_youtube_adapter_reads_video_links_and_skips_other_pages() -> None:
@@ -73,11 +73,11 @@ async def test_youtube_adapter_reads_video_links_and_skips_other_pages() -> None
             "https://youtu.be/yif2rday2bw?si=abc",
             "https://m.youtube.com/shorts/yif2rday2bw",
         ):
-            result = await web._youtube_video(client, httpx.URL(url))
+            result = await youtube.video(client, httpx.URL(url))
             assert isinstance(result, Extracted)
             assert result.final_url == "https://www.youtube.com/watch?v=yif2rday2bw"
         for other in ("https://www.youtube.com/@zed", "https://www.youtube.com/results?search_query=x"):
-            assert await web._youtube_video(client, httpx.URL(other)) is None
+            assert await youtube.video(client, httpx.URL(other)) is None
     watched = [str(r.url) for r in routes.seen if r.url.path == "/watch"]
     assert watched == ["https://www.youtube.com/watch?v=yif2rday2bw&hl=zh-CN"] * 3
 
@@ -130,7 +130,7 @@ async def test_youtube_transcript_comes_from_the_android_player() -> None:
         "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": YT_TRACKS}},
     }
     async with _yt_routes(player).client() as client:
-        result = await web._youtube_video(client, httpx.URL("https://youtu.be/yif2rday2bw"))
+        result = await youtube.video(client, httpx.URL("https://youtu.be/yif2rday2bw"))
     assert isinstance(result, Extracted)
     assert result.text == f"{YT_TEXT}\n\n字幕（英语）：\n\n[0:00] Hello world\n\n[1:05] Second minute"
 
@@ -147,6 +147,6 @@ async def test_youtube_transcript_comes_from_the_android_player() -> None:
 )
 async def test_youtube_without_captions_says_why(player: dict, note: str) -> None:
     async with _yt_routes(player).client() as client:
-        result = await web._youtube_video(client, httpx.URL("https://www.youtube.com/watch?v=yif2rday2bw"))
+        result = await youtube.video(client, httpx.URL("https://www.youtube.com/watch?v=yif2rday2bw"))
     assert isinstance(result, Extracted)
     assert result.text.endswith(f"\n\n（{note}，只有标题和简介，无法得知视频里具体说了什么）")

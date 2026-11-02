@@ -7,9 +7,11 @@ from tests.support.routes import Routes
 from yggdrasil.agent.deps import Handle
 from yggdrasil.agent.media import media_bytes
 from yggdrasil.runtime import SearchProviderInfo
-from yggdrasil.tools import web, x
+from yggdrasil.tools import x
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.search import web_search
+from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import x_post
 
 PID = "100000000000000003"
 API = SearchProviderInfo(9, "x", "x", "https://api.x.com", "tok", True, 1, 300, {})
@@ -366,11 +368,11 @@ async def test_web_search_skips_x_provider() -> None:
 async def test_read_url_adapter_returns_post_with_images() -> None:
     routes = Routes({"api.fxtwitter.com": httpx.Response(200, json=FX_THREAD)})
     async with routes.client() as client:
-        result = await web._x_post(client, httpx.URL(f"https://twitter.com/alice/status/{PID}?s=20"))
+        result = await x_post.post(client, httpx.URL(f"https://twitter.com/alice/status/{PID}?s=20"))
 
     assert [r.url.path for r in routes.seen] == [f"/2/thread/{PID}"]
 
-    assert isinstance(result, web.Extracted)
+    assert isinstance(result, Extracted)
     assert (result.final_url, result.title, result.via) == (
         f"https://x.com/alice/status/{PID}",
         "Alice（@alice） 在 X 上的帖子",

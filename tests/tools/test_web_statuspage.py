@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 import httpx
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import read_url
+from yggdrasil.tools.web.adapters import statuspage
 
 STATUSPAGE_INCIDENT = {
     "page": {"id": "p1", "name": "Example Cloud", "url": "https://status.example.com", "time_zone": "Etc/UTC"},
@@ -75,7 +75,7 @@ async def test_statuspage_incident_on_any_host_comes_from_the_public_api(web_pag
 
 async def test_statuspage_path_on_other_sites_falls_back_to_generic() -> None:
     async with Routes({"example.com": httpx.Response(404, html="<html>Not found</html>")}).client() as client:
-        assert await web._statuspage_incident(client, httpx.URL("https://example.com/incidents/abcd1234efgh")) is None
+        assert await statuspage.incident(client, httpx.URL("https://example.com/incidents/abcd1234efgh")) is None
 
 
 async def test_statuspage_reads_at_most_2_mb_and_survives_bad_json() -> None:
@@ -89,7 +89,7 @@ async def test_statuspage_reads_at_most_2_mb_and_survives_bad_json() -> None:
 
     url = httpx.URL("https://status.example.net/incidents/abcd1234efgh")
     async with Routes({"status.example.net": lambda r: httpx.Response(200, content=huge())}).client() as client:
-        assert await web._statuspage_incident(client, url) is None
+        assert await statuspage.incident(client, url) is None
     assert pulled == 3  # past the 2 MiB cap after 3 MiB: the other 61 MiB are never read
     async with Routes({"status.example.net": httpx.Response(200, content=b"[" * 100_000)}).client() as client:
-        assert await web._statuspage_incident(client, url) is None  # nested too deep for json.loads
+        assert await statuspage.incident(client, url) is None  # nested too deep for json.loads

@@ -3,8 +3,8 @@
 import httpx
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import huggingface
 
 HF_MODEL = {
     "id": "acme/tiny-gguf",
@@ -29,9 +29,9 @@ async def test_hugging_face_model_gives_the_card_not_the_widgets() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._hugging_face(client, httpx.URL("https://huggingface.co/acme/tiny-gguf"))
+        result = await huggingface.repo(client, httpx.URL("https://huggingface.co/acme/tiny-gguf"))
         for other in ("https://huggingface.co/spaces/acme/demo", "https://huggingface.co/acme"):
-            assert await web._hugging_face(client, httpx.URL(other)) is None
+            assert await huggingface.repo(client, httpx.URL(other)) is None
     assert isinstance(result, Extracted)
     assert (result.title, result.via) == ("acme/tiny-gguf · Hugging Face", "huggingface")
     assert result.text == (
@@ -67,7 +67,7 @@ async def test_hugging_face_gated_card_comes_from_the_page() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._hugging_face(client, httpx.URL("https://huggingface.co/datasets/acme/corpus"))
+        result = await huggingface.repo(client, httpx.URL("https://huggingface.co/datasets/acme/corpus"))
     assert isinstance(result, Extracted)
     assert result.final_url == "https://huggingface.co/datasets/acme/corpus"
     assert "（受限仓库：要登录并同意作者的条款才能下载文件）" in result.text

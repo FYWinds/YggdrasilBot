@@ -3,8 +3,8 @@
 import httpx
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import Extracted, paginate
+from yggdrasil.tools.web.adapters import hackernews
 
 HN_ITEM = {
     "id": 1,
@@ -27,7 +27,7 @@ HN_ITEM = {
 
 
 def test_hacker_news_thread_keeps_tree_shape_through_pagination() -> None:
-    text = web.format_hacker_news(HN_ITEM)
+    text = hackernews.format_hacker_news(HN_ITEM)
     assert text.startswith("作者 op · 42 分 · 5 条评论 · 2026-10-24 00:59\n链接：https://example.com/thing")
     thread = "- alice：First paragraph.\n  Second paragraph.\n  - bob：Reply & more"
     orphan = "- [已删除]：[已删除]\n  - carol：orphan reply"
@@ -39,8 +39,8 @@ def test_hacker_news_thread_keeps_tree_shape_through_pagination() -> None:
 async def test_hacker_news_item_uses_algolia_and_other_pages_fall_back() -> None:
     routes = Routes({"hn.algolia.com": httpx.Response(200, json=HN_ITEM)})
     async with routes.client() as client:
-        result = await web._hacker_news(client, httpx.URL("https://news.ycombinator.com/item?id=1"))
-        assert await web._hacker_news(client, httpx.URL("https://news.ycombinator.com/newest")) is None
+        result = await hackernews.item(client, httpx.URL("https://news.ycombinator.com/item?id=1"))
+        assert await hackernews.item(client, httpx.URL("https://news.ycombinator.com/newest")) is None
     assert [str(r.url) for r in routes.seen] == ["https://hn.algolia.com/api/v1/items/1"]
     assert isinstance(result, Extracted)
     assert (result.title, result.final_url) == ("Show HN: a thing", "https://news.ycombinator.com/item?id=1")

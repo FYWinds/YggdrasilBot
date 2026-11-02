@@ -3,8 +3,8 @@
 import httpx
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import ubuntu
 
 UBUNTU_CVE = {
     "id": "CVE-2026-0001",
@@ -63,8 +63,8 @@ async def test_ubuntu_cve_shows_priority_and_cvss_values() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._ubuntu_cve(client, httpx.URL("https://ubuntu.com/security/CVE-2026-0001"))
-        assert await web._ubuntu_cve(client, httpx.URL("https://ubuntu.com/security/notices")) is None
+        result = await ubuntu.cve(client, httpx.URL("https://ubuntu.com/security/CVE-2026-0001"))
+        assert await ubuntu.cve(client, httpx.URL("https://ubuntu.com/security/notices")) is None
     assert isinstance(result, Extracted)
     assert (result.title, result.via) == ("CVE-2026-0001 | Ubuntu", "ubuntu")
     text = result.text

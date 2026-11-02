@@ -6,9 +6,9 @@ import httpx
 import pytest
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import github
 
 
 def _paths(routes: Routes) -> list[str]:
@@ -18,7 +18,7 @@ def _paths(routes: Routes) -> list[str]:
 async def test_github_blob_maps_to_raw() -> None:
     routes = Routes({"raw.githubusercontent.com": httpx.Response(200, text="print('hi')\n")})
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/o/r/blob/main/src/app.py"))
+        result = await github.page(client, httpx.URL("https://github.com/o/r/blob/main/src/app.py"))
     assert [str(r.url) for r in routes.seen] == ["https://raw.githubusercontent.com/o/r/main/src/app.py"]
     assert isinstance(result, Extracted)
     assert result.text == "print('hi')"
@@ -28,7 +28,7 @@ async def test_github_non_repo_pages_use_generic_path() -> None:
     routes = Routes()
     async with routes.client() as client:
         for url in ("https://github.com/o/r/pull/1/files", "https://github.com/advisories/GHSA-9v8h-qqgm-4m35"):
-            assert await web._github(client, httpx.URL(url)) is None
+            assert await github.page(client, httpx.URL(url)) is None
     assert routes.seen == []
 
 
@@ -52,7 +52,7 @@ async def test_github_tree_lists_the_folder_and_its_readme() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/o/r/tree/feature/x/pkg"))
+        result = await github.page(client, httpx.URL("https://github.com/o/r/tree/feature/x/pkg"))
     assert isinstance(result, Extracted)
     assert result.final_url == "https://github.com/o/r/tree/feature/x/pkg"
     assert result.text == (
@@ -65,7 +65,7 @@ async def test_github_tree_of_a_missing_folder_raises() -> None:
     routes = Routes({"https://api.github.com/repos/o/r/contents/nope": httpx.Response(404, json={})})
     async with routes.client() as client:
         with pytest.raises(ToolError, match="没有这个目录"):
-            await web._github(client, httpx.URL("https://github.com/o/r/tree/main/nope"))
+            await github.page(client, httpx.URL("https://github.com/o/r/tree/main/nope"))
 
 
 async def test_github_repo_without_readme_lists_the_top_level_files() -> None:
@@ -79,7 +79,7 @@ async def test_github_repo_without_readme_lists_the_top_level_files() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/o/r"))
+        result = await github.page(client, httpx.URL("https://github.com/o/r"))
     assert isinstance(result, Extracted)
     assert result.text.endswith("仓库没有 README。根目录（2 项）：\ndocs/\ninstall.sh（688 B）")
 
@@ -103,7 +103,7 @@ async def test_github_profile_tab_lists_recently_pushed_repos() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/someone?tab=repositories&sort=updated"))
+        result = await github.page(client, httpx.URL("https://github.com/someone?tab=repositories&sort=updated"))
     assert isinstance(result, Extracted)
     assert (result.title, result.final_url) == ("GitHub 用户 someone", "https://github.com/someone")
     assert result.text == (
@@ -125,7 +125,7 @@ async def test_github_org_overview_adds_the_profile_readme() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/orgs/acme"))
+        result = await github.page(client, httpx.URL("https://github.com/orgs/acme"))
     assert isinstance(result, Extracted)
     assert result.text.startswith("GitHub 组织：acme（Acme）\n简介：Tools\n网站 https://example.com\n")
     assert result.text.endswith("主页 README：\n\n# Hi from Acme")
@@ -169,7 +169,7 @@ async def test_github_issue_reads_the_thread_from_the_api() -> None:
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL("https://github.com/o/r/issues/7"))
+        result = await github.page(client, httpx.URL("https://github.com/o/r/issues/7"))
     assert isinstance(result, Extracted)
     assert result.title == "Crash on start · Issue #7 · o/r"
     assert result.text == (
@@ -184,7 +184,7 @@ def test_github_body_with_unclosed_comments_is_read_in_linear_time() -> None:
     tail = "<!--" * 16_384
     issue = {**ISSUE, "body": f"<!-- template -->\r\nIt crashes.\r\n{tail}", "comments": 0}
     started = time.perf_counter()
-    text = web.format_github_issue(issue, [])
+    text = github.format_github_issue(issue, [])
     assert time.perf_counter() - started < 1  # linear: milliseconds; the quadratic scan took seconds
     assert text.endswith(f"正文：\n\nIt crashes.\n{tail}")  # closed comments go; an unclosed "<!--" stays as text
 
@@ -252,7 +252,7 @@ async def test_github_pull_request_has_state_branches_and_conversation(path: str
         }
     )
     async with routes.client() as client:
-        result = await web._github(client, httpx.URL(f"https://github.com/o/r/{path}"))
+        result = await github.page(client, httpx.URL(f"https://github.com/o/r/{path}"))
     assert isinstance(result, Extracted)
     assert result.title == "Add provider · PR #9 · o/r"
     assert result.text == (
@@ -270,12 +270,12 @@ async def test_github_pull_request_has_state_branches_and_conversation(path: str
 
 def test_github_merged_pull_request_state() -> None:
     merged = {**PULL, "draft": False, "merged_at": "2026-10-28T12:00:00Z", "merged_by": {"login": "lead"}}
-    assert web.format_github_pull(merged, [], []).startswith("PR #9 · 已合并（2026-10-28 20:00，合并者 lead）\n")
+    assert github.format_github_pull(merged, [], []).startswith("PR #9 · 已合并（2026-10-28 20:00，合并者 lead）\n")
 
 
 async def test_github_pull_link_to_an_issue_number_is_redirected() -> None:
     async with Routes({"https://api.github.com/repos/o/r/pulls/5": httpx.Response(404, json={})}).client() as client:
-        target = await web._github(client, httpx.URL("https://github.com/o/r/pull/5"))
+        target = await github.page(client, httpx.URL("https://github.com/o/r/pull/5"))
     assert target == "https://github.com/o/r/issues/5"
 
 
@@ -291,4 +291,4 @@ async def test_github_pull_link_to_an_issue_number_is_redirected() -> None:
 async def test_github_rate_limit_falls_back_to_the_generic_path(url: str) -> None:
     limited = httpx.Response(403, json={"message": "API rate limit exceeded"}, headers={"x-ratelimit-remaining": "0"})
     async with Routes({"api.github.com": limited}).client() as client:
-        assert await web._github(client, httpx.URL(url)) is None
+        assert await github.page(client, httpx.URL(url)) is None

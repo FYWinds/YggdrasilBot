@@ -4,9 +4,9 @@ import httpx
 import pytest
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web import Extracted, read_url
+from yggdrasil.tools.web.adapters import msn
 from yggdrasil.tools.web.model import Unreadable
 
 MSN_ARTICLE = {
@@ -43,10 +43,10 @@ async def test_msn_article_comes_from_the_content_api() -> None:
     routes = Routes({"assets.msn.com": content_api})
     async with routes.client() as client:
         url = "https://www.msn.com/en-in/news/other/storm-closes-the-harbour/ar-AA1abcDE?ocid=share"
-        result = await web._msn_article(client, httpx.URL(url))
+        result = await msn.article(client, httpx.URL(url))
         with pytest.raises(ToolError, match="下架"):
-            await web._msn_article(client, httpx.URL("https://www.msn.com/en-us/news/world/gone/ar-AA0gone0"))
-        assert await web._msn_article(client, httpx.URL("https://www.msn.com/en-us/feed")) is None
+            await msn.article(client, httpx.URL("https://www.msn.com/en-us/news/world/gone/ar-AA0gone0"))
+        assert await msn.article(client, httpx.URL("https://www.msn.com/en-us/feed")) is None
     assert str(routes.seen[0].url) == "https://assets.msn.com/content/view/v2/Detail/en-in/AA1abcDE"
     assert isinstance(result, Extracted)
     assert (result.title, result.via) == ("Storm closes the harbour", "msn")

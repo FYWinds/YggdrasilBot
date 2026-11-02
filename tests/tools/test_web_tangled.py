@@ -3,8 +3,8 @@
 import httpx
 
 from tests.support.routes import Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import tangled
 from yggdrasil.tools.web.model import API_USER_AGENT
 
 
@@ -17,10 +17,10 @@ async def test_tangled_blob_reads_the_raw_file_with_its_lines() -> None:
 
     routes = Routes({"https://tangled.org/alice.example.com/repo/raw/main/src/main.rs": raw})
     async with routes.client() as client:
-        result = await web._tangled_blob(
+        result = await tangled.blob(
             client, httpx.URL("https://tangled.org/alice.example.com/repo/blob/main/src/main.rs")
         )
-        other = await web._tangled_blob(client, httpx.URL("https://tangled.org/alice.example.com/repo/issues/1"))
+        other = await tangled.blob(client, httpx.URL("https://tangled.org/alice.example.com/repo/issues/1"))
     assert isinstance(result, Extracted)
     assert (result.text, result.via) == (code.strip(), "tangled")
     assert result.title == "alice.example.com/repo: src/main.rs"

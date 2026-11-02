@@ -6,9 +6,9 @@ import httpx
 import pytest
 
 from tests.support.routes import Answer, Routes
-from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.adapters import bilibili
 from yggdrasil.tools.web.model import API_USER_AGENT
 
 VIEW_API = "https://api.bilibili.com/x/web-interface/view"
@@ -31,7 +31,7 @@ async def test_bilibili_video_uses_public_api() -> None:
     }
     routes = Routes({VIEW_API: httpx.Response(200, json=payload)})
     async with routes.client() as client:
-        result = await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD/?p=1"))
+        result = await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD/?p=1"))
     assert isinstance(result, Extracted)
     assert routes.seen[0].url.params["bvid"] == "BV1xx411c7mD"
     assert "Mozilla" not in routes.seen[0].headers["user-agent"]
@@ -46,18 +46,18 @@ async def test_bilibili_video_uses_public_api() -> None:
 async def test_bilibili_deleted_video_raises() -> None:
     async with Routes({VIEW_API: httpx.Response(200, json={"code": -404, "message": "啥都木有"})}).client() as client:
         with pytest.raises(ToolError, match="不存在"):
-            await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1GJ411x7h7"))
+            await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1GJ411x7h7"))
 
 
 async def test_bilibili_risk_control_falls_back_to_generic() -> None:
     async with Routes({VIEW_API: httpx.Response(412, html="<html>blocked</html>")}).client() as client:
-        assert await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1GJ411x7h7")) is None
+        assert await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1GJ411x7h7")) is None
 
 
 async def test_b23_short_link_resolves_to_target() -> None:
     target = "https://www.bilibili.com/video/BV1xx411c7mD?share_source=qq"
     async with Routes({"b23.tv": httpx.Response(302, headers={"Location": target})}).client() as client:
-        assert await web._bilibili_short_link(client, httpx.URL("https://b23.tv/abcd123")) == target
+        assert await bilibili.short_link(client, httpx.URL("https://b23.tv/abcd123")) == target
 
 
 # --------------------------------------------------------------------------- subtitles
@@ -114,7 +114,7 @@ async def test_bilibili_subtitles_become_a_timed_transcript() -> None:
     routes = _bili_routes(dm_view)
     routes.answers["https://sub.example.com/cc"] = subtitle
     async with routes.client() as client:
-        result = await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD?p=2"))
+        result = await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD?p=2"))
     assert isinstance(result, Extracted)
     assert result.final_url == "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
     assert result.text.endswith("字幕（P2 · 中文（中国））：\n\n[0:00] 第一句 第二句\n\n[1:01] 第三句")
@@ -129,7 +129,7 @@ async def test_bilibili_part_number_out_of_range_reads_the_first_part() -> None:
 
     routes = _bili_routes(dm_view)
     async with routes.client() as client:
-        result = await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD?p=9"))
+        result = await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD?p=9"))
     assert isinstance(result, Extracted)
     assert result.final_url == "https://www.bilibili.com/video/BV1xx411c7mD"
 
@@ -149,6 +149,6 @@ async def test_bilibili_part_number_out_of_range_reads_the_first_part() -> None:
 async def test_bilibili_without_subtitles_says_why(dm_view: httpx.Response, listed: list, note: str) -> None:
     view = {**BILI_VIEW, "data": {**BILI_VIEW["data"], "subtitle": {"list": listed}}}
     async with _bili_routes(dm_view, view).client() as client:
-        result = await web._bilibili_video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD"))
+        result = await bilibili.video(client, httpx.URL("https://www.bilibili.com/video/BV1xx411c7mD"))
     assert isinstance(result, Extracted)
     assert result.text.endswith(f"（{note}，只有标题和简介，无法得知视频里具体说了什么）")
