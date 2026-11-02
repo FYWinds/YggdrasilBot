@@ -117,7 +117,8 @@ async def test_concurrent_renders_never_overfill_the_reply(service: Routes) -> N
     async def together(request: httpx.Request) -> httpx.Response:
         if len(service.seen) == 2:
             both.set()
-        await both.wait()  # two renders in flight at once
+        async with asyncio.timeout(5):
+            await both.wait()  # two renders in flight at once
         return _ok(json.loads(request.content)["max_images"])
 
     service.answers[RENDER] = together

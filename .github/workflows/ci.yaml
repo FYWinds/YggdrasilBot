@@ -25,6 +25,8 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Redis is an in-process fake in the tests (tests/conftest.py); only Postgres runs as a service.
     services:
       postgres:
         image: paradedb/paradedb:0.26.0-pg18
@@ -35,11 +37,6 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U ygg" --health-interval 5s --health-timeout 5s --health-retries 20
-      redis:
-        image: redis:8
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -48,13 +45,38 @@ jobs:
       - run: uv run ruff check .
       - run: uv run basedpyright
       - name: Tests
+        env:
+          YGG_TEST_DB: "1"  # run the database tests against the service above
         run: |
           export YGG_SECRET_KEY="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
           uv run alembic upgrade head
-          uv run pytest -q
+          uv run pytest -q -rs --durations=15
+
+  # Dashboard (web/): the generated API client matches web/openapi.json (which the check job's tests hold to the
+  # admin API), and the app type-checks and builds.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Generated client is up to date
+        run: |
+          npm run gen
+          git add --intent-to-add src/client
+          git diff --exit-code src/client
+      - run: npm run build
 
   bot:
-    needs: check
+    needs: [check, web]
     # Branch pushes, manual runs and vX.Y.Z tags; not the sandbox-/render-/browser- release tags.
     if: github.event_name != 'pull_request' && (github.ref_type != 'tag' || startsWith(github.ref_name, 'v'))
     runs-on: ubuntu-latest

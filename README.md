@@ -249,16 +249,18 @@ dashboard route, and an optional sandbox component.
 uv sync --locked
 uv run ruff format --check . && uv run ruff check .
 uv run basedpyright
-uv run alembic upgrade head && uv run pytest -q
+uv run alembic upgrade head && YGG_TEST_DB=1 uv run pytest -q
 (cd web && npx tsc -b --noEmit)
 (cd render && npx tsc --noEmit -p .)
 ```
 
-The tests run against real services; set `POSTGRES_*`, `REDIS_URL` and `YGG_SECRET_KEY` to disposable
-instances. Bot-side sandbox tests use an in-memory sandboxd. The tests of the sandbox image itself (in-sandbox
-helpers, backend conformance) need a sandboxd container (`sandbox/Dockerfile`, target `sandboxd-test`) and
-`YGG_TEST_SANDBOXD_REST` / `_GRPC` / `_TOKEN`; render tests need `YGG_TEST_RENDER_URL`. They are skipped otherwise.
-CI (`.github/workflows/ci.yaml`) runs the image tests in the `sandbox-v*` release job, everything else on every push.
+Database tests run only with `YGG_TEST_DB=1`, against the Postgres that `POSTGRES_*` names; use a disposable
+database, since they delete rows. Without the flag they are skipped, and any other test that reaches the database
+fails. Redis is faked in-process; `YGG_SECRET_KEY` must be set. Bot-side sandbox tests use an in-memory sandboxd. The
+tests of the sandbox image itself (in-sandbox helpers, backend conformance) need a sandboxd container
+(`sandbox/Dockerfile`, target `sandboxd-test`) and `YGG_TEST_SANDBOXD_REST` / `_GRPC` / `_TOKEN`; they are skipped
+otherwise. CI (`.github/workflows/ci.yaml`) runs the image tests in the `sandbox-v*` release job and everything else
+on every push and pull request, including a `web` job that regenerates and builds the dashboard client.
 
 After changing the admin API, regenerate the dashboard client:
 
