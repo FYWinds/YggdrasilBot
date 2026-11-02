@@ -19,11 +19,11 @@ from yggdrasil.agent.tools.attachments import expand_forward
 from yggdrasil.agent.tools.history import recent_chat, search_history
 from yggdrasil.db.models import MemoryVector, MessageChunk, Topic
 from yggdrasil.db.session import get_session
-from yggdrasil.delivery import send
 from yggdrasil.delivery.forward import send_forward
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.napcat.api import node_seg, text_seg
 from yggdrasil.napcat.models import ForwardResult
+from yggdrasil.pipeline.record import Meta
 from yggdrasil.settings import ContextSettings, InteractionSettings, Settings
 
 pytestmark = pytest.mark.db
@@ -50,7 +50,7 @@ async def _expand(ctx: RunContext[Deps], forward: dict[str, Any]) -> str:
 async def test_the_bots_own_forward_shows_its_send_time_and_no_metadata(recorded: list[IncomingMessage]) -> None:
     # The prod failure: every node of a forward the bot sent came back as "[] Yggdrasil(你): …", and the
     # "⚙ 元数据" node (model, tokens, trace id) was handed to the model as part of the answer.
-    meta = send.Meta(model_names=["some-model"], tokens_in=1200, tokens_out=80, trace_id="0123456789abcdef0")
+    meta = Meta(model_names=["some-model"], tokens_in=1200, tokens_out=80, trace_id="0123456789abcdef0")
     reply = BotReply(
         mode="forward",
         title="解读",

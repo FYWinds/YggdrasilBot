@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import time
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -14,32 +13,26 @@ from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
-from sqlalchemy import update
 
-from yggdrasil.agent.context import BuiltContext, build_context
+from yggdrasil.agent.context import build_context
 from yggdrasil.agent.deps import Deps
-from yggdrasil.agent.media import load_images, looks_like_image
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.bot.state import identity, should_quote
-from yggdrasil.config import APP_CONFIG
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, INVOCATIONS
 from yggdrasil.core.telemetry import TRACER, current_trace_id
-from yggdrasil.db.models import Invocation, ModerationResult
-from yggdrasil.db.session import get_session
 from yggdrasil.delivery.forward import send_forward
-from yggdrasil.delivery.send import MessageDropped, Meta, react, send_text
-from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage, sees_images
+from yggdrasil.delivery.send import MessageDropped, react, send_text
+from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
-from yggdrasil.people import self_label
 from yggdrasil.pipeline import ack as ack_mod
-from yggdrasil.pipeline import ratelimit, repeats
-from yggdrasil.prompts import render
+from yggdrasil.pipeline import ratelimit, record, repeats
+from yggdrasil.pipeline.prompt import inline_images, instructions
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
 from yggdrasil.settings import Settings, ToolSettings
@@ -137,7 +130,7 @@ class Invocator:
         self.role: Role = role
         self.reply_qq_message_id: int | None = None
         self.started = time.perf_counter()
-        self.meta = Meta()
+        self.meta = record.Meta()
         self.invocation_id: UUID | None = None
         self.ack_kind: str | None = None
         self._slow_marked = False
@@ -188,62 +181,21 @@ class Invocator:
                     await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
         return status
 
-    async def _prompt_with_images(self, ctx: BuiltContext) -> str | list[UserContent]:
-        """Attach the images of the messages the request is about up front when the route can see them.
-
-        They are almost always what the request is about ("总结一下" on a reply to three screenshots),
-        and a view_image round trip per image costs a model turn.
-        """
-        limit = self.settings.context.inline_images
-        focus = (ctx.handles.get(key) for key in ctx.focus)
-        handles = [h for h in focus if h is not None and looks_like_image(h)][:limit]
-        if not handles or not sees_images(self.handler):
-            return ctx.prompt
-        with TRACER.start_as_current_span("ygg.inline_images") as span:
-            loaded = await load_images(self.api, self.group_id, handles)
-            span.set_attribute("ygg.images", len(loaded))
-        if not loaded:
-            return ctx.prompt
-        keys = "、".join(key for key, _ in loaded)
-        prompt: list[UserContent] = [ctx.prompt, f"下面直接附上了 {keys} 的原图：直接看图，不用再调用 view_image。"]
-        for key, img in loaded:
-            handle = ctx.handles.get(key)
-            self.notes.image(img.data, img.content.media_type, segment=handle.data if handle else None)
-            prompt += [f"{key}{img.note}：", img.content]
-        return prompt
-
     # --- bookkeeping -------------------------------------------------------
     async def _start_row(self, request_text: str) -> None:
-        async with get_session() as session:
-            row = Invocation(
-                group_id=self.group_id,
-                user_id=self.user_id,
-                handler=self.record_handler,
-                trigger_qq_message_id=self.trigger_message_id,
-                request_text=request_text[:2000],
-                status="running",
-                trace_id=self.meta.trace_id,
-            )
-            session.add(row)
-            await session.flush()
-            self.invocation_id = row.id
+        self.invocation_id = await record.start_row(
+            group_id=self.group_id,
+            user_id=self.user_id,
+            handler=self.record_handler,
+            trigger_message_id=self.trigger_message_id,
+            request_text=request_text,
+            trace_id=self.meta.trace_id,
+        )
 
     async def _save_verdict(self, v: Verdict) -> None:
         if v.verdict == "Skipped" or self.invocation_id is None:
             return
-        async with get_session() as session:
-            session.add(
-                ModerationResult(
-                    invocation_id=self.invocation_id,
-                    stage=v.stage,
-                    verdict=v.verdict,
-                    score=v.score,
-                    categories=v.categories,
-                    action=v.action,
-                    model=v.model,
-                    latency_ms=v.latency_ms,
-                )
-            )
+        await record.save_verdict(self.invocation_id, v)
 
     async def _finish(self, status: str, error: str | None, **extra: object) -> None:
         self._finished = True
@@ -251,25 +203,7 @@ class Invocator:
         await ratelimit.add_tokens(self.group_id, self._billable_tokens())
         if self.invocation_id is None:
             return
-        with contextlib.suppress(Exception):
-            async with get_session() as session:
-                await session.execute(
-                    update(Invocation)
-                    .where(Invocation.id == self.invocation_id)
-                    .values(
-                        status=status,
-                        error=error,
-                        models=list(dict.fromkeys(self.meta.models)),
-                        tokens_in=self.meta.tokens_in,
-                        tokens_out=self.meta.tokens_out,
-                        tokens_cached=self.meta.tokens_cached,
-                        tool_calls=self.meta.tools,
-                        ack_kind=self.ack_kind,
-                        ack_latency_ms=int(self.meta.ack_s * 1000) if self.meta.ack_s is not None else None,
-                        duration_ms=int(self.meta.total_s * 1000),
-                        **extra,
-                    )
-                )
+        await record.finish_row(self.invocation_id, status, error, self.meta, self.ack_kind, **extra)
 
     def _billable_tokens(self) -> int:
         """Tokens this run adds to the group's daily budget."""
@@ -351,7 +285,9 @@ class Invocator:
             recall_denied=replied_bot_msg is not None and recall_target is None,
             nonce=ctx.nonce,
         )
-        prompt = await self._prompt_with_images(ctx)
+        prompt = await inline_images(
+            ctx, self.api, self.group_id, self.handler, self.settings.context.inline_images, self.notes
+        )
         return await self._execute(agent, prompt, deps, resolved_model, mod_text)
 
     def _agent(
@@ -366,33 +302,20 @@ class Invocator:
         nonce: str,
         report: bool = False,
     ) -> Agent[Deps, BotReply]:
-        group_name = ""
-        if self.group_id is not None:
-            info = snapshot().groups.get(self.group_id)
-            group_name = info.name if info else ""
-        tools_cfg = self.settings.tools
         return Agent(
             resolved_model.model,
             output_type=BotReply,
             deps_type=Deps,
-            instructions=render(
-                f"{self.handler}_system",
-                persona=self.settings.persona,
-                group_name=group_name or "本群",
-                now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
+            instructions=instructions(
+                self.handler,
+                self.settings,
+                self.group_id,
                 tools=prompt_tools,
-                sandbox=tools_cfg if self.sandbox is not None else None,
-                sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
+                sandbox=self.settings.tools if self.sandbox is not None else None,
                 actions=actions,
                 recall_denied=recall_denied,
                 report=report,
-                style=render("style_rules"),
-                data_rules=render(
-                    "data_rules",
-                    nonce=nonce,
-                    me=self_label(self.settings.persona.name),
-                    sandbox=self.sandbox is not None,
-                ),
+                nonce=nonce,
             ),
             tools=tools,
             capabilities=[*capabilities, self.recorder],

@@ -33,6 +33,9 @@ _MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?!\*)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 _MD_CODE = re.compile(r"`([^`\n]+)`")
 _MD_BULLET = re.compile(r"^(\s*)[*+]\s+", re.MULTILINE)
+# First line of the metadata node; expand_forward also uses it to skip that node in forwards stored before it was
+# left out of our records.
+META_TITLE = "⚙ 元数据"
 
 
 def strip_markdown(text: str) -> str:

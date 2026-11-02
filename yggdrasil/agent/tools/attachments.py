@@ -9,7 +9,7 @@ from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from yggdrasil.agent.deps import Deps, Handle
 from yggdrasil.agent.media import ModelImage, is_image, load_image, media_bytes, media_type, model_image
 from yggdrasil.agent.tools.base import ToolResult, chat_tool, people_for, resolve_ref, vision
-from yggdrasil.delivery.send import META_TITLE
+from yggdrasil.delivery.forward import META_TITLE
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.llm.registry import TaskNotConfigured, sees_images
 from yggdrasil.people import clean_name
