@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
+from tests.support.onebot import group_message
 from yggdrasil.agent import context
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.memory import search
@@ -77,25 +78,7 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _event(segs: Message, reply: dict[str, Any] | None = None) -> GroupMessageEvent:
-    return GroupMessageEvent.model_validate(
-        {
-            "time": 1760000000,
-            "self_id": SELF,
-            "post_type": "message",
-            "sub_type": "normal",
-            "user_id": FRIEND,
-            "message_type": "group",
-            "message_id": 1,
-            "message": segs,
-            "original_message": segs,
-            "raw_message": "",
-            "font": 0,
-            "sender": {"user_id": FRIEND, "card": "阿明"},
-            "to_me": True,
-            "group_id": 100,
-            "reply": reply,
-        }
-    )
+    return group_message(segs, group_id=100, user_id=FRIEND, self_id=SELF, card="阿明", to_me=True, reply=reply)
 
 
 async def test_trigger_renders_self_mention(offline: None) -> None:

@@ -1,15 +1,15 @@
 import asyncio
-import inspect
 import json
 import logging
 import socket
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import fakeredis
 import httpx
 import pytest
 
-from yggdrasil import runtime
+from tests.support.routes import Routes
 from yggdrasil.config import APP_CONFIG
 from yggdrasil.llm.catalog import ModelCaps
 from yggdrasil.relay import grants, issue_token, relay_models, relay_url, relay_usage, revoke_token
@@ -45,7 +45,7 @@ SSE = (
 )
 
 
-def _snapshot(*, fallback_format: str = "anthropic") -> Snapshot:
+def _config(*, fallback_format: str = "anthropic") -> dict[str, Any]:
     primary = ProviderInfo(
         1,
         "gw",
@@ -61,43 +61,32 @@ def _snapshot(*, fallback_format: str = "anthropic") -> Snapshot:
         2, "backup", "https://backup.example.com", "sk-backup", {}, True, (FALLBACK,), fallback_format
     )
     route = Route("agent", 1, MODEL, {}, 2, FALLBACK, {})
-    return Snapshot(providers={1: primary, 2: backup}, routes={"agent": route})
+    return {"providers": {1: primary, 2: backup}, "routes": {"agent": route}}
 
 
 @pytest.fixture
-async def redis(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[fakeredis.FakeAsyncRedis]:
+async def redis(
+    monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]
+) -> AsyncIterator[fakeredis.FakeAsyncRedis]:
     conn = fakeredis.FakeAsyncRedis(decode_responses=True)
     monkeypatch.setattr(grants, "redis_client", lambda: conn)
-    monkeypatch.setattr(runtime, "_snapshot", _snapshot())
+    snapshot(**_config())
     yield conn
     await conn.aclose()
 
 
-class Upstream:
-    """Fake provider: records requests, answers per host with a handler."""
-
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
-        self.answer: dict[str, Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]]] = {}
-
-    async def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        answer = self.answer[request.url.host](request)
-        return await answer if inspect.isawaitable(answer) else answer
+@pytest.fixture
+def upstream() -> Routes:
+    """The providers behind the relay, answering by host."""
+    return Routes()
 
 
 @pytest.fixture
-async def upstream() -> Upstream:
-    return Upstream()
-
-
-@pytest.fixture
-async def client(redis: fakeredis.FakeAsyncRedis, upstream: Upstream) -> AsyncIterator[httpx.AsyncClient]:
-    http = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
-    app = Relay(http).app()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://relay.test") as c:
-        yield c
-    await http.aclose()
+async def client(redis: fakeredis.FakeAsyncRedis, upstream: Routes) -> AsyncIterator[httpx.AsyncClient]:
+    async with upstream.client() as http:
+        app = Relay(http).app()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://relay.test") as c:
+            yield c
 
 
 async def _token(job_id: str = "job1", **kw: int) -> str:
@@ -165,8 +154,8 @@ async def test_relay_models_come_from_the_chat_route(redis: fakeredis.FakeAsyncR
     assert not models[1].vision
 
 
-async def test_relay_models_skip_openai_format_providers(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runtime, "_snapshot", _snapshot(fallback_format="openai"))
+async def test_relay_models_skip_openai_format_providers(snapshot: Callable[..., Snapshot]) -> None:
+    snapshot(**_config(fallback_format="openai"))
     assert [m.id for m in await relay_models()] == [MODEL]
 
 
@@ -180,16 +169,16 @@ async def test_requests_without_valid_token_are_rejected(client: httpx.AsyncClie
     assert r.status_code == 401
 
 
-async def test_model_outside_the_grant_is_forbidden(client: httpx.AsyncClient, upstream: Upstream) -> None:
+async def test_model_outside_the_grant_is_forbidden(client: httpx.AsyncClient, upstream: Routes) -> None:
     token = await _token()
     r = await client.post("/v1/messages", json={"model": FALLBACK, "messages": []}, headers={"x-api-key": token})
     assert r.status_code == 403
     assert r.json()["error"]["type"] == "permission_error"
-    assert upstream.requests == []
+    assert upstream.seen == []
 
 
-async def test_exhausted_budget_is_rejected(client: httpx.AsyncClient, upstream: Upstream) -> None:
-    upstream.answer["gw.example.com"] = _sse_response
+async def test_exhausted_budget_is_rejected(client: httpx.AsyncClient, upstream: Routes) -> None:
+    upstream.answers["gw.example.com"] = _sse_response
     token = await _token(max_output_tokens=40)
     headers = {"authorization": f"Bearer {token}"}
     body = {"model": MODEL, "stream": True, "messages": []}
@@ -198,11 +187,11 @@ async def test_exhausted_budget_is_rejected(client: httpx.AsyncClient, upstream:
     second = await client.post("/v1/messages", json=body, headers=headers)
     assert second.status_code == 429
     assert second.json()["error"]["type"] == "rate_limit_error"
-    assert len(upstream.requests) == 1
+    assert len(upstream.seen) == 1
 
 
-async def test_stream_passes_through_and_usage_is_recorded(client: httpx.AsyncClient, upstream: Upstream) -> None:
-    upstream.answer["gw.example.com"] = _sse_response
+async def test_stream_passes_through_and_usage_is_recorded(client: httpx.AsyncClient, upstream: Routes) -> None:
+    upstream.answers["gw.example.com"] = _sse_response
     token = await _token()
     body = json.dumps({"model": MODEL, "stream": True, "max_tokens": 100, "messages": []})
     async with client.stream(
@@ -228,7 +217,7 @@ async def test_stream_passes_through_and_usage_is_recorded(client: httpx.AsyncCl
         requests=1, input_tokens=420, cached_tokens=300, output_tokens=42
     )
 
-    (sent,) = upstream.requests
+    (sent,) = upstream.seen
     assert str(sent.url) == "https://gw.example.com/v1/messages"
     assert sent.content == body.encode()  # forwarded unchanged
     assert sent.headers["x-api-key"] == REAL_KEY
@@ -241,56 +230,54 @@ async def test_stream_passes_through_and_usage_is_recorded(client: httpx.AsyncCl
     assert all(token not in v for v in sent.headers.values())
 
 
-async def test_non_streaming_usage_is_recorded(client: httpx.AsyncClient, upstream: Upstream) -> None:
+async def test_non_streaming_usage_is_recorded(client: httpx.AsyncClient, upstream: Routes) -> None:
     message = {
         "id": "msg_2",
         "type": "message",
         "content": [{"type": "text", "text": "hi"}],
         "usage": {"input_tokens": 7, "cache_read_input_tokens": 3, "output_tokens": 5},
     }
-    upstream.answer["gw.example.com"] = lambda _r: httpx.Response(200, json=message)
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(200, json=message)
     token = await _token()
     r = await client.post("/v1/messages", json={"model": MODEL, "messages": []}, headers={"x-api-key": token})
     assert r.status_code == 200
     assert r.json() == message
-    assert upstream.requests[0].headers["anthropic-version"] == "2023-06-01"  # default when the client sent none
+    assert upstream.seen[0].headers["anthropic-version"] == "2023-06-01"  # default when the client sent none
     assert await relay_usage("job1") == grants.RelayUsage(requests=1, input_tokens=10, cached_tokens=3, output_tokens=5)
 
 
-async def test_primary_failure_falls_back_with_the_fallback_model(
-    client: httpx.AsyncClient, upstream: Upstream
-) -> None:
-    upstream.answer["gw.example.com"] = lambda _r: httpx.Response(529, json={"type": "error"})
-    upstream.answer["backup.example.com"] = _sse_response
+async def test_primary_failure_falls_back_with_the_fallback_model(client: httpx.AsyncClient, upstream: Routes) -> None:
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(529, json={"type": "error"})
+    upstream.answers["backup.example.com"] = _sse_response
     token = await _token()
     r = await client.post(
         "/v1/messages", json={"model": MODEL, "stream": True, "messages": []}, headers={"x-api-key": token}
     )
     assert r.status_code == 200
     assert r.content == SSE
-    primary, backup = upstream.requests
+    primary, backup = upstream.seen
     assert json.loads(backup.content)["model"] == FALLBACK
     assert str(backup.url) == "https://backup.example.com/v1/messages"
     assert backup.headers["x-api-key"] == "sk-backup"
     assert primary.headers["x-api-key"] == REAL_KEY
 
 
-async def test_upstream_client_errors_pass_through_unaccounted(client: httpx.AsyncClient, upstream: Upstream) -> None:
+async def test_upstream_client_errors_pass_through_unaccounted(client: httpx.AsyncClient, upstream: Routes) -> None:
     err = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}
-    upstream.answer["gw.example.com"] = lambda _r: httpx.Response(400, json=err)
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(400, json=err)
     token = await _token()
     r = await client.post("/v1/messages", json={"model": MODEL, "messages": []}, headers={"x-api-key": token})
     assert (r.status_code, r.json()) == (400, err)
-    assert len(upstream.requests) == 1  # a 400 is not retried on the fallback
+    assert len(upstream.seen) == 1  # a 400 is not retried on the fallback
     assert (await relay_usage("job1")).requests == 0
 
 
-async def test_unreachable_upstreams_give_an_api_error(client: httpx.AsyncClient, upstream: Upstream) -> None:
+async def test_unreachable_upstreams_give_an_api_error(client: httpx.AsyncClient, upstream: Routes) -> None:
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
-    upstream.answer["gw.example.com"] = refuse
-    upstream.answer["backup.example.com"] = refuse
+    upstream.answers["gw.example.com"] = refuse
+    upstream.answers["backup.example.com"] = refuse
     token = await _token()
     r = await client.post("/v1/messages", json={"model": MODEL, "messages": []}, headers={"x-api-key": token})
     assert r.status_code == 502
@@ -313,18 +300,18 @@ def test_sse_usage_survives_any_chunking() -> None:
 
 
 async def test_parallel_requests_cannot_overrun_the_output_budget(
-    client: httpx.AsyncClient, upstream: Upstream, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
 ) -> None:
     both_upstream = asyncio.Event()
 
     async def slow(request: httpx.Request) -> httpx.Response:
-        if len(upstream.requests) == 2:
+        if len(upstream.seen) == 2:
             both_upstream.set()
         await both_upstream.wait()  # both are in flight before either records usage
         max_tokens = json.loads(request.content)["max_tokens"]
         return httpx.Response(200, json={"usage": {"input_tokens": 1, "output_tokens": max_tokens}})
 
-    upstream.answer["gw.example.com"] = slow
+    upstream.answers["gw.example.com"] = slow
     token = await _token(max_output_tokens=100)
     body = {"model": MODEL, "max_tokens": 80, "messages": []}
     responses = await asyncio.gather(
@@ -332,15 +319,15 @@ async def test_parallel_requests_cannot_overrun_the_output_budget(
     )
     assert sorted(r.status_code for r in responses) == [200, 200, 429]
     # The second request was clamped to what the first one's reservation left.
-    assert sorted(json.loads(r.content)["max_tokens"] for r in upstream.requests) == [20, 80]
+    assert sorted(json.loads(r.content)["max_tokens"] for r in upstream.seen) == [20, 80]
     assert (await relay_usage("job1")).output_tokens == 100
     assert await redis.hgetall(pending_key("job1")) == {}  # pyright: ignore[reportGeneralTypeIssues]
 
 
 async def test_failed_requests_release_their_reservation(
-    client: httpx.AsyncClient, upstream: Upstream, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    upstream.answer["gw.example.com"] = lambda _r: httpx.Response(400, json={"type": "error"})
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(400, json={"type": "error"})
     token = await _token(max_output_tokens=100)
     for _ in range(3):
         r = await client.post(
@@ -351,16 +338,16 @@ async def test_failed_requests_release_their_reservation(
 
 
 async def test_lapsed_reservations_stop_counting(
-    client: httpx.AsyncClient, upstream: Upstream, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    upstream.answer["gw.example.com"] = lambda r: httpx.Response(200, json={"usage": {"output_tokens": 1}})
+    upstream.answers["gw.example.com"] = lambda r: httpx.Response(200, json={"usage": {"output_tokens": 1}})
     token = await _token(max_output_tokens=100)
     await redis.hset(pending_key("job1"), mapping={"dead": "100:1", "garbage": "x"})
     r = await client.post(
         "/v1/messages", json={"model": MODEL, "max_tokens": 50, "messages": []}, headers={"x-api-key": token}
     )
     assert r.status_code == 200
-    assert json.loads(upstream.requests[0].content)["max_tokens"] == 50
+    assert json.loads(upstream.seen[0].content)["max_tokens"] == 50
     assert await redis.hgetall(pending_key("job1")) == {}
 
 
@@ -371,9 +358,7 @@ def test_clamp_keeps_thinking_budget_below_max_tokens() -> None:
     assert (clamped["max_tokens"], clamped["thinking"]["budget_tokens"]) == (8000, 7999)
 
 
-async def test_stream_cut_before_message_delta_charges_an_estimate(
-    client: httpx.AsyncClient, upstream: Upstream
-) -> None:
+async def test_stream_cut_before_message_delta_charges_an_estimate(client: httpx.AsyncClient, upstream: Routes) -> None:
     cut = SSE[: SSE.index(b"event: message_delta")] + (
         b"event: content_block_delta\n"
         b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'
@@ -385,7 +370,7 @@ async def test_stream_cut_before_message_delta_charges_an_estimate(
         + b"y" * 298
         + b'"}}\n\n'
     )
-    upstream.answer["gw.example.com"] = lambda _r: httpx.Response(
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(
         200, headers={"content-type": "text/event-stream"}, content=cut
     )
     token = await _token()

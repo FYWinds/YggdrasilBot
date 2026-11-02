@@ -2,62 +2,35 @@
 profile updater, search ranking and digests. Runs against the local ParadeDB; rows are removed afterwards."""
 
 import json
-import math
 import re
 from collections.abc import AsyncIterator, Callable, Iterable
 from datetime import UTC, datetime, time, timedelta
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.usage import RunUsage
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
-from tests.memory.helpers import fake_model, prompt_of
+from tests.support.agent import run_ctx
+from tests.support.db import insert_message, purge_groups, unit_vector
+from tests.support.models import prompt_of, streaming_model
 from yggdrasil.agent import tools
-from yggdrasil.agent.deps import Deps, Handles
-from yggdrasil.db.base import EMBED_DIM
-from yggdrasil.db.models import (
-    DailyDigest,
-    EmbedSpace,
-    MemoryVector,
-    Message,
-    Provider,
-    Topic,
-    TopicMessage,
-    UserAlias,
-    UserProfile,
-    UserProfileFact,
-)
+from yggdrasil.db.models import DailyDigest, MemoryVector, Topic, TopicMessage, UserAlias, UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import curation, digest, llm, profiles, search
 from yggdrasil.memory.common import LOCAL_TZ, fact_weight, local, topic_weight
-from yggdrasil.settings import Settings
 
 GROUP = 990007
 USER = 20003
 NAMES = {20001: "阿明", 20002: "小红", 20003: "老王"}
 
 
-async def _cleanup() -> None:
-    async with get_session() as s:
-        await s.execute(delete(MemoryVector).where(MemoryVector.group_id == GROUP))
-        await s.execute(delete(DailyDigest).where(DailyDigest.group_id == GROUP))
-        await s.execute(delete(Topic).where(Topic.group_id == GROUP))
-        await s.execute(delete(UserProfileFact).where(UserProfileFact.group_id == GROUP))
-        await s.execute(delete(UserProfile).where(UserProfile.group_id == GROUP))
-        await s.execute(delete(UserAlias).where(UserAlias.group_id == GROUP))
-        await s.execute(delete(Message).where(Message.group_id == GROUP))
-
-
 @pytest.fixture
 async def clean() -> AsyncIterator[None]:
-    await _cleanup()
+    await purge_groups(GROUP)
     yield
-    await _cleanup()
+    await purge_groups(GROUP)
 
 
 def _answer(info: AgentInfo, output: dict[str, Any]) -> ModelResponse:
@@ -77,7 +50,7 @@ def _scripted(line: re.Pattern[str], prompts: list[str], *answers: Answer) -> Fu
         prompts.append(prompt := prompt_of(messages))
         return _answer(info, answers[len(prompts) - 1]({text: int(i) for i, text in line.findall(prompt)}))
 
-    return fake_model(respond)
+    return streaming_model(respond)
 
 
 def _made_up(shown: dict[str, int]) -> list[int]:
@@ -178,7 +151,7 @@ def _topic_scorer(importance: dict[str, int], seen: list[list[int]]) -> Function
         ]
         return _answer(info, {"scores": scores})
 
-    return fake_model(respond)
+    return streaming_model(respond)
 
 
 async def test_topic_curation_scores_closed_topics_in_capped_runs_and_archives_low_weight(
@@ -277,7 +250,7 @@ def _fact_reviewer(scores: dict[str, int], merges: list[tuple[str, list[str]]], 
             },
         )
 
-    return fake_model(respond)
+    return streaming_model(respond)
 
 
 async def test_fact_curation_merges_duplicates_archives_low_ones_and_caps_by_decayed_weight(
@@ -398,11 +371,6 @@ async def test_facts_an_answer_rates_nothing_of_or_leaves_out_stay_unrated_and_u
     assert all(facts[i].archived_at is None for i in (engineer, rust))
 
 
-def _ctx() -> RunContext[Deps]:
-    deps = Deps(cast(Any, None), GROUP, 20001, Settings(), Handles(), "chat", self_id=10000)
-    return RunContext(deps=deps, model=TestModel(), usage=RunUsage())
-
-
 async def test_get_profile_shows_the_ten_highest_weighted_active_facts(clean: None, group_settings: Any) -> None:
     group_settings({GROUP: {}})
     await _profile()
@@ -418,25 +386,17 @@ async def test_get_profile_shows_the_ten_highest_weighted_active_facts(clean: No
     assert profile is not None
     assert profile.facts == top
 
-    out = str(await tools.get_profile(_ctx(), USER))
+    out = str(await tools.get_profile(run_ctx(group_id=GROUP, user_id=20001, self_id=10000), USER))
     assert out.split("事实：\n", 1)[1].splitlines() == [f"- {f}" for f in top]
     assert "归档了的身份" not in out
 
 
 async def _message(user_id: int, text: str, at: datetime) -> int:
-    async with get_session() as s:
-        m = Message(
-            sent_at=at,
-            group_id=GROUP,
-            user_id=user_id,
-            qq_message_id=int(at.timestamp()) % 1_000_000 + user_id,
-            sender_name=NAMES.get(user_id, "群友"),
-            plain_text=text,
-            segments=[],
-        )
-        s.add(m)
-        await s.flush()
-        return m.id
+    qq = int(at.timestamp()) % 1_000_000 + user_id
+    name = NAMES.get(user_id, "群友")
+    return await insert_message(
+        GROUP, text, user_id=user_id, sender_name=name, sent_at=at, qq_message_id=qq, segments=[]
+    )
 
 
 async def test_profile_update_sees_only_active_facts_and_stores_rated_new_ones(
@@ -472,7 +432,7 @@ async def test_profile_update_sees_only_active_facts_and_stores_rated_new_ones(
             },
         )
 
-    with llm.override_models(memory_profile=fake_model(respond)):
+    with llm.override_models(memory_profile=streaming_model(respond)):
         assert await profiles.update_user(GROUP, USER)
 
     shown = prompts[0].split("<profile>", 1)[1]
@@ -495,37 +455,8 @@ async def test_profile_update_sees_only_active_facts_and_stores_rated_new_ones(
 # --- search ranking -------------------------------------------------------------------------------
 
 
-def _unit(cos: float) -> list[float]:
-    """A unit vector at cosine ``cos`` to the first axis."""
-    vec = [0.0] * EMBED_DIM
-    vec[0], vec[1] = cos, math.sqrt(1 - cos * cos)
-    return vec
-
-
-@pytest.fixture
-async def space(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[int]:
-    """An embedding space whose query vector is the first axis: a vector's cosine to the query is its x."""
-    async with get_session() as s:
-        provider = Provider(name="test-curation-embed", base_url="http://embed.example.com/v1")
-        s.add(provider)
-        await s.flush()
-        es = EmbedSpace(provider_id=provider.id, model="test-embed", dim=EMBED_DIM)
-        s.add(es)
-        await s.flush()
-        space_id, provider_id = es.id, provider.id
-
-    async def query_vector(_: str) -> tuple[int, list[float]]:
-        return space_id, _unit(1.0)
-
-    monkeypatch.setattr(search, "_query_vector", query_vector)
-    yield space_id
-    async with get_session() as s:
-        await s.execute(delete(EmbedSpace).where(EmbedSpace.id == space_id))
-        await s.execute(delete(Provider).where(Provider.id == provider_id))
-
-
 async def test_search_ranks_topic_hits_by_weight_and_skips_archived_topics(
-    clean: None, group_settings: Any, space: int
+    clean: None, group_settings: Any, search_space: int
 ) -> None:
     group_settings({GROUP: {}})
 
@@ -538,7 +469,11 @@ async def test_search_ranks_topic_hits_by_weight_and_skips_archived_topics(
             scored_at=datetime.now(UTC),
         )
         async with get_session() as s:
-            s.add(MemoryVector(kind="topic", ref_id=topic_id, space_id=space, group_id=GROUP, embedding=_unit(cos)))
+            s.add(
+                MemoryVector(
+                    kind="topic", ref_id=topic_id, space_id=search_space, group_id=GROUP, embedding=unit_vector(cos)
+                )
+            )
         return topic_id
 
     banter = await indexed("泰山玩梗", 0.72, 2)
@@ -586,7 +521,7 @@ async def test_digest_is_rendered_in_the_fixed_format_from_non_archived_topics(
             },
         )
 
-    with llm.override_models(memory_digest=fake_model(respond)):
+    with llm.override_models(memory_digest=streaming_model(respond)):
         digest_id = await digest.build_digest(GROUP, day)
 
     assert digest_id is not None

@@ -5,7 +5,8 @@ import httpx
 import pytest
 from sqlalchemy import delete, select
 
-from tests.admin.conftest import ADMIN
+from tests.admin.helpers import ADMIN
+from tests.support.routes import Routes
 from yggdrasil.admin import providers as providers_api
 from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SearchProvider, SettingsDoc, TaskRoute
 from yggdrasil.db.session import get_session
@@ -325,20 +326,16 @@ _OR_IMAGE = [
 ]
 
 
-def _mock_upstream(monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], dict]) -> list[httpx.Request]:
-    """Answer every outgoing (non-ASGI) request with ``handler``'s JSON; returns the seen requests."""
-    seen: list[httpx.Request] = []
-
-    async def upstream(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=handler(request))
+def _upstream(monkeypatch: pytest.MonkeyPatch, host: str, answer: Callable[[httpx.Request], dict]) -> Routes:
+    """``host`` answers every request with ``answer``'s JSON; the model catalog is ``_CATALOG``."""
+    routes = Routes({host: lambda r: httpx.Response(200, json=answer(r))})
+    routes.install(monkeypatch)
 
     async def _load() -> Catalog:
         return _CATALOG
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", upstream)
     monkeypatch.setattr(providers_api, "load_catalog", _load)
-    return seen
+    return routes
 
 
 async def _snapshot_route(task: str) -> dict | None:
@@ -367,8 +364,9 @@ async def _restore_route(task: str, snap: dict | None) -> None:
 async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen = _mock_upstream(
+    upstream = _upstream(
         monkeypatch,
+        "router.example.com",
         lambda r: {"data": _OR_IMAGE if r.url.params.get("output_modalities") == "image" else _OR_TEXT},
     )
     name = f"pytest-{uuid.uuid4().hex[:8]}"
@@ -386,11 +384,11 @@ async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
         res = await client.post(f"/api/providers/{pid}/refresh-models")
         assert res.status_code == 200, res.text
         body = res.json()
-        assert [(r.url.path, r.url.params.get("output_modalities")) for r in seen] == [
+        assert [(r.url.path, r.url.params.get("output_modalities")) for r in upstream.seen] == [
             ("/api/v1/models", None),
             ("/api/v1/models", "image"),
         ]
-        assert all(r.headers["authorization"] == "Bearer sk-test" for r in seen)
+        assert all(r.headers["authorization"] == "Bearer sk-test" for r in upstream.seen)
         assert body["probe"]["model_count"] == 4
         provider = body["provider"]
         assert provider["models"] == ["acme/plain", "google/gemini-img", "openai/gpt-image-z", "openai/gpt-x"]
@@ -434,7 +432,9 @@ async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
 async def test_refresh_plain_openai_upstream_single_call_without_upstream_caps(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen = _mock_upstream(monkeypatch, lambda _r: {"object": "list", "data": [{"id": "gw/claude-x"}, {"id": "other"}]})
+    upstream = _upstream(
+        monkeypatch, "gw.example.com", lambda _r: {"object": "list", "data": [{"id": "gw/claude-x"}, {"id": "other"}]}
+    )
     name = f"pytest-{uuid.uuid4().hex[:8]}"
     resp = await client.post("/api/providers", json={"name": name, "base_url": "https://gw.example.com/v1"})
     pid = resp.json()["id"]
@@ -447,7 +447,7 @@ async def test_refresh_plain_openai_upstream_single_call_without_upstream_caps(
             }
         res = await client.post(f"/api/providers/{pid}/refresh-models")
         assert res.status_code == 200, res.text
-        assert len(seen) == 1
+        assert len(upstream.seen) == 1
         provider = res.json()["provider"]
         assert provider["models"] == ["gw/claude-x", "other"]
         assert {k: v["catalog_id"] for k, v in provider["model_caps"].items()} == {"gw/claude-x": "anthropic/claude-x"}

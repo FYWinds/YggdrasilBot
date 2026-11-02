@@ -1,14 +1,13 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from tests.admin.helpers import ADMIN
 from yggdrasil import runtime
 from yggdrasil.admin import mount
 from yggdrasil.config import APP_CONFIG
-
-ADMIN = "pytest-admin@example.invalid"
 
 
 @pytest.fixture
@@ -24,9 +23,9 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.fixture
-def prod(monkeypatch: pytest.MonkeyPatch) -> None:
+def prod(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., runtime.Snapshot]) -> None:
     monkeypatch.setattr(APP_CONFIG, "environment", "prod")
-    monkeypatch.setattr(runtime, "_snapshot", runtime.Snapshot(admin_emails=frozenset({ADMIN})))
+    snapshot(admin_emails=frozenset({ADMIN}))
 
 
 @pytest.fixture

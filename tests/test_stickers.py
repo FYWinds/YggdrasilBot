@@ -1,22 +1,23 @@
 """Sticker collection (ingest -> stickers / usage / blobs) and vision tagging, against the local database."""
 
-import io
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from PIL import Image
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import delete, select
 
-from yggdrasil import runtime
-from yggdrasil.db.models import Message, Sticker, StickerBlob, StickerUsage
+from tests.support.db import purge_groups
+from tests.support.files import png
+from tests.support.models import streaming_model
+from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
 from yggdrasil.ingest.writer import IncomingMessage, IngestWriter
 from yggdrasil.memory import llm
+from yggdrasil.runtime import Snapshot
 from yggdrasil.stickers import collect, tagging
 from yggdrasil.stickers.collect import COLLECTOR, TOO_LARGE, PendingFetch
 from yggdrasil.tools.errors import ToolError
@@ -26,9 +27,7 @@ TOP = 10**12  # seen_count that puts test stickers first in the tagging queue
 
 
 def _png() -> bytes:
-    out = io.BytesIO()
-    Image.new("RGB", (4, 3), "red").save(out, "PNG")
-    return out.getvalue()
+    return png(size=(4, 3))
 
 
 def _sticker_seg(ref: str) -> dict[str, Any]:
@@ -63,7 +62,7 @@ async def refs() -> AsyncIterator[Callable[[], str]]:
     await COLLECTOR.drain()
     async with get_session() as session:
         await session.execute(delete(Sticker).where(Sticker.ref.in_(made)))
-        await session.execute(delete(Message).where(Message.group_id.in_((GROUP_A, GROUP_B))))
+    await purge_groups(GROUP_A, GROUP_B)
 
 
 @pytest.fixture
@@ -172,12 +171,7 @@ def _model(answers: list[dict[str, Any] | Exception]) -> FunctionModel:
             raise answer
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, answer)])
 
-    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[DeltaToolCalls]:
-        part = respond(messages, info).parts[0]
-        assert isinstance(part, ToolCallPart)
-        yield {0: DeltaToolCall(name=part.tool_name, json_args=part.args_as_json_str())}
-
-    return FunctionModel(respond, stream_function=stream)
+    return streaming_model(respond)
 
 
 async def _untagged(ref: str, seen: int) -> None:
@@ -218,11 +212,9 @@ async def test_tagging_fills_the_tags_and_only_flags_unsafe_stickers_by_default(
 
 
 async def test_the_moderation_setting_disables_unsafe_stickers(
-    refs: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+    refs: Callable[[], str], snapshot: Callable[..., Snapshot]
 ) -> None:
-    monkeypatch.setattr(
-        runtime, "_snapshot", runtime.Snapshot(global_settings_doc={"moderation": {"disable_unsafe_stickers": True}})
-    )
+    snapshot(global_settings_doc={"moderation": {"disable_unsafe_stickers": True}})
     gore = refs()
     await _untagged(gore, TOP)
     with llm.override_models(sticker=_model([GORE])):

@@ -1,10 +1,10 @@
 import json
-from collections.abc import Callable
 from typing import Any
 
 import httpx
 import pytest
 
+from tests.support.routes import Routes
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.search import SearchHit, web_search
@@ -57,8 +57,8 @@ def _provider(
     )
 
 
-def _client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _hosts(routes: Routes) -> list[str]:
+    return [r.url.host for r in routes.seen]
 
 
 async def _always(_: SearchProviderInfo) -> bool:
@@ -66,17 +66,12 @@ async def _always(_: SearchProviderInfo) -> bool:
 
 
 async def test_searxng_parses_and_dedupes() -> None:
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=SEARXNG_PAYLOAD)
-
-    async with _client(handler) as client:
+    routes = Routes({"searxng": httpx.Response(200, json=SEARXNG_PAYLOAD)})
+    async with routes.client() as client:
         hits = await web_search("原神", [_provider("searxng")], time_range="week", client=client, reserve=_always)
 
-    params = seen[0].url.params
-    assert seen[0].url.path == "/search"
+    params = routes.seen[0].url.params
+    assert routes.seen[0].url.path == "/search"
     assert (params["format"], params["language"], params["time_range"]) == ("json", "zh-CN", "week")
     assert [h.url for h in hits] == [
         "https://ys.mihoyo.com/",
@@ -93,18 +88,13 @@ async def test_searxng_parses_and_dedupes() -> None:
 
 
 async def test_exa_request_and_parse() -> None:
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=EXA_PAYLOAD)
-
-    async with _client(handler) as client:
+    routes = Routes({"api.exa.ai": httpx.Response(200, json=EXA_PAYLOAD)})
+    async with routes.client() as client:
         hits = await web_search(
             "Python 3.15", [_provider("exa")], n=4, time_range="day", client=client, reserve=_always
         )
 
-    request = seen[0]
+    request = routes.seen[0]
     body = json.loads(request.content)
     assert (request.method, request.url.path, request.headers["x-api-key"]) == ("POST", "/search", "k")
     assert (body["type"], body["numResults"], body["contents"]) == ("auto", 4, {"highlights": True})
@@ -119,7 +109,6 @@ async def test_exa_request_and_parse() -> None:
 
 
 async def test_deepseek_request_and_parse() -> None:
-    seen: list[httpx.Request] = []
     payload = {
         "results": [
             {
@@ -133,16 +122,12 @@ async def test_deepseek_request_and_parse() -> None:
             {"title": "", "url": "https://example.org/x", "snippet": "only a snippet", "date": None},
         ]
     }
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=payload)
-
+    routes = Routes({"api.deepseek.com": httpx.Response(200, json=payload)})
     providers = [_provider("deepseek")]
-    async with _client(handler) as client:
+    async with routes.client() as client:
         hits = await web_search("q" * 200, providers, n=5, time_range="week", client=client, reserve=_always)
 
-    request = seen[0]
+    request = routes.seen[0]
     body = json.loads(request.content)
     assert (request.url.path, request.headers["authorization"], body["count"]) == ("/v1/tools/search", "Bearer k", 5)
     # The date filter is query syntax, and the whole query stays within the API's 128 characters.
@@ -156,46 +141,40 @@ async def test_deepseek_request_and_parse() -> None:
 
 
 async def test_pool_falls_through_failure_and_empty_in_priority_order() -> None:
-    order: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        order.append(request.url.host)
-        if request.url.host == "api.exa.ai":
-            return httpx.Response(429, text="rate limited")
-        if request.url.host == "empty":
-            return httpx.Response(200, json={"results": []})
-        return httpx.Response(200, json=SEARXNG_PAYLOAD)
-
+    routes = Routes(
+        {
+            "api.exa.ai": httpx.Response(429, text="rate limited"),
+            "empty": httpx.Response(200, json={"results": []}),
+            "searxng": httpx.Response(200, json=SEARXNG_PAYLOAD),
+        }
+    )
     empty = SearchProviderInfo(2, "empty", "searxng", "http://empty", None, True, 2, None, {})
-    async with _client(handler) as client:
+    async with routes.client() as client:
         hits = await web_search(
             "q", [_provider("exa", 1), empty, _provider("searxng", 3)], n=1, client=client, reserve=_always
         )
-    assert order == ["api.exa.ai", "empty", "searxng"]
+    assert _hosts(routes) == ["api.exa.ai", "empty", "searxng"]
     assert hits[0].url == "https://ys.mihoyo.com/"
 
 
 async def test_pool_skips_disabled_and_exhausted_providers() -> None:
-    hosts: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        hosts.append(request.url.host)
-        return httpx.Response(200, json=SEARXNG_PAYLOAD)
+    routes = Routes({"searxng": httpx.Response(200, json=SEARXNG_PAYLOAD)})
 
     async def reserve(p: SearchProviderInfo) -> bool:
         return p.monthly_limit is None
 
     providers = [_provider("exa", 1, limit=1300), _provider("exa", 2, enabled=False), _provider("searxng", 3)]
-    async with _client(handler) as client:
+    async with routes.client() as client:
         await web_search("q", providers, client=client, reserve=reserve)
-    assert hosts == ["searxng"]
+    assert _hosts(routes) == ["searxng"]
 
 
 async def test_no_results_anywhere_is_empty_but_all_failing_is_an_error() -> None:
-    async with _client(lambda r: httpx.Response(200, json={"results": None})) as client:
+    async with Routes({"searxng": httpx.Response(200, json={"results": None})}).client() as client:
         assert await web_search("q", [_provider("searxng")], client=client, reserve=_always) == []
 
-    async with _client(lambda r: httpx.Response(200, text="<html>")) as client:
+    failing = Routes({"searxng": httpx.Response(200, text="<html>"), "api.exa.ai": httpx.Response(200, text="<html>")})
+    async with failing.client() as client:
         with pytest.raises(ToolError):
             await web_search("q", [_provider("searxng"), _provider("exa", 2)], client=client, reserve=_always)
 
@@ -207,9 +186,8 @@ async def test_no_results_anywhere_is_empty_but_all_failing_is_an_error() -> Non
 async def test_invalid_arguments_are_rejected_before_request(
     query: str, time_range: str | None, providers: list[SearchProviderInfo]
 ) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("should not be called")
-
-    async with _client(handler) as client:
+    routes = Routes()
+    async with routes.client() as client:
         with pytest.raises(ToolError):
             await web_search(query, providers, time_range=time_range, client=client, reserve=_always)
+    assert routes.seen == []

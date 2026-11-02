@@ -4,7 +4,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from tests.admin.conftest import ADMIN
+from tests.admin.helpers import ADMIN
 from yggdrasil.admin import mount
 from yggdrasil.config import APP_CONFIG
 

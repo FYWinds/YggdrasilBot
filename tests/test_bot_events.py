@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -10,7 +11,6 @@ from nonebot.adapters.onebot.v11 import (
     NoticeEvent,
 )
 
-from yggdrasil import runtime
 from yggdrasil.events import observe
 from yggdrasil.runtime import GroupInfo, Snapshot
 
@@ -18,9 +18,8 @@ BOT, ENABLED, OTHER = 1000, 2000, 3000
 
 
 @pytest.fixture(autouse=True)
-def _groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    snap = Snapshot(groups={ENABLED: GroupInfo(ENABLED, "g", True, {}), OTHER: GroupInfo(OTHER, "o", False, {})})
-    monkeypatch.setattr(runtime, "_snapshot", snap)
+def _groups(snapshot: Callable[..., Snapshot]) -> None:
+    snapshot(groups={ENABLED: GroupInfo(ENABLED, "g", True, {}), OTHER: GroupInfo(OTHER, "o", False, {})})
 
 
 def _notice(cls: type, notice_type: str, **fields: Any):

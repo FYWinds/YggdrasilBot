@@ -354,9 +354,9 @@ async def test_non_page_responses_raise(serve: Callable[[Handler], None], status
 
 
 async def test_pdf_link_is_parsed_as_document(serve: Callable[[Handler], None]) -> None:
-    from tests.tools.test_docs import _text_pdf
+    from tests.support.files import text_pdf
 
-    pdf = _text_pdf("Linked PDF body")
+    pdf = text_pdf("Linked PDF body")
     serve(lambda r: httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"}))
     result = await web._fetch_generic("https://example.com/files/paper.pdf", None, 5)
     assert result.via == "document:pdf"

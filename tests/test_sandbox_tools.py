@@ -1,17 +1,15 @@
 import asyncio
-import io
 import json
 from typing import Any, cast
 
 import pytest
-from PIL import Image
 from pydantic import ValidationError
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.usage import RunUsage
 
+from tests.support.agent import run_ctx
+from tests.support.files import png
 from yggdrasil.agent import sandbox_tools
-from yggdrasil.agent.deps import Deps, Handles
+from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.sandbox_tools import (
     attach_image,
     format_py,
@@ -31,18 +29,12 @@ from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.tools.errors import ToolError
 
 
-def _png(color: str = "red") -> bytes:
-    out = io.BytesIO()
-    Image.new("RGB", (8, 8), color).save(out, "PNG")
-    return out.getvalue()
-
-
 def _settings(**moderation: Any) -> Settings:
     return Settings.model_validate({"moderation": moderation})
 
 
 def _deps(settings: Settings) -> Deps:
-    return Deps(cast(Any, None), 1, 2, settings, Handles(), "chat")
+    return run_ctx(settings=settings).deps
 
 
 def test_idle_must_outlast_invocation_budget():
@@ -88,10 +80,10 @@ def test_image_moderation_answer_fails_closed():
 async def test_shown_images_share_the_cap_with_render_tools():
     deps = _deps(_settings(enabled=False))
     deps.images = [(b"x", "")] * (MAX_IMAGES - 1)
-    result = await attach_image(deps, _png(), "图")
+    result = await attach_image(deps, png(), "图")
     assert "还能再发 0 张" in result
     with pytest.raises(ToolError, match="已经有"):
-        await attach_image(deps, _png(), "图")
+        await attach_image(deps, png(), "图")
 
 
 async def test_shown_image_moderation_follows_group_output_switch():
@@ -102,13 +94,13 @@ async def test_shown_image_moderation_follows_group_output_switch():
         return ImageVerdict(False, "gore", "vision-model", 10, 2)
 
     unmoderated = _deps(_settings(enabled=True, check_output=False))
-    await attach_image(unmoderated, _png(), "", check=unsafe)
+    await attach_image(unmoderated, png(), "", check=unsafe)
     assert not calls
     assert len(unmoderated.images) == 1
 
     moderated = _deps(_settings(enabled=True, check_output=True))
     with pytest.raises(ToolError, match="gore"):
-        await attach_image(moderated, _png(), "", check=unsafe)
+        await attach_image(moderated, png(), "", check=unsafe)
     assert len(calls) == 1
     assert not moderated.images
     assert moderated.vision_tokens == [("vision-model", 10, 2)]
@@ -279,9 +271,7 @@ class FakeSession:
 
 
 def _ctx(session: FakeSession) -> RunContext[Deps]:
-    deps = _deps(_settings(enabled=False))
-    deps.sandbox = cast(Any, session)
-    return RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+    return run_ctx(settings=_settings(enabled=False), sandbox=cast(Any, session))
 
 
 async def test_sh_writes_the_script_and_runs_the_helper():
@@ -309,8 +299,8 @@ async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.
     session = FakeSession({})
     session.backend.files["/workspace/in/report.csv"] = b"old"
     ctx = _ctx(session)
-    img1 = ctx.deps.handles.add("image", {"blob": _png("red")})
-    img2 = ctx.deps.handles.add("image", {"blob": _png("blue")})
+    img1 = ctx.deps.handles.add("image", {"blob": png("red")})
+    img2 = ctx.deps.handles.add("image", {"blob": png("blue")})
     doc = ctx.deps.handles.add("file", {"blob": b"a,b\n", "name": "report.csv"})
     named = ctx.deps.handles.add("file", {"blob": b"x", "name": "notes.txt"})
     keys = [k for k in (img1, img2, doc, named) if k]
@@ -318,8 +308,8 @@ async def test_sandbox_put_keeps_names_and_never_overwrites(monkeypatch: pytest.
     parallel = await asyncio.gather(sandbox_put(ctx, keys[0]), sandbox_put(ctx, keys[1]))
     texts = [str(t) for t in parallel] + [str(await sandbox_put(ctx, k)) for k in keys[2:]]
     files = session.backend.files
-    assert files["/workspace/in/img-1.png"] == _png("red")
-    assert files["/workspace/in/img-2.png"] == _png("blue")
+    assert files["/workspace/in/img-1.png"] == png("red")
+    assert files["/workspace/in/img-2.png"] == png("blue")
     assert files["/workspace/in/report.csv"] == b"old"
     assert files["/workspace/in/report-2.csv"] == b"a,b\n"
     assert files["/workspace/in/notes.txt"] == b"x"
@@ -343,7 +333,7 @@ async def _broken(argv: list[str], **_: Any) -> _Exec:
 async def test_py_applies_effects_keeps_the_kernel_and_returns_images(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sandbox_tools, "sees_images", lambda _task: True)
     cell_images = [f"/workspace/.ygg/cells/c/out-{i}.png" for i in range(5)]
-    files = {p: _png() for p in cell_images} | {"/workspace/.ygg/cells/c/show-0.png": _png("blue")}
+    files = {p: png() for p in cell_images} | {"/workspace/.ygg/cells/c/show-0.png": png("blue")}
     session = FakeSession(
         _py_result(
             output="started\n",
@@ -391,7 +381,7 @@ async def test_py_without_vision_describes_images_and_forgets_a_dead_kernel(monk
     monkeypatch.setattr(sandbox_tools, "_vision", vision)
     session = FakeSession(
         _py_result(status="died", kernel={"pid": None, "started": False, "previous": "alive"}, images=["/w/a.png"]),
-        {"/w/a.png": _png()},
+        {"/w/a.png": png()},
     )
     result = await py(_ctx(session), "while True: pass", timeout=1)
     assert isinstance(result, str)

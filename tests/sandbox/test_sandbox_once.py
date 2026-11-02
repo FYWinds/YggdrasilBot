@@ -7,11 +7,8 @@ from typing import Any, cast
 import grpc
 import httpx
 import pytest
-from pydantic_ai import RunContext
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.usage import RunUsage
 
-from yggdrasil.agent.deps import Deps, Handles
+from tests.support.agent import run_ctx
 from yggdrasil.agent.sandbox_tools import sh
 from yggdrasil.sandbox import SandboxToolError
 from yggdrasil.sandbox import backend as backend_mod
@@ -105,8 +102,7 @@ async def test_sh_reports_an_unknown_outcome_instead_of_running_twice(monkeypatc
     stub = FakeStub(lambda argv: argv[:3] == ["/opt/ygg/ygg", "sh", "run"])
     ws = workspace(stub, FakeChannel(), monkeypatch)
     settings = Settings.model_validate({"moderation": {"enabled": False}})
-    deps = Deps(cast(Any, None), 10001, 2, settings, Handles(), "chat")
-    deps.sandbox = cast(Any, type("S", (), {"backend": ws})())
-    text = str(await sh(RunContext(deps=deps, model=TestModel(), usage=RunUsage()), "touch /workspace/once"))
+    session = cast(Any, type("S", (), {"backend": ws})())
+    text = str(await sh(run_ctx(group_id=10001, settings=settings, sandbox=session), "touch /workspace/once"))
     assert UNKNOWN_OUTCOME in text
     assert sum(1 for argv in stub.calls if argv[:3] == ["/opt/ygg/ygg", "sh", "run"]) == 1

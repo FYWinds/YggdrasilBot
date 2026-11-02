@@ -8,6 +8,7 @@ import httpx
 import pytest
 from curl_cffi import CurlOpt
 
+from tests.support.routes import Routes
 from yggdrasil.tools import ssrf
 from yggdrasil.tools.errors import ToolError
 
@@ -108,25 +109,22 @@ async def test_connect_time_resolution_blocks_rebinding(fake_dns: dict[str, list
 
 
 async def test_every_redirect_hop_is_rechecked(monkeypatch: pytest.MonkeyPatch) -> None:
-    hops: list[str] = []
-
-    async def upstream(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        hops.append(str(request.url))
-        return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
-
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", upstream)
+    routes = Routes(
+        {"example.com": httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})}
+    )
+    routes.install(monkeypatch)
     async with ssrf.guarded_client() as client:
         with pytest.raises(ToolError):
             await client.get("https://example.com/start")
-    assert hops == ["https://example.com/start"]
+    assert [str(r.url) for r in routes.seen] == ["https://example.com/start"]
 
 
 async def test_redirect_chain_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def upstream(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+    def loop(request: httpx.Request) -> httpx.Response:
         n = int(request.url.params.get("n", "0"))
         return httpx.Response(302, headers={"Location": f"https://example.com/loop?n={n + 1}"})
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", upstream)
+    Routes({"example.com": loop}).install(monkeypatch)
     async with ssrf.guarded_client() as client:
         with pytest.raises(httpx.TooManyRedirects):
             await client.get("https://example.com/loop")

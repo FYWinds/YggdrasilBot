@@ -3,16 +3,14 @@ per claim): what is checked here is the manager's bookkeeping, not sandboxd itse
 
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
 import fakeredis
-import httpx
 import pytest
 
 from tests.sandbox.helpers import FakeKube, MemorySandboxd
 from yggdrasil.sandbox import SandboxError, WorkspaceManager
-from yggdrasil.sandbox.backend import Endpoint
-from yggdrasil.sandbox.k8s import KubeClient
 from yggdrasil.sandbox.state import ws_key
 from yggdrasil.settings import ToolSettings
 
@@ -28,22 +26,8 @@ def pods(monkeypatch: pytest.MonkeyPatch) -> MemorySandboxd:
 
 
 @pytest.fixture
-def mgr(pods: MemorySandboxd, kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> WorkspaceManager:
-    manager = WorkspaceManager(
-        token="test",
-        namespace="ns",
-        warmpool="pool",
-        link_domain="links.example.com",
-        kube=kube_client,
-        redis=lambda: fake_redis,
-        endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
-    )
-
-    async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
-        return True
-
-    manager._healthy = healthy  # pyright: ignore[reportAttributeAccessIssue]
-    return manager
+def mgr(pods: MemorySandboxd, make_manager: Callable[..., WorkspaceManager]) -> WorkspaceManager:
+    return make_manager(link_domain="links.example.com")
 
 
 def _cfg(**kw: Any) -> ToolSettings:

@@ -4,19 +4,17 @@ open)."""
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import fakeredis
-import httpx
 import pytest
 from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef
 
 from tests.sandbox.helpers import FakeKube
 from yggdrasil.agent import job_tools, sandbox_tools
 from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, WorkspaceInfo, WorkspaceManager
-from yggdrasil.sandbox.backend import Endpoint, _Exec
-from yggdrasil.sandbox.k8s import KubeClient
+from yggdrasil.sandbox.backend import _Exec
 from yggdrasil.sandbox.manager import Listener
 from yggdrasil.sandbox.state import LinkRecord, index_key, keep_key, links_json, ws_key
 from yggdrasil.settings import ToolSettings
@@ -42,27 +40,9 @@ class Reaper:
         return _Exec(0, b"0\n", b"")
 
 
-def _manager(kube_client: KubeClient, redis: fakeredis.FakeAsyncRedis, *, link_domain: str | None = None):
-    manager = WorkspaceManager(
-        token="test",
-        namespace="ns",
-        warmpool="pool",
-        link_domain=link_domain,
-        kube=kube_client,
-        redis=lambda: redis,
-        endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
-    )
-
-    async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
-        return True
-
-    manager._healthy = healthy  # pyright: ignore[reportAttributeAccessIssue]
-    return manager
-
-
 @pytest.fixture
-def mgr(kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> WorkspaceManager:
-    return _manager(kube_client, fake_redis)
+def mgr(make_manager: Callable[..., WorkspaceManager]) -> WorkspaceManager:
+    return make_manager()
 
 
 def _session(
@@ -332,9 +312,12 @@ async def test_backend_for_and_renew_never_create(mgr: WorkspaceManager, kube: F
 
 
 async def test_publish_links_the_listener_and_unpublish_removes_it(
-    kube_client: KubeClient, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+    kube: FakeKube,
+    fake_redis: fakeredis.FakeAsyncRedis,
+    monkeypatch: pytest.MonkeyPatch,
+    make_manager: Callable[..., WorkspaceManager],
 ) -> None:
-    mgr = _manager(kube_client, fake_redis, link_domain="links.example.com")
+    mgr = make_manager(link_domain="links.example.com")
 
     async def listener(_gid: int, _name: str, port: int) -> Listener:
         return Listener(pid=41, pgid=40, addr="0.0.0.0", cmdline=f"python3 -m http.server {port}")
@@ -565,13 +548,13 @@ async def test_group_cap_evicts_the_least_recently_used_idle_workspace(
 
 
 async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
-    kube_client: KubeClient, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+    kube: FakeKube, make_manager: Callable[..., WorkspaceManager]
 ) -> None:
     """Two invocations on two bot replicas (separate managers, shared Redis and API server) create a workspace each
     while the group is one below its cap: the per-group lock serializes them, so exactly one eviction happens and
     the cap holds."""
     cfg = ToolSettings(sandbox_max_workspaces_per_group=2)
-    one, two = _manager(kube_client, fake_redis), _manager(kube_client, fake_redis)
+    one, two = make_manager(), make_manager()
     old = _session(one, "old", workspace=None, cfg=cfg)
     await old.open("old", new=True, description="旧话题")
     await old.backend.working_dir()

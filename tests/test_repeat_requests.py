@@ -1,7 +1,7 @@
 """One answer per tldr target. Prod answered twice when two members replied "tldr" to one message a second apart and
 when someone pasted the same link again (two separate QQ messages each time, not a redelivered event)."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -9,7 +9,7 @@ import fakeredis
 import pytest
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
-from yggdrasil import runtime
+from tests.support.onebot import group_message
 from yggdrasil.pipeline import invoke, ratelimit, repeats
 from yggdrasil.runtime import GroupInfo, Snapshot
 from yggdrasil.settings import InteractionSettings
@@ -31,14 +31,13 @@ class Group:
 
 
 @pytest.fixture
-async def group(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Group]:
+async def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> AsyncIterator[Group]:
     g = Group()
     conn = fakeredis.FakeAsyncRedis(decode_responses=True)
     monkeypatch.setattr(repeats, "redis_client", lambda: conn)
     monkeypatch.setattr(ratelimit, "redis_client", lambda: conn)
     no_limits = {"ratelimit": {"user_per_minute": 0, "group_per_minute": 0}}
-    snap = Snapshot(groups={GROUP: GroupInfo(GROUP, "g", True, no_limits)}, superusers=frozenset({OWNER}))
-    monkeypatch.setattr(runtime, "_snapshot", snap)
+    snapshot(groups={GROUP: GroupInfo(GROUP, "g", True, no_limits)}, superusers=frozenset({OWNER}))
 
     async def react(_api: Any, message_id: int, emoji: str) -> None:
         g.reactions.append((message_id, emoji))
@@ -68,24 +67,14 @@ def message(
         "sender": {"user_id": 20009, "card": "老王"},
         "message": [{"type": "text", "data": {"text": "很长的一段话"}}],
     }
-    return GroupMessageEvent.model_validate(
-        {
-            "time": 1760000000,
-            "self_id": SELF,
-            "post_type": "message",
-            "sub_type": "normal",
-            "user_id": user_id,
-            "message_type": "group",
-            "message_id": message_id,
-            "message": segs,
-            "original_message": segs,
-            "raw_message": "",
-            "font": 0,
-            "sender": {"user_id": user_id, "card": "群友"},
-            "to_me": False,
-            "group_id": GROUP,
-            "reply": quoted if quoting is not None else None,
-        }
+    return group_message(
+        segs,
+        group_id=GROUP,
+        user_id=user_id,
+        self_id=SELF,
+        message_id=message_id,
+        card="群友",
+        reply=quoted if quoting is not None else None,
     )
 
 

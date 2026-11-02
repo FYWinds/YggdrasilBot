@@ -1,46 +1,28 @@
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 from sqlalchemy import delete, select
 
-from tests.admin.conftest import ADMIN
+from tests.admin.helpers import ADMIN
+from tests.support.routes import Routes
 from yggdrasil.db.models import ConfigAudit, Provider, SearchProvider
 from yggdrasil.db.session import get_session
 
-type Routes = dict[str, Callable[[httpx.Request], httpx.Response] | httpx.Response]
 type Cleanup = list[tuple[type[Provider | SearchProvider], int]]
 
 
-class Upstream:
-    """Stands in for every outbound HTTP call (the admin test client itself uses the ASGI transport)."""
-
-    def __init__(self) -> None:
-        self.routes: Routes = {}
-        self.seen: list[httpx.Request] = []
-
-    async def handle(self, request: httpx.Request) -> httpx.Response:
-        self.seen.append(request)
-        url = str(request.url.copy_with(query=None))
-        route = self.routes.get(url)
-        if route is None:
-            return httpx.Response(404, json={"error": "not found"})
-        return route(request) if callable(route) else route
-
-    def auth(self, url: str) -> list[str]:
-        return [r.headers["authorization"] for r in self.seen if str(r.url) == url]
-
-
 @pytest.fixture
-def upstream(monkeypatch: pytest.MonkeyPatch) -> Upstream:
-    up = Upstream()
+def upstream(monkeypatch: pytest.MonkeyPatch) -> Routes:
+    """Every outbound HTTP call (the admin test client itself goes through ASGI)."""
+    routes = Routes()
+    routes.install(monkeypatch)
+    return routes
 
-    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        return await up.handle(request)
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
-    return up
+def _auth(upstream: Routes, url: str) -> list[str]:
+    return [r.headers["authorization"] for r in upstream.seen if str(r.url) == url]
 
 
 @pytest.fixture
@@ -63,9 +45,9 @@ async def _provider(client: httpx.AsyncClient, cleanup: Cleanup, base_url: str, 
 
 
 async def test_deepseek_balance_parses_string_amounts_per_currency(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
-    upstream.routes["https://api.deepseek.com/user/balance"] = httpx.Response(
+    upstream.answers["https://api.deepseek.com/user/balance"] = httpx.Response(
         200,
         json={
             "is_available": True,
@@ -97,19 +79,19 @@ async def test_deepseek_balance_parses_string_amounts_per_currency(
         ("赠送", "USD", 0.0),
         ("充值", "USD", 0.0),
     ]
-    assert upstream.auth("https://api.deepseek.com/user/balance") == ["Bearer sk-deepseek"]
+    assert _auth(upstream, "https://api.deepseek.com/user/balance") == ["Bearer sk-deepseek"]
 
 
 async def test_openrouter_uses_credits_with_balance_key_else_key_usage(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
     base = "https://openrouter.ai/api/v1"
-    upstream.routes[f"{base}/credits"] = lambda r: (
+    upstream.answers[f"{base}/credits"] = lambda r: (
         httpx.Response(200, json={"data": {"total_credits": 100.5, "total_usage": 25.75}})
         if r.headers["authorization"] == "Bearer mgmt-key"
         else httpx.Response(403, json={"error": {"message": "forbidden"}})
     )
-    upstream.routes[f"{base}/key"] = httpx.Response(
+    upstream.answers[f"{base}/key"] = httpx.Response(
         200, json={"data": {"label": "bot", "limit": 20, "limit_remaining": 12.5, "usage": 7.5}}
     )
     pid = await _provider(client, cleanup, base, api_key="sk-or-normal", balance_key="mgmt-key")
@@ -121,7 +103,7 @@ async def test_openrouter_uses_credits_with_balance_key_else_key_usage(
         ("总充值", "USD", 100.5),
     ]
     assert with_mgmt["available"] is True
-    assert upstream.auth(f"{base}/key") == []
+    assert _auth(upstream, f"{base}/key") == []
 
     row = next(p for p in (await client.get("/api/providers")).json() if p["id"] == pid)
     cleared = await client.put(
@@ -135,14 +117,14 @@ async def test_openrouter_uses_credits_with_balance_key_else_key_usage(
         ("key 已用", 7.5),
     ]
     assert without["note"]
-    assert upstream.auth(f"{base}/key") == ["Bearer sk-or-normal"]
+    assert _auth(upstream, f"{base}/key") == ["Bearer sk-or-normal"]
 
 
 async def test_openrouter_bad_management_key_is_an_upstream_error(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
     base = "https://openrouter.ai/api/v1"
-    upstream.routes[f"{base}/credits"] = httpx.Response(403, json={"error": {"message": "forbidden"}})
+    upstream.answers[f"{base}/credits"] = httpx.Response(403, json={"error": {"message": "forbidden"}})
     pid = await _provider(client, cleanup, base, api_key="sk-or-normal", balance_key="not-management")
 
     resp = await client.get(f"/api/providers/{pid}/balance")
@@ -158,7 +140,7 @@ async def test_openrouter_bad_management_key_is_an_upstream_error(
 )
 async def test_newapi_remaining_from_subscription_and_usage_cents(
     client: httpx.AsyncClient,
-    upstream: Upstream,
+    upstream: Routes,
     cleanup: Cleanup,
     hard_limit: float,
     cents: int,
@@ -166,10 +148,10 @@ async def test_newapi_remaining_from_subscription_and_usage_cents(
     note: str,
 ) -> None:
     base = "https://gateway.example.com/v1"
-    upstream.routes[f"{base}/dashboard/billing/subscription"] = httpx.Response(
+    upstream.answers[f"{base}/dashboard/billing/subscription"] = httpx.Response(
         200, json={"object": "billing_subscription", "hard_limit_usd": hard_limit, "soft_limit_usd": hard_limit}
     )
-    upstream.routes[f"{base}/dashboard/billing/usage"] = httpx.Response(
+    upstream.answers[f"{base}/dashboard/billing/usage"] = httpx.Response(
         200, json={"object": "list", "total_usage": cents}
     )
     pid = await _provider(client, cleanup, base, api_key="sk-gateway")
@@ -186,7 +168,7 @@ async def test_newapi_remaining_from_subscription_and_usage_cents(
 
 
 async def test_server_without_billing_api_is_unsupported(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
     pid = await _provider(client, cleanup, "https://llm.example.com/v1", api_key="sk-local")
 
@@ -198,7 +180,7 @@ async def test_server_without_billing_api_is_unsupported(
 
 
 async def test_balance_key_is_write_only_and_clearable(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
     secret = f"sk-or-v1-{uuid.uuid4().hex}"
     base = "https://openrouter.ai/api/v1"
@@ -231,9 +213,9 @@ async def test_balance_key_is_write_only_and_clearable(
 
 
 async def test_search_provider_balance_not_for_web_only_kinds(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
-    upstream.routes["https://api.deepseek.com/user/balance"] = httpx.Response(
+    upstream.answers["https://api.deepseek.com/user/balance"] = httpx.Response(
         200,
         json={
             "is_available": False,
@@ -258,7 +240,7 @@ async def test_search_provider_balance_not_for_web_only_kinds(
     assert deepseek.status_code == 200, deepseek.text
     assert deepseek.json()["available"] is False
     assert deepseek.json()["amounts"][0] == {"label": "余额", "currency": "CNY", "value": 0.0}
-    assert upstream.auth("https://api.deepseek.com/user/balance") == ["Bearer sk-search"]
+    assert _auth(upstream, "https://api.deepseek.com/user/balance") == ["Bearer sk-search"]
 
     exa = await client.get(f"/api/search-providers/{ids['exa']}/balance")
     assert exa.status_code == 422
@@ -266,9 +248,9 @@ async def test_search_provider_balance_not_for_web_only_kinds(
 
 
 async def test_x_balance_shows_total_with_prepaid_free_and_grant_expiry(
-    client: httpx.AsyncClient, upstream: Upstream, cleanup: Cleanup
+    client: httpx.AsyncClient, upstream: Routes, cleanup: Cleanup
 ) -> None:
-    upstream.routes["https://api.x.com/2/usage/credits"] = httpx.Response(
+    upstream.answers["https://api.x.com/2/usage/credits"] = httpx.Response(
         200,
         json={
             "data": {
@@ -294,4 +276,4 @@ async def test_x_balance_shows_total_with_prepaid_free_and_grant_expiry(
     assert (body["kind"], body["available"]) == ("x", False)
     assert [(a["label"], a["value"]) for a in body["amounts"]] == [("余额", 0.0), ("充值", -20.0), ("赠送", 19.74)]
     assert body["note"] == "赠送 $15.00 于 2027-01-26 到期；赠送 $4.74 于 2027-02-01 到期"
-    assert upstream.auth("https://api.x.com/2/usage/credits") == ["Bearer x-bearer"]
+    assert _auth(upstream, "https://api.x.com/2/usage/credits") == ["Bearer x-bearer"]

@@ -9,18 +9,11 @@ import pytest
 from pydantic_ai.exceptions import IncompleteToolCall
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 
-from tests.memory.helpers import fake_model
-from yggdrasil.db.models import (
-    GlossaryCandidate,
-    Message,
-    PipelineState,
-    Topic,
-    TopicMessage,
-    UserProfile,
-    UserProfileFact,
-)
+from tests.support.db import insert_message, purge_groups
+from tests.support.models import prompt_of, streaming_model
+from yggdrasil.db.models import Message, PipelineState, Topic, TopicMessage
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import glossary, llm, profiles, search, topics
 from yggdrasil.memory.topics import archive_closed, consolidate_group
@@ -32,40 +25,25 @@ GROUPS = (SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP, PROFILE_GROUP, GLOSSARY_GROUP)
 type Insert = Callable[..., Awaitable[int]]
 
 
-async def _cleanup(groups: tuple[int, ...]) -> None:
-    async with get_session() as session:
-        await session.execute(delete(Topic).where(Topic.group_id.in_(groups)))
-        await session.execute(delete(PipelineState).where(PipelineState.group_id.in_(groups)))
-        await session.execute(delete(UserProfileFact).where(UserProfileFact.group_id.in_(groups)))
-        await session.execute(delete(UserProfile).where(UserProfile.group_id.in_(groups)))
-        await session.execute(delete(GlossaryCandidate).where(GlossaryCandidate.group_id.in_(groups)))
-        await session.execute(delete(Message).where(Message.group_id.in_(groups)))
-
-
 @pytest.fixture
 async def insert() -> AsyncIterator[Insert]:
-    await _cleanup(GROUPS)
+    await purge_groups(*GROUPS)
     qq = iter(range(5000, 6000))
 
     async def _insert(group_id: int, user_id: int, text: str, *, ago: timedelta, recalled: bool = False) -> int:
-        async with get_session() as session:
-            msg = Message(
-                sent_at=datetime.now(UTC) - ago,
-                group_id=group_id,
-                user_id=user_id,
-                qq_message_id=next(qq),
-                sender_name=f"用户{user_id}",
-                plain_text=text,
-                segments=[],
-                recalled=recalled,
-                recalled_at=datetime.now(UTC) if recalled else None,
-            )
-            session.add(msg)
-            await session.flush()
-            return msg.id
+        return await insert_message(
+            group_id,
+            text,
+            user_id=user_id,
+            sender_name=f"用户{user_id}",
+            sent_at=datetime.now(UTC) - ago,
+            qq_message_id=next(qq),
+            segments=[],
+            recalled=recalled,
+        )
 
     yield _insert
-    await _cleanup(GROUPS)
+    await purge_groups(*GROUPS)
 
 
 async def test_search_history_bm25_scoping(insert: Insert) -> None:
@@ -98,7 +76,7 @@ async def test_search_history_bm25_scoping(insert: Insert) -> None:
 
 def _segmenting_model(bogus_topic: int) -> FunctionModel:
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompt = "".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts)
+        prompt = prompt_of(messages)
         ids = [int(i) for i in re.findall(r"^#(\d+) ", prompt, re.M)]
         ops = [
             {
@@ -113,7 +91,7 @@ def _segmenting_model(bogus_topic: int) -> FunctionModel:
         ]
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"ops": ops}))])
 
-    return fake_model(respond)
+    return streaming_model(respond)
 
 
 async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, group_settings) -> None:
@@ -154,12 +132,12 @@ async def test_consolidation_validates_ops_closes_and_archives(insert: Insert, g
         await session.execute(update(Topic).where(Topic.id == topic.id).values(dirty=True))
 
     def rewrite(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompt = "".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts)
+        prompt = prompt_of(messages)
         assert "香山吧" not in prompt
         args = {"title": "爬山", "summary": "讨论去哪座山", "keywords": ["山"]}
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps(args))])
 
-    with llm.override_models(memory_topic=fake_model(rewrite)):
+    with llm.override_models(memory_topic=streaming_model(rewrite)):
         stats = await consolidate_group(TOPIC_GROUP)
     assert stats["recomputed"] == 1
     async with get_session() as session:
@@ -189,7 +167,7 @@ async def test_consolidation_halves_windows_that_overflow_the_output(
     fits = 4
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompt = "".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts)
+        prompt = prompt_of(messages)
         window = [int(i) for i in re.findall(r"^#(\d+) ", prompt, re.M)]
         if len(window) > fits:
             raise IncompleteToolCall("Model token limit (16384) exceeded while generating a tool call")
@@ -203,13 +181,13 @@ async def test_consolidation_halves_windows_that_overflow_the_output(
 
     # Even the smallest window overflows: the error surfaces and nothing is skipped.
     fits = 1
-    with llm.override_models(memory_topic=fake_model(respond)), pytest.raises(IncompleteToolCall):
+    with llm.override_models(memory_topic=streaming_model(respond)), pytest.raises(IncompleteToolCall):
         await consolidate_group(TOPIC_GROUP)
     assert await watermark() in (None, 0)
 
     # 8 messages overflow; halved windows of 4 fit and cover everything in order.
     fits = 4
-    with llm.override_models(memory_topic=fake_model(respond)):
+    with llm.override_models(memory_topic=streaming_model(respond)):
         stats = await consolidate_group(TOPIC_GROUP)
     assert (stats["messages"], stats["new"]) == (8, 2)
     assert await watermark() == ids[-1]
@@ -268,11 +246,11 @@ async def test_profiles_consume_topics_in_close_order(insert: Insert, group_sett
     prompts: list[str] = []
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompts.append("".join(str(getattr(p, "content", "")) for msg in messages for p in msg.parts))
+        prompts.append(prompt_of(messages))
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, json.dumps({"summary": "群友"}))])
 
     async def run() -> int:
-        with llm.override_models(memory_profile=fake_model(respond)):
+        with llm.override_models(memory_profile=streaming_model(respond)):
             return (await profiles.update_group(PROFILE_GROUP))["updated"]
 
     assert await run() == 1

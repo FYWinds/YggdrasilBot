@@ -1,11 +1,13 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import fakeredis
 import httpx
 import pytest
 
 from tests.sandbox.helpers import SANDBOXD_GRPC, SANDBOXD_REST, SANDBOXD_TOKEN, FakeKube
+from yggdrasil.sandbox import WorkspaceManager
 from yggdrasil.sandbox.backend import Endpoint, SandboxdWorkspace, StaticResolver
 from yggdrasil.sandbox.k8s import KubeClient
 
@@ -54,6 +56,31 @@ async def kube_client(kube: FakeKube, tmp_path: Path) -> AsyncIterator[KubeClien
     client = KubeClient(base_url="https://k8s.test", token_path=token, transport=httpx.MockTransport(kube.handler))
     yield client
     await client.aclose()
+
+
+@pytest.fixture
+def make_manager(kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) -> Callable[..., WorkspaceManager]:
+    """``make_manager(link_domain=None, redis=None)``: a ``WorkspaceManager`` on the fake API server and ``redis``
+    (default the test's fake Redis), its pods always healthy."""
+
+    def make(*, link_domain: str | None = None, redis: Any = None) -> WorkspaceManager:
+        manager = WorkspaceManager(
+            token="test",
+            namespace="ns",
+            warmpool="pool",
+            link_domain=link_domain,
+            kube=kube_client,
+            redis=lambda: redis or fake_redis,
+            endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
+        )
+
+        async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
+            return True
+
+        manager._healthy = healthy  # pyright: ignore[reportAttributeAccessIssue]
+        return manager
+
+    return make
 
 
 @pytest.fixture

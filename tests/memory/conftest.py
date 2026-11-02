@@ -1,20 +1,16 @@
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from yggdrasil import runtime
+from yggdrasil.runtime import GroupInfo, Snapshot
 
 
 @pytest.fixture
-def group_settings() -> Iterator[Any]:
-    """Install a snapshot with per-group settings documents: ``group_settings({gid: {...}})``."""
-    previous = runtime._snapshot
+def group_settings(snapshot: Callable[..., Snapshot]) -> Callable[[dict[int, dict[str, Any]]], None]:
+    """Install per-group settings documents: ``group_settings({gid: {...}})``."""
 
     def install(docs: dict[int, dict[str, Any]]) -> None:
-        runtime._snapshot = runtime.Snapshot(
-            groups={gid: runtime.GroupInfo(gid, "test", True, doc) for gid, doc in docs.items()}
-        )
+        snapshot(groups={gid: GroupInfo(gid, "test", True, doc) for gid, doc in docs.items()})
 
-    yield install
-    runtime._snapshot = previous
+    return install

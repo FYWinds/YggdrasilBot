@@ -1,17 +1,15 @@
-from collections.abc import Callable
 from typing import Any, cast
 
 import httpx
 import pytest
 
+from tests.support.routes import Routes
 from yggdrasil.agent.deps import Handle
 from yggdrasil.agent.media import media_bytes
 from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools import web, x
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.search import web_search
-
-type Handler = Callable[[httpx.Request], httpx.Response]
 
 PID = "100000000000000003"
 API = SearchProviderInfo(9, "x", "x", "https://api.x.com", "tok", True, 1, 300, {})
@@ -132,8 +130,8 @@ def _fresh_cache() -> None:
     x._cache.clear()
 
 
-def _client(handler: Handler) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _hosts(routes: Routes) -> list[str]:
+    return [r.url.host for r in routes.seen]
 
 
 class Quota:
@@ -215,20 +213,18 @@ def test_fx_deleted_quote_is_named() -> None:
 
 
 async def test_read_post_falls_back_to_api_when_fxtwitter_fails() -> None:
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        if request.url.host == "api.fxtwitter.com":
-            return httpx.Response(503, text="<html>Just a moment...</html>")
-        return httpx.Response(200, json=API_POST)
-
+    routes = Routes(
+        {
+            "api.fxtwitter.com": httpx.Response(503, text="<html>Just a moment...</html>"),
+            "api.x.com": httpx.Response(200, json=API_POST),
+        }
+    )
     quota = Quota()
-    async with _client(handler) as client:
+    async with routes.client() as client:
         post = await x.read_post(PID, API, client=client, reserve=quota)
 
-    api_request = seen[1]
-    assert seen[0].headers["user-agent"].startswith("yggdrasil-bot/")
+    fx_request, api_request = routes.seen
+    assert fx_request.headers["user-agent"].startswith("yggdrasil-bot/")
     assert (api_request.url.host, api_request.url.path) == ("api.x.com", f"/2/tweets/{PID}")
     assert api_request.headers["authorization"] == "Bearer tok"
     assert "note_tweet" in api_request.url.params["tweet.fields"]
@@ -237,17 +233,12 @@ async def test_read_post_falls_back_to_api_when_fxtwitter_fails() -> None:
 
 
 async def test_read_post_trusts_fxtwitter_gone_answer() -> None:
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url.host))
-        return httpx.Response(404, json={"code": 404, "status": None, "thread": None})
-
+    routes = Routes({"api.fxtwitter.com": httpx.Response(404, json={"code": 404, "status": None, "thread": None})})
     quota = Quota()
-    async with _client(handler) as client:
+    async with routes.client() as client:
         with pytest.raises(x.PostGone):
             await x.read_post(PID, API, client=client, reserve=quota)
-    assert seen == ["api.fxtwitter.com"]
+    assert _hosts(routes) == ["api.fxtwitter.com"]
     assert quota.calls == 0
 
 
@@ -255,30 +246,19 @@ async def test_read_post_trusts_fxtwitter_gone_answer() -> None:
 async def test_read_post_without_api_budget_reports_why(
     api: SearchProviderInfo | None, allow: bool, message: str
 ) -> None:
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url.host))
-        return httpx.Response(500)
-
-    async with _client(handler) as client:
+    routes = Routes({"api.fxtwitter.com": httpx.Response(500)})
+    async with routes.client() as client:
         with pytest.raises(ToolError, match=message):
             await x.read_post(PID, api, client=client, reserve=Quota(allow))
-    assert seen == ["api.fxtwitter.com"]
+    assert _hosts(routes) == ["api.fxtwitter.com"]
 
 
 async def test_read_post_is_cached() -> None:
-    calls = 0
-
-    def handler(_: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(200, json=FX_THREAD)
-
-    async with _client(handler) as client:
+    routes = Routes({"api.fxtwitter.com": httpx.Response(200, json=FX_THREAD)})
+    async with routes.client() as client:
         first = await x.read_post(PID, None, client=client)
         second = await x.read_post(PID, None, client=client)
-    assert calls == 1
+    assert len(routes.seen) == 1
     assert second is first
 
 
@@ -313,22 +293,17 @@ def test_api_missing_post_is_gone_with_api_detail() -> None:
 
 
 async def test_search_news_request_parse_and_cache() -> None:
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=NEWS)
-
+    routes = Routes({"api.x.com": httpx.Response(200, json=NEWS)})
     quota = Quota()
-    async with _client(handler) as client:
+    async with routes.client() as client:
         stories = await x.search_news(API, "chips", hours=9999, n=5, client=client, reserve=quota)
         again = await x.search_news(API, "chips", hours=9999, n=5, client=client, reserve=quota)
 
-    params = seen[0].url.params
-    assert (seen[0].url.path, params["query"], params["max_results"]) == ("/2/news/search", "chips", "5")
+    params = routes.seen[0].url.params
+    assert (routes.seen[0].url.path, params["query"], params["max_results"]) == ("/2/news/search", "chips", "5")
     assert params["max_age_hours"] == str(x.NEWS_MAX_HOURS)
     assert "cluster_posts_results" in params["news.fields"]
-    assert (len(seen), quota.calls, again) == (1, 1, stories)
+    assert (len(routes.seen), quota.calls, again) == (1, 1, stories)
     assert [s.name for s in stories] == ["Chip export rules change"]
     text = x.format_news(stories)
     assert "1. Chip export rules change（更新于北京时间 10-28 10:58）" in text
@@ -342,20 +317,15 @@ async def test_search_news_request_parse_and_cache() -> None:
 
 @pytest.mark.parametrize(("hours", "windowed"), [(6, True), (x.POSTS_MAX_HOURS, False)])
 async def test_search_posts_excludes_reposts_and_limits_window(hours: int, windowed: bool) -> None:
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        payload = {
-            "data": [{"id": PID, "text": "hello", "author_id": "11", "public_metrics": {"like_count": 1}}],
-            "includes": {"users": [{"id": "11", "name": "Alice", "username": "alice"}]},
-        }
-        return httpx.Response(200, json=payload)
-
-    async with _client(handler) as client:
+    payload = {
+        "data": [{"id": PID, "text": "hello", "author_id": "11", "public_metrics": {"like_count": 1}}],
+        "includes": {"users": [{"id": "11", "name": "Alice", "username": "alice"}]},
+    }
+    routes = Routes({"api.x.com": httpx.Response(200, json=payload)})
+    async with routes.client() as client:
         posts = await x.search_posts(API, "from:alice", hours=hours, client=client)
 
-    params = seen[0].url.params
+    params = routes.seen[0].url.params
     assert params["query"] == "from:alice -is:retweet"
     assert ("start_time" in params) is windowed
     assert params["max_results"] == "10"
@@ -373,32 +343,32 @@ async def test_search_posts_excludes_reposts_and_limits_window(hours: int, windo
     ],
 )
 async def test_api_errors_are_tool_errors(status: int, body: dict[str, Any], message: str) -> None:
-    async with _client(lambda _: httpx.Response(status, json=body)) as client:
+    async with Routes({"api.x.com": httpx.Response(status, json=body)}).client() as client:
         with pytest.raises(ToolError, match=message):
             await x.api_get(API, "/2/news/search", {"query": "a"}, client=client)
 
 
 async def test_web_search_skips_x_provider() -> None:
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url.host))
-        return httpx.Response(200, json={"results": [{"url": "https://example.com/", "title": "t", "content": "c"}]})
-
+    routes = Routes(
+        {
+            "searxng": httpx.Response(
+                200, json={"results": [{"url": "https://example.com/", "title": "t", "content": "c"}]}
+            )
+        }
+    )
     searxng = SearchProviderInfo(2, "s", "searxng", "http://searxng:8080", None, True, 2, None, {})
-    async with _client(handler) as client:
+    async with routes.client() as client:
         hits = await web_search("q", [API, searxng], client=client, reserve=Quota())
-    assert seen == ["searxng"]
+    assert _hosts(routes) == ["searxng"]
     assert [h.url for h in hits] == ["https://example.com/"]
 
 
 async def test_read_url_adapter_returns_post_with_images() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == f"/2/thread/{PID}"
-        return httpx.Response(200, json=FX_THREAD)
-
-    async with _client(handler) as client:
+    routes = Routes({"api.fxtwitter.com": httpx.Response(200, json=FX_THREAD)})
+    async with routes.client() as client:
         result = await web._x_post(client, httpx.URL(f"https://twitter.com/alice/status/{PID}?s=20"))
+
+    assert [r.url.path for r in routes.seen] == [f"/2/thread/{PID}"]
 
     assert isinstance(result, web.Extracted)
     assert (result.final_url, result.title, result.via) == (
