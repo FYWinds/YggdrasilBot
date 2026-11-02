@@ -389,14 +389,14 @@ async def test_global_eviction_rechecks_idleness_atomically(
     a = _session(mgr, "a", cfg=cfg)
     await a.backend.working_dir()
     await a.close()
-    stale = await mgr._all_mappings()  # pyright: ignore[reportPrivateUsage]  # says GROUP's workspace is idle
+    stale = await mgr.records.all()  # says GROUP's workspace is idle
     busy = _session(mgr, "busy", cfg=cfg)
     await busy.backend.working_dir()
 
     async def snapshot() -> list[Any]:
         return stale
 
-    monkeypatch.setattr(mgr, "_all_mappings", snapshot)
+    monkeypatch.setattr(mgr.records, "all", snapshot)
     await reserve(mgr, "other", group=OTHER_GROUP, cfg=cfg)
     other = _session(mgr, "other", workspace="other", cfg=cfg, group=OTHER_GROUP)
     with pytest.raises(SandboxError, match="上限"):
@@ -680,10 +680,10 @@ async def test_eviction_skips_a_workspace_whose_pod_is_being_created(
     await creating.close()
     await late.close()
 
-    m = await mgr._load(GROUP, WS)  # pyright: ignore[reportPrivateUsage]
+    m = await mgr.records.load(GROUP, WS)
     assert m is not None
     await mgr._retire(m, reason="test")  # pyright: ignore[reportPrivateUsage]
-    pending = await mgr._load(GROUP, WS)  # pyright: ignore[reportPrivateUsage]
+    pending = await mgr.records.load(GROUP, WS)
     assert pending is not None
     created = await mgr._create(pending, cfg)  # pyright: ignore[reportPrivateUsage]
     assert created.active == 1

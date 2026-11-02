@@ -4,6 +4,9 @@ global caps, renewal, links, sessions.
 A workspace is ``(group_id, name)`` with a one-line description; a group has at most
 ``sandbox_max_workspaces_per_group`` of them and the deployment at most ``sandbox_max_workspaces`` pods. An
 invocation selects one (``Session.open``), attaches lazily on first use and may switch to another.
+
+This module decides; the Kubernetes objects are in ``cluster``, the Redis records and locks in ``records`` and the
+model-facing text in ``text``.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef, WorkspaceUnavailableError
@@ -35,54 +38,38 @@ from yggdrasil.sandbox.backend import (
 )
 from yggdrasil.sandbox.cluster import Cluster, claim_ready
 from yggdrasil.sandbox.errors import SandboxError, SandboxNotConfigured, SandboxToolError
-from yggdrasil.sandbox.job_model import job_key
 from yggdrasil.sandbox.k8s import KubeClient, KubeError
+from yggdrasil.sandbox.records import Records
 from yggdrasil.sandbox.state import (
-    INDEX_KEY_PREFIX,
-    WS_KEY_PREFIX,
     Link,
     LinkRecord,
     Mapping,
     WorkspaceInfo,
     claim_name,
     clean_description,
-    group_lock_key,
-    index_key,
-    keep_key,
     link_id,
     link_name,
-    lock_key,
     name_error,
-    parse_ws_key,
     shutdown_at,
     validate_port,
-    ws_key,
 )
 from yggdrasil.sandbox.text import TREE_SCRIPT, fmt_size, format_tree, format_workspaces
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-    from contextlib import AbstractAsyncContextManager
 
     from redis.asyncio import Redis
 
     from yggdrasil.settings import ToolSettings
 
 READY_TIMEOUT = 60.0
-_LOCK_TTL = 150
-"""Seconds a workspace's Redis lock lives; covers the longest holder (creating its pod, ~READY_TIMEOUT)."""
 _ATTACH_LOCK_WAIT = 120.0
 """How long attaching waits for the workspace lock (another invocation creating or releasing it)."""
 _RELEASE_LOCK_WAIT = 20.0
 """How long the last release waits for the lock before it gives up reaping (it still decrements)."""
 _CLOSE_LOCK_WAIT = 5.0
 """How long dropping an unused reservation at the end of an invocation waits for the workspace lock."""
-_GROUP_LOCK_TTL = 60
-"""Seconds the per-group lock lives; reserving only reads records and deletes evicted claims."""
 _GROUP_LOCK_WAIT = 30.0
-_PENDING_TTL = 1800
-"""Seconds a pending record (no pod yet) lives unused; refreshed when its pod is being created."""
-_LOCK_POLL = 0.2
 _REAP = "/opt/ygg/reap"
 _YGG = "/opt/ygg/ygg"
 _PUBLIC_ADDRS = frozenset({"0.0.0.0", "::"})
@@ -105,67 +92,8 @@ _CREATE_HINT = (
     "（名字用小写字母、数字和 -，例如 pelican-game）。"
 )
 
-# Every script takes KEYS[1] = the record, KEYS[2] = its keep hash, KEYS[3] = the group's index set where used.
-# Remove a record (and its keep hash and index entry) only if it still names this claim ("" = pending).
-_DROP_IF_CLAIM = (
-    "if redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return 0 end "
-    "redis.call('DEL', KEYS[1], KEYS[2]) redis.call('SREM', KEYS[3], ARGV[2]) return 1"
-)
-# Change `active` only while the record still names this (non-empty) claim; returns the new value or -1.
-_INCR_IF_CLAIM = (
-    "if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'claim') == ARGV[1] then "
-    "return redis.call('HINCRBY', KEYS[1], 'active', ARGV[2]) end return -1"
-)
-# Write fields (ARGV[2..]) only while the record still names claim ARGV[1]: 1 = written, 0 = it moved on.
-_SAVE_IF_CLAIM = (
-    "if redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return 0 end "
-    "redis.call('HSET', KEYS[1], unpack(ARGV, 2)) return 1"
-)
-# Write fields (ARGV) only while the record exists.
-_SAVE_IF_EXISTS = (
-    "if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end redis.call('HSET', KEYS[1], unpack(ARGV)) return 1"
-)
-_PENDING_FIELDS = (
-    "'claim', '', 'sandbox', '', 'pod_ip', '', 'active', '0', 'recreate', '0', 'links', '[]', "
-    "'expires_at', '0', 'max_until', '0'"
-)
-# Destroy the pod of a record only if it still names claim ARGV[1] and at most ARGV[2] invocations use it:
-# 1 = done (the record removed, or kept as pending with TTL ARGV[6] when ARGV[5] is 1), 0 = busy (and `recreate`
-# marked when ARGV[3] is 1), 2 = background jobs run in it (checked only when ARGV[4] is 1; nothing marked),
-# -1 = the record names another claim or is gone.
-_DESTROY_IF_IDLE = (
-    "if redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return -1 end "
-    "if ARGV[4] == '1' then for _, f in ipairs(redis.call('HKEYS', KEYS[2])) do "
-    "if string.sub(f, 1, 4) == 'job:' then return 2 end end end "
-    "if tonumber(redis.call('HGET', KEYS[1], 'active') or '0') <= tonumber(ARGV[2]) then "
-    "redis.call('DEL', KEYS[2]) "
-    f"if ARGV[5] == '1' then redis.call('HSET', KEYS[1], {_PENDING_FIELDS}) "
-    "redis.call('EXPIRE', KEYS[1], ARGV[6]) "
-    "else redis.call('DEL', KEYS[1]) redis.call('SREM', KEYS[3], ARGV[7]) end return 1 end "
-    "if ARGV[3] == '1' then redis.call('HSET', KEYS[1], 'recreate', '1') end return 0"
-)
-_RETIRE_ACTIVE = "1000000000"
-"""``max_active`` that makes ``_DESTROY_IF_IDLE`` ignore users (retiring a record whose pod others still use)."""
-# Refresh a pending record before its pod is created (TTL, LRU position); 0 when it is gone or not pending.
-_TOUCH_PENDING = (
-    "if redis.call('HGET', KEYS[1], 'claim') ~= '' then return 0 end "
-    "redis.call('EXPIRE', KEYS[1], ARGV[1]) redis.call('HSET', KEYS[1], 'last_used', ARGV[2]) return 1"
-)
-# Give a pending record its new pod (fields ARGV): 1 = done, 0 = the record was removed or claimed meanwhile.
-_SET_CLAIM = (
-    "if redis.call('HGET', KEYS[1], 'claim') ~= '' then return 0 end "
-    "redis.call('DEL', KEYS[2]) redis.call('HSET', KEYS[1], unpack(ARGV)) redis.call('PERSIST', KEYS[1]) return 1"
-)
-# Push max_until (ARGV[2]) out while the record names claim ARGV[1]; returns the resulting value or nil.
-_EXTEND = (
-    "if ARGV[1] == '' or redis.call('HGET', KEYS[1], 'claim') ~= ARGV[1] then return false end "
-    "if tonumber(ARGV[2]) > (tonumber(redis.call('HGET', KEYS[1], 'max_until') or '0') or 0) then "
-    "redis.call('HSET', KEYS[1], 'max_until', ARGV[2]) end return redis.call('HGET', KEYS[1], 'max_until')"
-)
-# Drop an index entry whose record is gone (KEYS[1] = record, KEYS[2] = index).
-_PRUNE_INDEX = "if redis.call('EXISTS', KEYS[1]) == 0 then redis.call('SREM', KEYS[2], ARGV[1]) return 1 end return 0"
-_UNLOCK = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
 _BUSY_JOBS = 2
+"""What ``_destroy_if_idle`` returns when background jobs run in the workspace."""
 
 _NOTES_CHARS = 1500
 
@@ -267,7 +195,7 @@ class WorkspaceManager:
         self._token = token
         self._link_domain = link_domain
         self._cluster = Cluster(kube, namespace=namespace, warmpool=warmpool)
-        self._redis = redis
+        self.records = Records(redis)
         # Pod IP -> sandboxd endpoint; tests map it onto a local sandboxd with published ports.
         self._endpoint = endpoint
         # Whether sandboxd on a pod IP answers /v1/health; tests that have no sandboxd pass their own.
@@ -297,43 +225,47 @@ class WorkspaceManager:
 
     async def get(self, group_id: int, name: str) -> WorkspaceInfo | None:
         """One workspace; ``None`` when there is none by that name (a record whose claim is gone is dropped)."""
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None:
             return None
         if not m.pending and await self._cluster.claim(m.claim) is None:
             await self._drop(m, reason="claim gone")
             return None
-        return m.info(await self._job_ids(m))
+        return m.info(await self.records.job_ids(m))
 
     async def workspaces(self, group_id: int) -> list[WorkspaceInfo]:
         """The group's workspaces (pending ones included), most recently used first; records whose claim is gone
         are dropped."""
-        mappings = await self._group_mappings(group_id)
+        mappings = await self.records.group(group_id)
         live = await self._cluster.live_claims(group_id) if any(not m.pending for m in mappings) else set()
         out: list[WorkspaceInfo] = []
         for m in mappings:
             if not m.pending and m.claim not in live:
                 await self._drop(m, reason="claim gone")
                 continue
-            out.append(m.info(await self._job_ids(m)))
+            out.append(m.info(await self.records.job_ids(m)))
         return sorted(out, key=lambda w: w.last_used, reverse=True)
 
     async def list(self) -> list[WorkspaceInfo]:
         """Every group's workspaces (console, metrics); pending ones included."""
-        mappings = await self._all_mappings()
+        mappings = await self.records.all()
         live = await self._cluster.live_claims()
-        return [m.info(await self._job_ids(m)) for m in mappings if m.pending or m.claim in live]
+        return [m.info(await self.records.job_ids(m)) for m in mappings if m.pending or m.claim in live]
 
     async def listing(self, group_id: int, *, current: str | None = None) -> str:
         """The group's workspaces as text for the model ("" when it has none)."""
         infos = await self.workspaces(group_id)
         return format_workspaces(
-            infos, now=time.time(), titles=await self._job_titles([j for w in infos for j in w.jobs]), current=current
+            infos,
+            now=time.time(),
+            titles=await self.records.job_titles([j for w in infos for j in w.jobs]),
+            current=current,
         )
 
     async def status(self, info: WorkspaceInfo, *, current: str | None = None) -> str:
         """One workspace as text for the model, like a ``listing`` entry."""
-        return format_workspaces([info], now=time.time(), titles=await self._job_titles(info.jobs), current=current)
+        titles = await self.records.job_titles(info.jobs)
+        return format_workspaces([info], now=time.time(), titles=titles, current=current)
 
     async def describe(self, group_id: int, name: str) -> str | None:
         """Files and the head of NOTES.md of a live workspace; ``None`` when pending, gone or unreadable."""
@@ -363,7 +295,7 @@ class WorkspaceManager:
         if not description:
             raise SandboxError("新建工作区要写 description：一句话说明放什么、属于哪个话题")
         cap = cfg.sandbox_max_workspaces_per_group
-        async with self._redis_lock(group_lock_key(group_id), wait=_GROUP_LOCK_WAIT, ttl=_GROUP_LOCK_TTL) as got:
+        async with self.records.group_lock(group_id, wait=_GROUP_LOCK_WAIT) as got:
             if not got:
                 raise SandboxToolError("本群正有别的请求在新建工作区，等太久了，稍后再试。")
             current = await self.workspaces(group_id)
@@ -381,10 +313,10 @@ class WorkspaceManager:
                 if w.jobs or w.active > (1 if mine is not None and w.name == mine[0] else 0):
                     continue
                 # Holding the workspace's lock keeps a create / attach / release from running while it goes.
-                async with self._ws_lock(group_id, w.name, wait=0) as got:
+                async with self.records.ws_lock(group_id, w.name, wait=0) as got:
                     if not got:
                         continue
-                    m = await self._load(group_id, w.name)
+                    m = await self.records.load(group_id, w.name)
                     if m is None:
                         excess -= 1
                         continue
@@ -396,7 +328,7 @@ class WorkspaceManager:
             if excess > 0:
                 left = [w for w in current if w not in evicted]
                 listing = format_workspaces(
-                    left, now=time.time(), titles=await self._job_titles([j for w in left for j in w.jobs])
+                    left, now=time.time(), titles=await self.records.job_titles([j for w in left for j in w.jobs])
                 )
                 made = "、".join(f"「{w.name}」" for w in evicted)
                 raise SandboxError(
@@ -418,28 +350,20 @@ class WorkspaceManager:
                 expires_at=0.0,
                 max_until=0.0,
             )
-            async with self._r().pipeline(transaction=True) as pipe:
-                pipe.hset(ws_key(group_id, name), mapping=record.to_hash())  # pyright: ignore[reportArgumentType]
-                pipe.expire(ws_key(group_id, name), _PENDING_TTL)
-                pipe.sadd(index_key(group_id), name)
-                await pipe.execute()
+            await self.records.add_pending(record)
         self._audit(group_id, "reserve", workspace=name, evicted=[w.name for w in evicted])
         return evicted
 
-    async def set_description(self, group_id: int, name: str, description: str) -> bool:
-        done = await self._r().eval(_SAVE_IF_EXISTS, 1, ws_key(group_id, name), "description", description)  # pyright: ignore[reportGeneralTypeIssues]
-        return int(cast(int, done)) == 1
-
     async def destroy(self, group_id: int, name: str, *, reason: str) -> bool:
         """Destroy one workspace now (its pod and record), even while invocations or jobs use it."""
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None:
             return False
         await self._destroy_mapping(m, reason=reason)
         return True
 
     async def destroy_all(self, *, reason: str) -> int:
-        mappings = await self._all_mappings()
+        mappings = await self.records.all()
         claims = {m.claim for m in mappings if not m.pending}
         try:
             claims |= await self._cluster.live_claims()
@@ -452,16 +376,13 @@ class WorkspaceManager:
                     destroyed += 1
             except Exception:
                 LOGGER.exception("deleting sandbox claim {} failed", claim)
-        for m in mappings:
-            await self._r().delete(ws_key(m.group_id, m.name), keep_key(m.group_id, m.name))
-        async for key in self._r().scan_iter(match=f"{INDEX_KEY_PREFIX}*", count=100):
-            await self._r().delete(key)
+        await self.records.clear(mappings)
         self._audit(None, "destroy_all", reason=reason, destroyed=destroyed)
         return destroyed
 
     async def reconcile(self) -> None:
         try:
-            mappings = [m for m in await self._all_mappings() if not m.pending]
+            mappings = [m for m in await self.records.all() if not m.pending]
             if not mappings:
                 return
             live = await self._cluster.live_claims()
@@ -475,7 +396,7 @@ class WorkspaceManager:
         """A backend bound to the workspace's current pod plus its claim name, for work outside an invocation
         (background jobs): no ``active`` counting, never creates a pod. ``None`` when the workspace has no live
         pod. The caller closes it with ``aclose()``."""
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None or m.pending:
             return None
         claim = await self._cluster.claim(m.claim)
@@ -500,7 +421,7 @@ class WorkspaceManager:
 
     async def renew(self, group_id: int, name: str, cfg: ToolSettings) -> bool:
         """Renew the workspace's claim (as an invocation's use would); False when it has none or it is gone."""
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None or m.pending:
             return False
         if await self._renew(m, cfg):
@@ -511,10 +432,9 @@ class WorkspaceManager:
     async def extend(self, group_id: int, name: str, claim: str, until: float, cfg: ToolSettings) -> float | None:
         """Push the workspace's hard cap (``max_until``) out to at least ``until`` so a background job fits, and
         renew its claim; the resulting cap, or ``None`` when the workspace no longer runs ``claim``."""
-        raw = await self._r().eval(_EXTEND, 1, ws_key(group_id, name), claim, repr(until))  # pyright: ignore[reportGeneralTypeIssues]
-        if raw is None:
+        if not await self.records.extend(group_id, name, claim, until):
             return None
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None or m.claim != claim or not await self._renew(m, cfg):
             return None
         self._audit(group_id, "extend", workspace=name, claim=claim, max_until=round(m.max_until))
@@ -530,7 +450,7 @@ class WorkspaceManager:
         if (reason := validate_port(port)) is not None:
             raise SandboxError(reason)
         async with self._local_locks[group_id, name], _errors("公开端口"):
-            m = await self._load(group_id, name)
+            m = await self.records.load(group_id, name)
             if m is None or m.pending:
                 raise SandboxError("工作区已经被重置或回收，没法公开端口。")
             if existing := next((x for x in m.links if x.port == port), None):
@@ -558,7 +478,7 @@ class WorkspaceManager:
                 pid=listener.pid,
             )
             m.links.append(link)
-            await self._save(m, "links")
+            await self.records.save(m, "links")
             await self._renew(m, cfg)
         self._audit(
             group_id,
@@ -577,13 +497,13 @@ class WorkspaceManager:
     async def unpublish(self, group_id: int, name: str, port: int, cfg: ToolSettings, *, audit: dict[str, Any]) -> bool:
         """Remove the public link of ``port`` (the process keeps running); False when it has none."""
         async with self._local_locks[group_id, name], _errors("撤销链接"):
-            m = await self._load(group_id, name)
+            m = await self.records.load(group_id, name)
             link = next((x for x in m.links if x.port == port), None) if m else None
             if m is None or link is None:
                 return False
             await self._cluster.delete_link(link.id)
             m.links = [x for x in m.links if x.port != port]
-            await self._save(m, "links")
+            await self.records.save(m, "links")
             await self._renew(m, cfg)
         self._audit(group_id, "unpublish", workspace=name, claim=m.claim, port=port, url=link.url, **audit)
         return True
@@ -599,98 +519,21 @@ class WorkspaceManager:
             await backend.aclose()
         return parse_listener(port, result.exit_code, result.stdout, result.stderr)
 
-    # --- redis ----------------------------------------------------------------------------------------------
-
-    def _r(self) -> Redis:
-        return self._redis()
-
-    async def _load(self, group_id: int, name: str) -> Mapping | None:
-        data = cast(dict[str, str], await self._r().hgetall(ws_key(group_id, name)))  # pyright: ignore[reportGeneralTypeIssues]
-        return Mapping.from_hash(group_id, data) if data else None
-
-    async def _group_mappings(self, group_id: int) -> list[Mapping]:
-        names = cast(set[str], await self._r().smembers(index_key(group_id)))  # pyright: ignore[reportGeneralTypeIssues]
-        out: list[Mapping] = []
-        for name in sorted(names):
-            m = await self._load(group_id, name)
-            if m is not None:
-                out.append(m)
-            else:  # expired (an unused reservation) or removed: only while the record is really gone
-                await self._r().eval(_PRUNE_INDEX, 2, ws_key(group_id, name), index_key(group_id), name)  # pyright: ignore[reportGeneralTypeIssues]
-        return out
-
-    async def _all_mappings(self) -> list[Mapping]:
-        out: list[Mapping] = []
-        async for key in self._r().scan_iter(match=f"{WS_KEY_PREFIX}*", count=100):
-            parsed = parse_ws_key(str(key))
-            if parsed is not None and (m := await self._load(*parsed)) is not None:
-                out.append(m)
-        return out
-
-    async def _job_ids(self, m: Mapping) -> tuple[str, ...]:
-        fields = cast(list[str], await self._r().hkeys(keep_key(m.group_id, m.name)))  # pyright: ignore[reportGeneralTypeIssues]
-        return tuple(sorted(f.removeprefix("job:") for f in fields if f.startswith("job:")))
-
-    async def _job_titles(self, ids: Iterable[str]) -> dict[str, str]:
-        return {i: str(await self._r().hget(job_key(i), "title") or "") for i in ids}  # pyright: ignore[reportGeneralTypeIssues]
-
-    async def _save(self, m: Mapping, *fields: str) -> bool:
-        """Write ``fields`` while the record still names ``m.claim``; False when it moved on."""
-        data = m.to_hash()
-        flat = [x for k in fields for x in (k, data[k])]
-        done = await self._r().eval(_SAVE_IF_CLAIM, 1, ws_key(m.group_id, m.name), m.claim, *flat)  # pyright: ignore[reportGeneralTypeIssues]
-        return int(cast(int, done)) == 1
-
-    async def _incr_active(self, m: Mapping, delta: int) -> int:
-        value = await self._r().eval(_INCR_IF_CLAIM, 1, ws_key(m.group_id, m.name), m.claim, str(delta))  # pyright: ignore[reportGeneralTypeIssues]
-        return int(cast(int, value))
+    # --- records --------------------------------------------------------------------------------------------
 
     async def _drop(self, m: Mapping, *, reason: str) -> None:
         """Remove the record (expired or destroyed) if it still names ``m.claim``."""
-        dropped = await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
-            _DROP_IF_CLAIM,
-            3,
-            ws_key(m.group_id, m.name),
-            keep_key(m.group_id, m.name),
-            index_key(m.group_id),
-            m.claim,
-            m.name,
-        )
-        if int(cast(int, dropped)):
+        if await self.records.drop(m):
             self._audit(m.group_id, "drop_mapping", workspace=m.name, claim=m.claim, reason=reason)
 
     async def _drop_unused(self, group_id: int, name: str) -> None:
         """Remove a reservation nobody created a pod for (the invocation that made it ended without using it)."""
-        async with self._redis_lock(lock_key(group_id, name), wait=_CLOSE_LOCK_WAIT, ttl=_LOCK_TTL) as got:
+        async with self.records.ws_lock(group_id, name, wait=_CLOSE_LOCK_WAIT) as got:
             if not got:
                 return  # someone is creating its pod right now
-            m = await self._load(group_id, name)
+            m = await self.records.load(group_id, name)
             if m is not None and m.pending:
                 await self._drop(m, reason="reservation unused")
-
-    @asynccontextmanager
-    async def _redis_lock(self, key: str, *, wait: float, ttl: int) -> AsyncIterator[bool]:
-        """Hold a lock shared by all bot replicas, polling up to ``wait`` seconds; yields whether it was
-        acquired."""
-        token = link_id()
-        deadline = time.monotonic() + wait
-        while not (got := bool(await self._r().set(key, token, nx=True, ex=ttl))):
-            if time.monotonic() >= deadline:
-                break
-            await asyncio.sleep(_LOCK_POLL)
-        try:
-            yield got
-        finally:
-            if got:
-                try:
-                    await asyncio.shield(self._r().eval(_UNLOCK, 1, key, token))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
-                except Exception:
-                    LOGGER.exception("releasing sandbox lock {} failed", key)
-
-    def _ws_lock(self, group_id: int, name: str, *, wait: float) -> AbstractAsyncContextManager[bool]:
-        """``ygg:sandbox:lock:<gid>:<name>``: attaching and the last release run under it, so a release never
-        reaps or recreates a workspace another invocation is just attaching to."""
-        return self._redis_lock(lock_key(group_id, name), wait=wait, ttl=_LOCK_TTL)
 
     # --- kubernetes -----------------------------------------------------------------------------------------
 
@@ -717,24 +560,8 @@ class WorkspaceManager:
         description; a fresh pod on next use) instead of removing it. Returns 1 (destroyed), 0 (in use;
         ``recreate`` marked if asked), 2 (background jobs run in it, with ``check_jobs``) or -1 (the record
         already names another claim or is gone)."""
-        result = int(
-            cast(
-                int,
-                await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
-                    _DESTROY_IF_IDLE,
-                    3,
-                    ws_key(m.group_id, m.name),
-                    keep_key(m.group_id, m.name),
-                    index_key(m.group_id),
-                    m.claim,
-                    str(max_active),
-                    "1" if mark_recreate else "0",
-                    "1" if check_jobs else "0",
-                    "1" if keep_record else "0",
-                    str(_PENDING_TTL),
-                    m.name,
-                ),
-            )
+        result = await self.records.take_if_idle(
+            m, max_active=max_active, mark_recreate=mark_recreate, check_jobs=check_jobs, keep_record=keep_record
         )
         if result == 1:
             self._audit(m.group_id, "destroy", workspace=m.name, claim=m.claim, reason=reason, kept=keep_record)
@@ -745,20 +572,7 @@ class WorkspaceManager:
     async def _retire(self, m: Mapping, *, reason: str) -> None:
         """Make the record pending (a fresh pod on next use) whatever uses its current pod; the pod itself is left
         alone (gone already, or expiring on its own under the invocations still using it)."""
-        await self._r().eval(  # pyright: ignore[reportGeneralTypeIssues]
-            _DESTROY_IF_IDLE,
-            3,
-            ws_key(m.group_id, m.name),
-            keep_key(m.group_id, m.name),
-            index_key(m.group_id),
-            m.claim,
-            _RETIRE_ACTIVE,
-            "0",
-            "0",
-            "1",
-            str(_PENDING_TTL),
-            m.name,
-        )
+        await self.records.retire(m)
         self._audit(m.group_id, "retire", workspace=m.name, claim=m.claim, reason=reason)
 
     async def _replace(self, m: Mapping, *, reason: str) -> None:
@@ -775,7 +589,7 @@ class WorkspaceManager:
         if not await self._cluster.set_shutdown(m.claim, expires):
             return False
         m.expires_at, m.last_used = expires, now
-        await self._save(m, "expires_at", "last_used")
+        await self.records.save(m, "expires_at", "last_used")
         return True
 
     async def _sandboxd_healthy(self, http: httpx.AsyncClient, ip: str) -> bool:
@@ -804,9 +618,7 @@ class WorkspaceManager:
     async def _evict_for(self, m: Mapping, cfg: ToolSettings) -> None:
         """Make room under the deployment-wide cap of pods for ``m``'s new one: evict the least recently used
         idle workspaces of any group (their records go too)."""
-        others = [
-            x for x in await self._all_mappings() if not x.pending and (x.group_id, x.name) != (m.group_id, m.name)
-        ]
+        others = [x for x in await self.records.all() if not x.pending and (x.group_id, x.name) != (m.group_id, m.name)]
         excess = len(others) - cfg.sandbox_max_workspaces + 1
         # `active` in this snapshot may be stale: the destroy re-checks it atomically and skips a workspace an
         # invocation attached to meanwhile.
@@ -825,9 +637,8 @@ class WorkspaceManager:
         """Create the pod of pending record ``m`` (under its workspace lock) and record it, already counting the
         caller in ``active`` (atomically with the claim, so no eviction sees it unused in between)."""
         await self._evict_for(m, cfg)
-        key = ws_key(m.group_id, m.name)
         now = time.time()
-        if not int(cast(int, await self._r().eval(_TOUCH_PENDING, 1, key, str(_PENDING_TTL), repr(now)))):  # pyright: ignore[reportGeneralTypeIssues]
+        if not await self.records.touch_pending(m.group_id, m.name, now):
             raise WorkspaceMissing(f"工作区「{m.name}」已经不存在了。")
         claim = claim_name(m.group_id, m.name)
         max_until = now + cfg.sandbox_max_age_min * 60
@@ -853,9 +664,7 @@ class WorkspaceManager:
                 max_until=max_until,
                 active=1,
             )
-            data = new.to_hash()
-            flat = [x for k, v in data.items() if k not in ("name", "description") for x in (k, v)]
-            if not int(cast(int, await self._r().eval(_SET_CLAIM, 2, key, keep_key(m.group_id, m.name), *flat))):  # pyright: ignore[reportGeneralTypeIssues]
+            if not await self.records.set_claim(new):
                 raise WorkspaceMissing(f"工作区「{m.name}」在创建过程中被删除了。")
         except BaseException:
             try:
@@ -903,7 +712,7 @@ class WorkspaceManager:
                 notice = _RESTARTED_NOTICE
             m.pod_ip = ip
             m.sandbox = sandbox or m.sandbox
-            await self._save(m, "pod_ip", "sandbox")
+            await self.records.save(m, "pod_ip", "sandbox")
         return m, notice
 
     async def _provide(self, group_id: int, name: str, cfg: ToolSettings) -> tuple[Mapping, str | None]:
@@ -915,10 +724,10 @@ class WorkspaceManager:
         notice: str | None = None
         deadline = time.monotonic() + _ATTACH_LOCK_WAIT
         while True:
-            async with self._ws_lock(group_id, name, wait=max(0.0, deadline - time.monotonic())) as got:
+            async with self.records.ws_lock(group_id, name, wait=max(0.0, deadline - time.monotonic())) as got:
                 if not got:
                     raise SandboxToolError("工作区正忙（另一个请求正在创建或收尾），等太久了，稍后再试。")
-                m = await self._load(group_id, name)
+                m = await self.records.load(group_id, name)
                 if m is None:
                     raise WorkspaceMissing(f"工作区「{name}」已经不存在了（过期、被回收或被删除），里面的文件都没了。")
                 if m.pending:
@@ -928,24 +737,24 @@ class WorkspaceManager:
                 if usable is None:
                     notice = why
                     continue
-                if await self._incr_active(usable, 1) < 0:
+                if await self.records.incr_active(usable, 1) < 0:
                     continue  # replaced meanwhile (lock expired under a slow holder): look again
                 usable.active += 1
                 try:
                     alive = await self._renew(usable, cfg)
                 except BaseException:
-                    await asyncio.shield(self._incr_active(usable, -1))
+                    await asyncio.shield(self.records.incr_active(usable, -1))
                     raise
                 if alive:
                     return usable, why or notice
-                await self._incr_active(usable, -1)
+                await self.records.incr_active(usable, -1)
                 await self._retire(usable, reason="claim gone")
                 notice = _GONE_NOTICE
 
     # --- describe -------------------------------------------------------------------------------------------
 
     async def _describe(self, group_id: int, name: str) -> str | None:
-        m = await self._load(group_id, name)
+        m = await self.records.load(group_id, name)
         if m is None or m.pending:
             return None
         claim = await self._cluster.claim(m.claim)
@@ -1079,7 +888,7 @@ class Session:
             if info is None:
                 raise SandboxError(f"本群没有叫「{name}」的工作区（可能已经过期回收了）。\n{await self.listing()}")
             if description and description != info.description:
-                updated = await self._mgr.set_description(self._group_id, name, description)
+                updated = await self._mgr.records.set_description(self._group_id, name, description)
         left = await self._switch(name)
         if left is not None and any(w.name == left for w in evicted):
             left = None  # it made room for the new one; nothing of it is left
@@ -1182,7 +991,7 @@ class Session:
         if not self._counted or self._mapping is None or now - self._renewed_at < self._cfg.sandbox_idle_min * 60 / 4:
             return
         self._renewed_at = now
-        m = await self._mgr._load(self._group_id, self._mapping.name)
+        m = await self._mgr.records.load(self._group_id, self._mapping.name)
         if m is None or m.claim != ref.id:
             return
         await self._mgr._renew(m, self._cfg)
@@ -1229,18 +1038,14 @@ class Session:
         ``None`` (the kernel died) forgets it."""
         if self._mapping is None:
             return
-        key = keep_key(self._group_id, self._mapping.name)
-        if pid is None:
-            await self._mgr._r().hdel(key, "kernel")  # pyright: ignore[reportGeneralTypeIssues]
-        else:
-            await self._mgr._r().hset(key, "kernel", str(pid))  # pyright: ignore[reportGeneralTypeIssues]
+        await self._mgr.records.set_kernel(self._group_id, self._mapping.name, pid)
 
     async def reset(self) -> str:
         """Empty the selected workspace: its pod is destroyed and a fresh one is created on next use, under the
         same name and description."""
         name = await self.require()
         async with self._mgr._local_locks[self._group_id, name]:
-            m = await self._mgr._load(self._group_id, name)
+            m = await self._mgr.records.load(self._group_id, name)
             if m is None:
                 self._name = None
                 raise SandboxError(f"工作区「{name}」已经不存在了。\n{await self.listing()}")
@@ -1287,11 +1092,11 @@ class Session:
                 LOGGER.exception("closing sandbox connections failed")
 
     async def _release(self, mine: Mapping) -> None:
-        async with self._mgr._ws_lock(self._group_id, mine.name, wait=_RELEASE_LOCK_WAIT) as locked:
-            remaining = await self._mgr._incr_active(mine, -1)
+        async with self._mgr.records.ws_lock(self._group_id, mine.name, wait=_RELEASE_LOCK_WAIT) as locked:
+            remaining = await self._mgr.records.incr_active(mine, -1)
             if remaining < 0:
                 return  # record gone or given a new pod meanwhile
-            m = await self._mgr._load(self._group_id, mine.name)
+            m = await self._mgr.records.load(self._group_id, mine.name)
             if m is None or m.claim != mine.claim:
                 return
             if remaining == 0 and not locked:
@@ -1307,7 +1112,7 @@ class Session:
             await self._mgr._renew(m, self._cfg)
 
     async def _reap(self, m: Mapping) -> None:
-        keep = cast(dict[str, str], await self._mgr._r().hgetall(keep_key(self._group_id, m.name)))  # pyright: ignore[reportGeneralTypeIssues]
+        keep = await self._mgr.records.keep(self._group_id, m.name)
         try:
             result = await self.backend.exec(reap_argv(keep, m.links), seconds=30)
             if result.exit_code != 0:
