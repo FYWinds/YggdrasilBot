@@ -4,7 +4,8 @@ import httpx
 
 from tests.support.routes import Routes
 from yggdrasil.tools import web
-from yggdrasil.tools.web import API_USER_AGENT, Extracted
+from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.model import API_USER_AGENT
 
 
 async def test_tangled_blob_reads_the_raw_file_with_its_lines() -> None:

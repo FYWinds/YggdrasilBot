@@ -12,7 +12,8 @@ import pytest
 from tests.support.files import text_pdf
 from tests.support.routes import Answer, Routes
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web import Extracted, RemoteFetch, Unreadable, read_url
+from yggdrasil.tools.web import Extracted, RemoteFetch, read_url
+from yggdrasil.tools.web.model import Unreadable
 
 type LocalTier = Callable[[Extracted | Exception], list[str]]
 

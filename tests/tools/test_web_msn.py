@@ -6,7 +6,8 @@ import pytest
 from tests.support.routes import Routes
 from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web import Extracted, Unreadable, read_url
+from yggdrasil.tools.web import Extracted, read_url
+from yggdrasil.tools.web.model import Unreadable
 
 MSN_ARTICLE = {
     "title": "Storm closes the harbour",

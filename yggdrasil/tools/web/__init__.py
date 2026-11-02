@@ -11,11 +11,11 @@ import json
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 
 import httpx
 from curl_cffi.requests.exceptions import RequestException as CurlRequestError
@@ -24,81 +24,35 @@ from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.telemetry import TRACER
 from yggdrasil.tools import x
-from yggdrasil.tools.docs import clip_text, decode_html, decode_text, parse_document
+from yggdrasil.tools.docs import decode_html, parse_document
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import GuardedResponse, check_url, guarded_client, impersonated_stream
+from yggdrasil.tools.web.blocks import JS_CHALLENGES, detect_wall, is_challenge, raise_if_blocked, raise_if_wall
+from yggdrasil.tools.web.extract import MIN_TEXT_CHARS, extract_html, json_text
+from yggdrasil.tools.web.model import (
+    API_USER_AGENT,
+    MAX_HTML_BYTES,
+    MB,
+    AdapterFn,
+    AdapterResult,
+    Extracted,
+    PageResult,
+    RemoteFetch,
+    Unreadable,
+    read_capped,
+)
+from yggdrasil.tools.web.page import Anchor, find_anchor, fragment_view, paginate
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 )
-# Official JSON APIs (Bilibili in particular) answer 412 to browser user agents without a full
-# cookie fingerprint, but serve honest non-browser clients normally.
-API_USER_AGENT = "yggdrasil-bot/0.1"
 _ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8"
 _HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": _ACCEPT_LANGUAGE,
 }
-_MB = 1024 * 1024
-MAX_HTML_BYTES = 5 * _MB
-MAX_DOC_BYTES = 20 * _MB
-# Extracted text shorter than this is treated as a JS shell worth rendering in the browser.
-_MIN_TEXT_CHARS = 200
-# Walls are short pages; keyword hits in long articles are ignored.
-_WALL_MAX_CHARS = 2000
-# Cookie-consent interstitials that replace the whole page: Google's EU wall (YouTube channel pages etc.) and IAB TCF
-# dialogs such as MSN's. The browser shares our IP and gets them too.
-_CONSENT_KEYWORDS = (
-    "before you continue to",
-    "继续使用 youtube 前须知",
-    "number of partners (vendors)",
-    "we and our partners process data",
-)
-_WALL_KEYWORDS = (
-    "验证码",
-    "安全验证",
-    "人机验证",
-    "滑动验证",
-    "拖动滑块",
-    "完成验证",
-    "请登录",
-    "登录后查看",
-    "登录后继续",
-    "环境异常",
-    "访问异常",
-    "请求存在异常",
-    "限制本次访问",
-    "异常流量",
-    "访问过于频繁",
-    "captcha",
-    "verify you are human",
-    "are you a robot",
-    "you're not a robot",
-    "prove your humanity",
-    "unusual traffic",
-    "just a moment...",
-    "attention required",
-    "checking your browser",
-    "enable javascript and cookies",
-    *_CONSENT_KEYWORDS,
-)
-# Anti-bot block and error pages that answer with a normal-looking page (often HTTP 200). Same short-page rule as
-# the walls; unlike a wall, a real browser may still get through, so these escalate to the browser tier.
-_BLOCK_KEYWORDS = (
-    "blocked by network security",  # reddit
-    "you've been blocked",
-    "you have been blocked",
-    "access denied",
-    "request blocked",
-    "pardon our interruption",  # Akamai
-    "something went wrong",  # generic SPA error shells (e.g. behind Cloudflare)
-    "请求已被拦截",  # CN WAFs (e.g. coolapk's HTTP 567 page)
-    "安全策略拦截",
-)
-# Walls that are JavaScript challenges rather than captchas or logins: a better browser may pass them, so they
-# escalate like block pages. Captcha / login walls never do (no captcha fighting; CN walls are IP reputation).
-_JS_CHALLENGES = frozenset({"just a moment...", "checking your browser", "enable javascript and cookies"})
+MAX_DOC_BYTES = 20 * MB
 _BROWSER_RETRY_STATUSES = frozenset({401, 403, 429, 503})
 # Network timeouts apply to single reads, so a server that trickles bytes never trips them: each adapter call and
 # each page download gets at most this many request timeouts in all.
@@ -122,71 +76,14 @@ _DOC_TYPES = (
 )
 _DOC_EXTS = frozenset(".pdf .docx .pptx .xlsx .epub .zip .txt .md .csv .json .doc .xls .ppt".split())
 _HTML_TYPES = frozenset({"", "text/html", "application/xhtml+xml", "application/octet-stream"})
-_PARA_SPLIT_RE = re.compile(r"\n\s*\n")
-# Lines that are only stray punctuation (left over from stripped inline widgets).
-_JUNK_LINE_RE = re.compile(r"^[ \t]*[，。、：；！？,.:;!?·…]{1,3}[ \t]*(?:\n|$)", re.MULTILINE)
 _CN_TZ = timezone(timedelta(hours=8))
 
-
-@dataclass(slots=True)
-class PageResult:
-    url: str
-    final_url: str
-    title: str
-    text: str
-    page: int
-    pages: int
-    truncated: bool
-    """More content exists beyond this page (later pages, or the source hit a size cap)."""
-    via: str
-    """``http`` / ``browser`` / ``document:<kind>`` / adapter name (``bilibili``, ``github``, ``hackernews``, ...)."""
-    images: list[str] = field(default_factory=list)
-    """Image URLs from the source (adapters only); the caller shows them with page 1."""
-
-
-@dataclass(slots=True)
-class Extracted:
-    """Whole-document result of one fetch, before pagination."""
-
-    final_url: str
-    title: str
-    text: str
-    via: str
-    capped: bool = False
-    images: list[str] = field(default_factory=list)
-    """Image URLs that belong to the content (third-party: download them through the SSRF guard)."""
-    html: str = field(default="", repr=False)
-    """Source HTML (generic and browser tiers), for :func:`read_url` to find the URL's ``#fragment``; never cached."""
-
-
-@dataclass(slots=True)
-class _Anchor:
-    """Where a URL's ``#fragment`` points in the extracted text."""
-
-    start: int
-    label: str
-    """The heading of the section it points at, if any."""
-
-
-class Unreadable(ToolError):
-    """The page could not be read from here (wall, block page, HTTP error, network failure, nothing rendered);
-    unlike other tool errors (not a web page, file too large, gone per an official API), a remote fetcher may
-    still get it."""
-
-
-type RemoteFetch = Callable[[str], Awaitable[Extracted | None]]
-"""Fetch a URL from elsewhere (``yggdrasil.tools.remote_fetch``); ``None`` when it has nothing either."""
-
-
-type AdapterResult = Extracted | str | None
-"""An adapter returns the content, a rewritten URL to restart with, or ``None`` to use the generic path."""
-type AdapterFn = Callable[[httpx.AsyncClient, httpx.URL], Awaitable[AdapterResult]]
 
 _ADAPTERS: dict[str, AdapterFn] = {}
 _PATH_ADAPTERS: list[tuple[re.Pattern[str], AdapterFn]] = []
 type _CacheKey = tuple[str, str, bool, bool]
 """(url, fragment, browser tier on, remote tier on)."""
-_cache: OrderedDict[_CacheKey, tuple[float, Extracted, _Anchor | None]] = OrderedDict()
+_cache: OrderedDict[_CacheKey, tuple[float, Extracted, Anchor | None]] = OrderedDict()
 
 
 def site_adapter(*hosts: str) -> Callable[[AdapterFn], AdapterFn]:
@@ -242,13 +139,13 @@ async def read_url(
     with TRACER.start_as_current_span("tool.read_url") as span:
         if cached is None:
             extracted = await _read(target, browser_url, remote, timeout)
-            anchor = await asyncio.to_thread(_find_anchor, extracted, fragment) if fragment else None
+            anchor = await asyncio.to_thread(find_anchor, extracted, fragment) if fragment else None
             extracted.html = ""
             cached = extracted, anchor
             _cache_put(key, extracted, anchor)
         extracted, anchor = cached
         span.set_attribute("ygg.read_url.via", extracted.via)
-    text, note = _fragment_view(extracted.text, fragment, anchor, max_chars)
+    text, note = fragment_view(extracted.text, fragment, anchor, max_chars)
     pages = paginate(text, max_chars)
     if page > len(pages):
         raise ToolError(f"页码超出范围，共 {len(pages)} 页")
@@ -274,7 +171,7 @@ async def _read(url: str, browser_url: str | None, remote: RemoteFetch | None, t
             raise
         return fetched
     generic = local.via == "http" or local.via.startswith("browser")  # adapters' short answers are complete
-    if remote is not None and generic and len(local.text) < _MIN_TEXT_CHARS:
+    if remote is not None and generic and len(local.text) < MIN_TEXT_CHARS:
         fetched = await _remote(remote, url)
         if fetched is not None and len(fetched.text) > len(local.text):
             return fetched
@@ -291,234 +188,10 @@ async def _remote(remote: RemoteFetch, url: str) -> Extracted | None:
         fetched is None
         or not fetched.text
         or detect_wall(fetched.title, fetched.text)
-        or _is_challenge(fetched.title, fetched.text)
+        or is_challenge(fetched.title, fetched.text)
     ):
         return None  # the remote copy is a wall / block page too
     return fetched
-
-
-def paginate(text: str, max_chars: int) -> list[str]:
-    """Split ``text`` into pages of at most ``max_chars``, on paragraph, then line, then hard boundaries."""
-    blocks: list[str] = []
-    for para in _PARA_SPLIT_RE.split(text.strip()):
-        para = para.rstrip()  # not strip(): the first line keeps its indentation (code)
-        if not para:
-            continue
-        if len(para) <= max_chars:
-            blocks.append(para)
-        else:
-            blocks += _pack(_hard_lines(para, max_chars), "\n", max_chars)
-    return _pack(blocks, "\n\n", max_chars) or [""]
-
-
-def _hard_lines(para: str, limit: int) -> Iterable[str]:
-    for line in para.split("\n"):
-        for start in range(0, len(line), limit):
-            yield line[start : start + limit]
-
-
-def _pack(parts: Iterable[str], sep: str, limit: int) -> list[str]:
-    out: list[str] = []
-    current = ""
-    for part in parts:
-        candidate = f"{current}{sep}{part}" if current else part
-        if len(candidate) <= limit:
-            current = candidate
-        else:
-            if current:
-                out.append(current)
-            current = part
-    if current:
-        out.append(current)
-    return out
-
-
-# --------------------------------------------------------------------------- URL fragments
-
-# Fragments that are client-side app state (``#/route``, ``#!/route``, ``#key=value&...``), not an anchor in the page.
-_STATE_FRAGMENT_RE = re.compile(r"^[!/]|[=&]")
-# Linear on crafted headings (200k spaces or "#"s): no lazy group before the $; trailing "#"s are stripped after.
-_MD_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+)$", re.MULTILINE)
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-# Longer Markdown headings are not taken for a fragment's target; _MD_LINK_RE is quadratic on titles like "[[[[...".
-_MD_HEADING_MAX = 300
-_WORD_RE = re.compile(r"[^\W_]+")
-_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
-_TEXT_BLOCK_TAGS = frozenset({"p", "li", "dd", "dt", "td", "th", "pre", "blockquote", "figcaption"})
-# A probe is the first words of a text block: this many word characters, and blocks with fewer than the minimum are
-# skipped as not distinctive. At most _PROBE_BLOCKS blocks from the anchor on are tried.
-_PROBE_CHARS = 60
-_PROBE_MIN_CHARS = 16
-_PROBE_BLOCKS = 20
-
-
-def _fragment_view(text: str, fragment: str, anchor: _Anchor | None, max_chars: int) -> tuple[str, str]:
-    """The text to paginate for a URL with ``#fragment``, and the note to show above page 1."""
-    if not fragment:
-        return text, ""
-    if anchor is None:
-        if _STATE_FRAGMENT_RE.search(fragment):
-            return text, (
-                f"（链接里的 #{fragment} 是网页脚本用的状态参数：它指向的视图要在浏览器里运行页面脚本才会显示，"
-                "这里没有渲染出来，下面是页面的默认内容）"
-            )
-        return text, f"（链接里的 #{fragment} 在页面里没找到对应位置，下面从页面开头读起）"
-    what = f"「{anchor.label}」" if anchor.label else "的位置"
-    if anchor.start == 0 or len(text) <= max_chars:
-        return text, f"（链接里的 #{fragment} 指向{what}，内容在本页中）"
-    return text[anchor.start :], f"（链接里的 #{fragment} 指向{what}，下面从那里读起；前面的内容请读不带 # 的链接）"
-
-
-def _find_anchor(extracted: Extracted, fragment: str) -> _Anchor | None:
-    """Where ``#fragment`` points in the extracted text: the element with that id in the page source, else a
-    Markdown heading whose GitHub-style slug it is (adapter text such as a README has no page source)."""
-    if extracted.html and (anchor := _html_anchor(extracted.html, extracted.text, fragment)):
-        return anchor
-    wanted = fragment.lower()
-    for match in _MD_HEADING_RE.finditer(extracted.text):
-        heading = match.group(1).rstrip(" \t#")
-        if len(heading) > _MD_HEADING_MAX:
-            continue
-        title = re.sub(r"[\\*`]", "", _MD_LINK_RE.sub(r"\1", heading)).strip()
-        if re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-") == wanted:
-            return _Anchor(match.start(), title)
-    return None
-
-
-def _html_anchor(html: str, text: str, fragment: str) -> _Anchor | None:
-    """The element with ``id`` (or ``<a name>``) ``fragment``, located in ``text`` by the first of its text blocks,
-    or of the blocks after it, that survived extraction. Headings are not probed: extraction often drops them, and
-    tables of contents repeat them."""
-    from lxml import html as lxml_html
-    from lxml.etree import ParserError
-
-    try:
-        root = lxml_html.fromstring(html)
-    except (ParserError, ValueError):  # empty document, or an XML encoding declaration
-        return None
-    try:
-        found = root.xpath("//*[@id=$f] | //a[@name=$f]", f=fragment)
-    except ValueError:  # control characters (%00) or U+FFFE in the fragment: no element can have that id
-        return None
-    if not found:
-        return None
-    target = found[0]
-    heading = next(target.iter(*_HEADING_TAGS), None)
-    label = " ".join(heading.text_content().split())[:80] if heading is not None else ""
-    start = _first_block_match(root, target, text)
-    if start is None:
-        return None
-    start = text.rfind("\n", 0, start) + 1
-    # Start at the section heading when the extraction kept it just above.
-    if label and (probe := _probe(label, 1)) and (hits := list(probe.finditer(text, max(0, start - 300), start))):
-        start = text.rfind("\n", 0, hits[-1].start()) + 1
-    return _Anchor(start, label)
-
-
-def _first_block_match(root: Any, target: Any, text: str) -> int | None:
-    started, tried = False, 0
-    for el in root.iter():
-        started = started or el is target
-        if not started or el.tag not in _TEXT_BLOCK_TAGS:
-            continue
-        if (probe := _probe(el.text_content(), _PROBE_MIN_CHARS)) is None:
-            continue
-        if (match := probe.search(text)) is not None:
-            return match.start()
-        tried += 1
-        if tried == _PROBE_BLOCKS:
-            break
-    return None
-
-
-def _probe(content: str, min_chars: int) -> re.Pattern[str] | None:
-    """A pattern for the first words of ``content`` that allows the punctuation, Markdown escapes and line breaks
-    extraction puts between them; ``None`` for fewer than ``min_chars`` word characters."""
-    words: list[str] = []
-    size = 0
-    for word in _WORD_RE.findall(content):
-        words.append(re.escape(word[: _PROBE_CHARS - size]))
-        size += len(word)
-        if size >= _PROBE_CHARS:
-            break
-    return re.compile(r"[\W_]+".join(words)) if size >= min_chars else None
-
-
-def detect_wall(title: str, text: str) -> str | None:
-    """Return the matched keyword if the page looks like a captcha / verification / login wall."""
-    return _match_short_page(_WALL_KEYWORDS, title, text)
-
-
-def detect_block(title: str, text: str) -> str | None:
-    """Return the matched keyword if the page looks like an anti-bot block or error page."""
-    return _match_short_page(_BLOCK_KEYWORDS, title, text)
-
-
-def _match_short_page(keywords: tuple[str, ...], title: str, text: str) -> str | None:
-    lowered_title = title.lower()
-    for keyword in keywords:
-        if keyword in lowered_title:
-            return keyword
-    if len(text) <= _WALL_MAX_CHARS:
-        lowered = text.lower()
-        for keyword in keywords:
-            if keyword in lowered:
-                return keyword
-    return None
-
-
-def _raise_if_wall(extracted: Extracted) -> None:
-    if keyword := detect_wall(extracted.title, extracted.text):
-        if keyword in _CONSENT_KEYWORDS:
-            raise Unreadable(f"页面被 Cookie 同意弹窗挡住了，读不到正文（检测到「{keyword}」）")
-        raise Unreadable(f"该页面需要人机验证或登录（检测到「{keyword}」），无法读取")
-
-
-def _raise_if_blocked(extracted: Extracted) -> None:
-    if keyword := detect_block(extracted.title, extracted.text):
-        raise Unreadable(f"网站拒绝了自动访问（检测到「{keyword}」），无法读取")
-
-
-def extract_html(html: str, url: str) -> tuple[str, str]:
-    """Return ``(title, markdown-ish text)`` of the main content of an HTML document."""
-    import trafilatura
-
-    text = (
-        trafilatura.extract(
-            html,
-            url=url,
-            output_format="markdown",
-            include_tables=True,
-            include_links=False,
-            include_images=False,
-            include_comments=False,
-            favor_recall=True,
-            deduplicate=True,
-        )
-        or ""
-    ).strip()
-    meta = trafilatura.extract_metadata(html, default_url=url)
-    title = (meta.title or "") if meta is not None else ""
-    if len(text) < _MIN_TEXT_CHARS:
-        fallback_title, fallback = _readability(html)
-        if len(fallback) > len(text):
-            text = fallback
-        title = title or fallback_title
-    return title.strip(), _JUNK_LINE_RE.sub("", text).strip()
-
-
-def _readability(html: str) -> tuple[str, str]:
-    from markdownify import markdownify
-    from readability import Document
-
-    try:
-        doc = Document(html)
-        summary = doc.summary(html_partial=True)
-        title = doc.short_title()
-    except Exception:
-        return "", ""
-    text = markdownify(summary, heading_style="ATX", strip=["a", "img"])
-    return title or "", re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 # --------------------------------------------------------------------------- fetch pipeline
@@ -574,8 +247,8 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
 
     if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
         if body.capped:
-            raise ToolError(f"文件超过 {body.limit // _MB} MB，无法读取")
-        if body.is_json and (compact := await asyncio.to_thread(_json_text, body.data, body.charset)):
+            raise ToolError(f"文件超过 {body.limit // MB} MB，无法读取")
+        if body.is_json and (compact := await asyncio.to_thread(json_text, body.data, body.charset)):
             text, clipped = compact
             return Extracted(final_url, body.filename, text, "document:json", capped=clipped)
         doc = await asyncio.to_thread(parse_document, body.data, body.filename)
@@ -588,20 +261,15 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     html = decode_html(body.data, body.charset)
     title, text = await asyncio.to_thread(extract_html, html, final_url)
     extracted = Extracted(final_url, title, text, "http", capped=body.capped, html=html)
-    challenged = _is_challenge(title, text)
-    thin = len(text) < _MIN_TEXT_CHARS and detect_wall(title, text) is None
+    challenged = is_challenge(title, text)
+    thin = len(text) < MIN_TEXT_CHARS and detect_wall(title, text) is None
     if browser_url and (challenged or thin):
         return await _render_or_raise(final_url, browser_url, timeout_s, None if challenged else extracted)
-    _raise_if_wall(extracted)
-    _raise_if_blocked(extracted)
+    raise_if_wall(extracted)
+    raise_if_blocked(extracted)
     if not text:
         raise Unreadable("页面没有可读取的正文")
     return extracted
-
-
-def _is_challenge(title: str, text: str) -> bool:
-    """A block page or JS challenge: worth another (better) browser, unlike captcha and login walls."""
-    return detect_wall(title, text) in _JS_CHALLENGES or detect_block(title, text) is not None
 
 
 async def _download(resp: GuardedResponse) -> _Body:
@@ -619,18 +287,9 @@ async def _download(resp: GuardedResponse) -> _Body:
     limit = MAX_DOC_BYTES if is_doc else MAX_HTML_BYTES
     declared = resp.headers.get("content-length", "")
     if is_doc and declared.isdigit() and int(declared) > limit:
-        raise ToolError(f"文件超过 {limit // _MB} MB，无法读取")
-    data, capped = await _read_capped(resp.chunks, limit)
+        raise ToolError(f"文件超过 {limit // MB} MB，无法读取")
+    data, capped = await read_capped(resp.chunks, limit)
     return _Body(filename, is_doc, is_json, limit, data, capped, resp.charset)
-
-
-async def _read_capped(chunks: AsyncIterator[bytes], limit: int) -> tuple[bytes, bool]:
-    buf = bytearray()
-    async for chunk in chunks:
-        buf += chunk
-        if len(buf) > limit:
-            return bytes(buf[:limit]), True
-    return bytes(buf), False
 
 
 def _filename(headers: dict[str, str], final_url: str) -> str:
@@ -645,125 +304,6 @@ def _filename(headers: dict[str, str], final_url: str) -> str:
 def _ext(filename: str) -> str:
     _, dot, ext = filename.lower().rpartition(".")
     return f".{ext}" if dot else ""
-
-
-# JSON fields that only matter to programs: global node ids, gravatar hashes, HAL link sections.
-_JSON_NOISE_KEYS = frozenset({"node_id", "gravatar_id", "_links"})
-# Objects and lists of plain values up to this long are written on one line: {a: 1, b: x} / [x, y].
-_JSON_INLINE_MAX = 100
-# The text budget after compaction, as for other documents (parse_document's default).
-_JSON_MAX_CHARS = 60000
-
-
-def _json_text(data: bytes, charset: str | None) -> tuple[str, bool] | None:
-    """A JSON body as YAML-like text without noise fields or empty values, and whether it was clipped; ``None``
-    if it is not JSON. API responses (api.github.com) are mostly cross-links, ids and signatures otherwise."""
-    decoded = decode_text(data, charset)
-    if decoded is None:
-        return None
-    try:
-        value = json.loads(decoded)
-        pruned = _prune_json(value)
-        trimmed = pruned != value
-        if pruned in (None, "", [], {}):
-            body = json.dumps(value, ensure_ascii=False)[:500]  # nothing left: show what there was
-        else:
-            body = "\n".join(_json_lines(pruned, ""))
-    except (ValueError, RecursionError):  # not JSON, or nested too deep to walk: read as plain text
-        return None
-    note = "（JSON 数据）"
-    if trimmed:
-        note = "（JSON 数据，已精简：去掉了空值、node_id、头像、API 链接和签名等字段）"
-    text, clipped = clip_text(body, _JSON_MAX_CHARS)
-    return f"{note}\n\n{text}", clipped
-
-
-def _prune_json(value: Any, parent: str = "") -> Any:
-    """``value`` without noise fields, and without object fields whose value is empty (null, "", [], {}). List
-    elements all stay: their positions can matter (a series lined up with timestamps, table rows)."""
-    if isinstance(value, dict):
-        kept: dict[str, Any] = {}
-        for key, item in value.items():
-            if _json_noise(parent, str(key), item):
-                continue
-            item = _prune_json(item, str(key))
-            if item not in (None, "", [], {}):
-                kept[str(key)] = item
-        return kept
-    if isinstance(value, list):
-        return [_prune_json(item, parent) for item in value]
-    return value
-
-
-def _json_noise(parent: str, key: str, value: Any) -> bool:
-    if key in _JSON_NOISE_KEYS:
-        return True
-    if not isinstance(value, str):
-        return False
-    if value.startswith("-----BEGIN "):
-        return True  # PGP / SSH signatures, certificates
-    if parent == "verification" and key == "payload":
-        return True  # the signed raw git object of a GitHub commit
-    if key == "url" or key.endswith("_url"):
-        # API cross-links and URI templates (".../following{/other_user}") are for programs; avatars are images.
-        return "{" in value or "avatar" in key or _is_api_link(value)
-    return False
-
-
-def _is_api_link(value: str) -> bool:
-    try:
-        parts = urlsplit(value)
-    except ValueError:
-        return False
-    return (parts.hostname or "").startswith("api.") or parts.path.startswith("/api/")
-
-
-def _json_lines(value: Any, pad: str) -> list[str]:
-    """``value`` as YAML-like lines indented by ``pad``. Multi-line items of the outer lists (a list response, or the
-    list in a search response) are separated by blank lines, so pages break between items."""
-    if isinstance(value, dict):
-        lines: list[str] = []
-        for key, item in value.items():
-            if (inline := _json_inline(item)) is not None:
-                lines.append(f"{pad}{key}: {inline}")
-            else:
-                lines += [f"{pad}{key}:", *_json_lines(item, pad + "  ")]
-        return lines
-    if isinstance(value, list):
-        lines = []
-        for item in value:
-            if (inline := _json_inline(item)) is not None:
-                lines.append(f"{pad}- {inline}")
-                continue
-            if lines and len(pad) <= 2:
-                lines.append("")
-            first, *rest = _json_lines(item, pad + "  ")
-            lines += [f"{pad}- {first.lstrip()}", *rest]
-        return lines
-    return [pad + _json_scalar(value)]
-
-
-def _json_inline(value: Any) -> str | None:
-    """A plain value, or a short object / list of plain values, on one line; ``None`` if it needs several."""
-    if not isinstance(value, dict | list):
-        return _json_scalar(value)
-    items = list(value.values()) if isinstance(value, dict) else value
-    if any(isinstance(item, dict | list) for item in items):
-        return None
-    if isinstance(value, dict):
-        inline = "{" + ", ".join(f"{k}: {_json_scalar(v)}" for k, v in value.items()) + "}"
-    else:
-        inline = "[" + ", ".join(_json_scalar(v) for v in value) + "]"
-    return inline if len(inline) <= _JSON_INLINE_MAX else None
-
-
-def _json_scalar(value: Any) -> str:
-    if isinstance(value, str):
-        # Bare unless line breaks or edge spaces would make it ambiguous.
-        if value != value.strip() or re.search(r"[\n\r\t]", value):
-            return json.dumps(value, ensure_ascii=False)
-        return value
-    return json.dumps(value)
 
 
 async def _render_or_raise(url: str, browser_url: str, timeout_s: float, fallback: Extracted | None) -> Extracted:
@@ -783,13 +323,13 @@ async def _render_or_raise(url: str, browser_url: str, timeout_s: float, fallbac
         title, text = await asyncio.to_thread(extract_html, html, final_url)
         via = "browser" if engine == _BROWSER_ENGINES[0] else f"browser:{engine}"
         rendered = Extracted(final_url, title, text, via, html=html)
-        if text and not _is_challenge(title, text):
+        if text and not is_challenge(title, text):
             break
-        if detect_wall(title, text) not in (None, *_JS_CHALLENGES):
+        if detect_wall(title, text) not in (None, *JS_CHALLENGES):
             break  # captcha / login wall: another engine will not help
     if rendered is not None:
-        _raise_if_wall(rendered)
-        _raise_if_blocked(rendered)
+        raise_if_wall(rendered)
+        raise_if_blocked(rendered)
         if rendered.text:
             return rendered
     if fallback is not None and fallback.text:
@@ -814,7 +354,7 @@ async def render_page(url: str, browser_url: str, engine: str, *, timeout: float
     return str(data["final_url"]), str(data["html"])
 
 
-def _cache_get(key: _CacheKey) -> tuple[Extracted, _Anchor | None] | None:
+def _cache_get(key: _CacheKey) -> tuple[Extracted, Anchor | None] | None:
     entry = _cache.get(key)
     if entry is None:
         return None
@@ -826,7 +366,7 @@ def _cache_get(key: _CacheKey) -> tuple[Extracted, _Anchor | None] | None:
     return extracted, anchor
 
 
-def _cache_put(key: _CacheKey, extracted: Extracted, anchor: _Anchor | None) -> None:
+def _cache_put(key: _CacheKey, extracted: Extracted, anchor: Anchor | None) -> None:
     _cache[key] = (time.monotonic(), extracted, anchor)
     _cache.move_to_end(key)
     while len(_cache) > _CACHE_SIZE:
@@ -1180,9 +720,9 @@ def _github_entry_lines(entries: list[dict]) -> list[str]:
 def _fmt_size(size: int) -> str:
     if size < 1024:
         return f"{size} B"
-    if size < _MB:
+    if size < MB:
         return f"{size / 1024:.1f} KB"
-    return f"{size / _MB:.1f} MB"
+    return f"{size / MB:.1f} MB"
 
 
 async def _github_repo(client: httpx.AsyncClient, owner: str, repo: str, ref: str | None) -> AdapterResult:
@@ -1814,7 +1354,7 @@ async def _statuspage_incident(client: httpx.AsyncClient, url: httpx.URL) -> Ada
 
 
 # Incident JSON is a few KB. This adapter runs on any host, so it reads no more than this.
-_STATUSPAGE_MAX_BYTES = 2 * _MB
+_STATUSPAGE_MAX_BYTES = 2 * MB
 
 
 async def _statuspage_json(client: httpx.AsyncClient, url: httpx.URL) -> Any:
@@ -1824,7 +1364,7 @@ async def _statuspage_json(client: httpx.AsyncClient, url: httpx.URL) -> Any:
         async with client.stream("GET", url, headers={"Accept": "application/json"}) as resp:
             if resp.status_code != 200:
                 return None
-            data, capped = await _read_capped(resp.aiter_bytes(), _STATUSPAGE_MAX_BYTES)
+            data, capped = await read_capped(resp.aiter_bytes(), _STATUSPAGE_MAX_BYTES)
     except (httpx.HTTPError, ToolError) as exc:
         LOGGER.warning("statuspage request failed: {!r}", exc)
         return None

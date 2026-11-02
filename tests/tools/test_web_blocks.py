@@ -2,7 +2,7 @@
 
 import pytest
 
-from yggdrasil.tools.web import detect_block, detect_wall
+from yggdrasil.tools.web.blocks import detect_block, detect_wall
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,8 @@ import pytest
 from tests.support.routes import Answer, Routes
 from yggdrasil.tools import web
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web import API_USER_AGENT, Extracted
+from yggdrasil.tools.web import Extracted
+from yggdrasil.tools.web.model import API_USER_AGENT
 
 VIEW_API = "https://api.bilibili.com/x/web-interface/view"
 SUBTITLES_API = "https://api.bilibili.com/x/v2/dm/view"
