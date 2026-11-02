@@ -10,12 +10,13 @@ import nonebot
 import pytest
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, NetworkError
 
+from tests.support.groups import fresh_group
 from tests.support.onebot import ScriptedBot, group_message
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.runtime import GroupInfo, Snapshot, TriggerRule
 from yggdrasil.triggers import bots
 
-GROUP, SELF = 990001, 10001
+GROUP, SELF = fresh_group(), 10001
 MEMBER, TAGGED, LISTED, OFFICIAL, OWNER, NEWCOMER = 20001, 20002, 20003, 20004, 20005, 20006
 TLDR = TriggerRule(
     id=1,

@@ -10,6 +10,8 @@ from tests.support.routes import Routes
 from yggdrasil.db.models import ConfigAudit, Provider, SearchProvider
 from yggdrasil.db.session import get_session
 
+pytestmark = pytest.mark.db
+
 type Cleanup = list[tuple[type[Provider | SearchProvider], int]]
 
 

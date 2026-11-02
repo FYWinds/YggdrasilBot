@@ -81,11 +81,3 @@ def make_manager(kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) 
         return manager
 
     return make
-
-
-@pytest.fixture
-async def fake_redis() -> AsyncIterator[fakeredis.FakeAsyncRedis]:
-    # In-process Redis (Lua via lupa): the tests never touch a shared server.
-    conn = fakeredis.FakeAsyncRedis(decode_responses=True)
-    yield conn
-    await conn.aclose()

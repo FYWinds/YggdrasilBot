@@ -12,14 +12,17 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import select, update
 
 from tests.support.db import insert_message, purge_groups
+from tests.support.groups import fresh_group
 from tests.support.models import prompt_of, streaming_model
 from yggdrasil.db.models import Message, PipelineState, Topic, TopicMessage
 from yggdrasil.db.session import get_session
 from yggdrasil.memory import glossary, llm, profiles, search, topics
 from yggdrasil.memory.topics import archive_closed, consolidate_group
 
-SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP = 990003, 990004, 990002
-PROFILE_GROUP, GLOSSARY_GROUP = 990005, 990006
+pytestmark = pytest.mark.db
+
+SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP = fresh_group(), fresh_group(), fresh_group()
+PROFILE_GROUP, GLOSSARY_GROUP = fresh_group(), fresh_group()
 GROUPS = (SEARCH_GROUP, OTHER_GROUP, TOPIC_GROUP, PROFILE_GROUP, GLOSSARY_GROUP)
 
 type Insert = Callable[..., Awaitable[int]]

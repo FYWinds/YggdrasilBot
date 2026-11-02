@@ -16,6 +16,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCall
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy import delete
 
+from tests.support.groups import fresh_group
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.db.models import Invocation, Message, ModerationResult, TranscriptBlob, UserAlias
 from yggdrasil.db.session import get_session
@@ -23,7 +24,9 @@ from yggdrasil.transcript import store
 from yggdrasil.transcript.capture import TranscriptRecorder
 from yggdrasil.transcript.notes import TraceNotes, blob_id
 
-GROUP, ASKER, POSTER = 990071, 10001, 10003
+pytestmark = pytest.mark.db
+
+GROUP, ASKER, POSTER = fresh_group(), 10001, 10003
 
 
 @dataclass

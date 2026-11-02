@@ -64,15 +64,10 @@ def _config(*, fallback_format: str = "anthropic") -> dict[str, Any]:
     return {"providers": {1: primary, 2: backup}, "routes": {"agent": route}}
 
 
-@pytest.fixture
-async def redis(
-    monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]
-) -> AsyncIterator[fakeredis.FakeAsyncRedis]:
-    conn = fakeredis.FakeAsyncRedis(decode_responses=True)
-    monkeypatch.setattr(grants, "redis_client", lambda: conn)
+@pytest.fixture(autouse=True)
+def providers(snapshot: Callable[..., Snapshot]) -> None:
+    """The agent route the relay serves: the primary provider and the fallback."""
     snapshot(**_config())
-    yield conn
-    await conn.aclose()
 
 
 @pytest.fixture
@@ -82,7 +77,7 @@ def upstream() -> Routes:
 
 
 @pytest.fixture
-async def client(redis: fakeredis.FakeAsyncRedis, upstream: Routes) -> AsyncIterator[httpx.AsyncClient]:
+async def client(upstream: Routes) -> AsyncIterator[httpx.AsyncClient]:
     async with upstream.client() as http:
         app = Relay(http).app()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://relay.test") as c:
@@ -102,18 +97,18 @@ def _sse_response(_request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, headers={"content-type": "text/event-stream", "request-id": "req_1"}, content=chunks())
 
 
-async def test_token_lifecycle(redis: fakeredis.FakeAsyncRedis) -> None:
+async def test_token_lifecycle(fake_redis: fakeredis.FakeAsyncRedis) -> None:
     token = await _token(ttl_s=600)
     assert len(token) >= 40
     grant = await authenticate(token)
     assert grant is not None
     assert (grant.group_id, grant.job_id, grant.models) == (10001, "job1", (MODEL,))
     # Only the hash is stored, and it expires with the grant.
-    keys = await redis.keys("ygg:relay:*")
+    keys = await fake_redis.keys("ygg:relay:*")
     assert all(token not in str(k) for k in keys)
-    values = [await redis.get(k) for k in keys]
+    values = [await fake_redis.get(k) for k in keys]
     assert all(token not in str(v or "") for v in values)
-    assert 0 < await redis.ttl(token_key(grants.digest(token))) <= 600
+    assert 0 < await fake_redis.ttl(token_key(grants.digest(token))) <= 600
 
     reissued = await _token()
     assert await authenticate(token) is None  # the job's previous token stops working
@@ -121,26 +116,26 @@ async def test_token_lifecycle(redis: fakeredis.FakeAsyncRedis) -> None:
 
     await revoke_token("job1")
     assert await authenticate(reissued) is None
-    assert await redis.keys("ygg:relay:*") == []
+    assert await fake_redis.keys("ygg:relay:*") == []
     await revoke_token("job1")  # idempotent
 
 
-async def test_expired_grant_is_rejected(redis: fakeredis.FakeAsyncRedis) -> None:
+async def test_expired_grant_is_rejected(fake_redis: fakeredis.FakeAsyncRedis) -> None:
     token = await _token()
     key = token_key(grants.digest(token))
-    data = json.loads(await redis.get(key) or "{}")
-    await redis.set(key, json.dumps({**data, "expires_at": data["expires_at"] - 3600}))
+    data = json.loads(await fake_redis.get(key) or "{}")
+    await fake_redis.set(key, json.dumps({**data, "expires_at": data["expires_at"] - 3600}))
     assert await authenticate(token) is None
 
 
-async def test_issue_rejects_empty_grants(redis: fakeredis.FakeAsyncRedis) -> None:
+async def test_issue_rejects_empty_grants() -> None:
     with pytest.raises(ValueError, match="model"):
         await issue_token(group_id=1, job_id="j", models=[], max_input_tokens=1, max_output_tokens=1, ttl_s=60)
     with pytest.raises(ValueError, match="ttl"):
         await issue_token(group_id=1, job_id="j", models=[MODEL], max_input_tokens=1, max_output_tokens=1, ttl_s=0)
 
 
-async def test_relay_models_come_from_the_chat_route(redis: fakeredis.FakeAsyncRedis) -> None:
+async def test_relay_models_come_from_the_chat_route() -> None:
     models = await relay_models()
     assert [m.id for m in models] == [MODEL, FALLBACK]
     opus = models[0]
@@ -300,7 +295,7 @@ def test_sse_usage_survives_any_chunking() -> None:
 
 
 async def test_parallel_requests_cannot_overrun_the_output_budget(
-    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
     both_upstream = asyncio.Event()
 
@@ -321,11 +316,11 @@ async def test_parallel_requests_cannot_overrun_the_output_budget(
     # The second request was clamped to what the first one's reservation left.
     assert sorted(json.loads(r.content)["max_tokens"] for r in upstream.seen) == [20, 80]
     assert (await relay_usage("job1")).output_tokens == 100
-    assert await redis.hgetall(pending_key("job1")) == {}  # pyright: ignore[reportGeneralTypeIssues]
+    assert await fake_redis.hgetall(pending_key("job1")) == {}  # pyright: ignore[reportGeneralTypeIssues]
 
 
 async def test_failed_requests_release_their_reservation(
-    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
     upstream.answers["gw.example.com"] = lambda _r: httpx.Response(400, json={"type": "error"})
     token = await _token(max_output_tokens=100)
@@ -334,21 +329,21 @@ async def test_failed_requests_release_their_reservation(
             "/v1/messages", json={"model": MODEL, "max_tokens": 80, "messages": []}, headers={"x-api-key": token}
         )
         assert r.status_code == 400
-    assert await redis.hgetall(pending_key("job1")) == {}  # pyright: ignore[reportGeneralTypeIssues]
+    assert await fake_redis.hgetall(pending_key("job1")) == {}  # pyright: ignore[reportGeneralTypeIssues]
 
 
 async def test_lapsed_reservations_stop_counting(
-    client: httpx.AsyncClient, upstream: Routes, redis: fakeredis.FakeAsyncRedis
+    client: httpx.AsyncClient, upstream: Routes, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
     upstream.answers["gw.example.com"] = lambda r: httpx.Response(200, json={"usage": {"output_tokens": 1}})
     token = await _token(max_output_tokens=100)
-    await redis.hset(pending_key("job1"), mapping={"dead": "100:1", "garbage": "x"})
+    await fake_redis.hset(pending_key("job1"), mapping={"dead": "100:1", "garbage": "x"})
     r = await client.post(
         "/v1/messages", json={"model": MODEL, "max_tokens": 50, "messages": []}, headers={"x-api-key": token}
     )
     assert r.status_code == 200
     assert json.loads(upstream.seen[0].content)["max_tokens"] == 50
-    assert await redis.hgetall(pending_key("job1")) == {}
+    assert await fake_redis.hgetall(pending_key("job1")) == {}
 
 
 def test_clamp_keeps_thinking_budget_below_max_tokens() -> None:

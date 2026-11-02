@@ -8,10 +8,13 @@ import httpx
 import pytest
 from sqlalchemy import delete
 
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import Invocation, UserAlias
 from yggdrasil.db.session import get_session
 
-GROUP, USER, STRANGER = 990061, 10001, 10002
+pytestmark = pytest.mark.db
+
+GROUP, USER, STRANGER = fresh_group(), 10001, 10002
 
 
 @pytest.fixture

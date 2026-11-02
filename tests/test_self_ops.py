@@ -3,6 +3,7 @@ import random
 import pytest
 from sqlalchemy import delete
 
+from tests.support.groups import fresh_group
 from yggdrasil.agent.permissions import may_recall
 from yggdrasil.db.models import Invocation
 from yggdrasil.db.session import get_session
@@ -28,8 +29,9 @@ def test_merge_patch_merges_nested_and_null_removes_back_to_inherited() -> None:
     assert doc["persona"] == {"name": "x"}  # input untouched
 
 
+@pytest.mark.db
 async def test_only_the_asker_or_group_staff_may_recall_a_bot_answer() -> None:
-    group_id, asker, other = -random.randint(10**6, 10**7), 111, 222
+    group_id, asker, other = fresh_group(), 111, 222
     bot_msg = random.randint(1, 2**31)
     async with get_session() as s:
         s.add(Invocation(group_id=group_id, user_id=asker, handler="chat", reply_qq_message_id=bot_msg, status="ok"))

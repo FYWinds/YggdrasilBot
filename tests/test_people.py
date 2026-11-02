@@ -57,7 +57,7 @@ def test_normalize_mentions() -> None:
 
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``build_context`` without a database: fixed names, no glossary, nothing to flush."""
+    """``build_context`` without a database: fixed names, no glossary, profiles or topics, nothing to flush."""
 
     async def resolve(group_id: int | None, user_ids: Any, *, bot_name: str, self_id: int | None, texts: Any) -> People:
         assert set(user_ids) >= {FRIEND, SELF}
@@ -66,15 +66,19 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     async def nothing(*_: Any, **__: Any) -> Any:
         return []
 
-    monkeypatch.setattr(context, "resolve", resolve)
-    monkeypatch.setattr(context, "_glossary_hits", nothing)
-    monkeypatch.setattr(context.WRITER, "flush", nothing)
-    monkeypatch.setattr(search, "recent_messages", nothing)
+    async def no_profiles(*_: Any) -> dict[int, Any]:
+        return {}
 
     async def no_row(*_: Any) -> None:
         return None
 
+    monkeypatch.setattr(context, "resolve", resolve)
+    monkeypatch.setattr(context, "_glossary_hits", nothing)
+    monkeypatch.setattr(context.WRITER, "flush", nothing)
+    monkeypatch.setattr(search, "recent_messages", nothing)
     monkeypatch.setattr(search, "find_by_qq_id", no_row)
+    monkeypatch.setattr(search, "profiles", no_profiles)
+    monkeypatch.setattr(search, "open_topics", nothing)
 
 
 def _event(segs: Message, reply: dict[str, Any] | None = None) -> GroupMessageEvent:

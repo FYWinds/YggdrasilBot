@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
+from tests.support.groups import fresh_group
 from tests.support.models import prompt_of, streaming_model
 from yggdrasil.agent import tools
 from yggdrasil.db.models import DailyDigest, MemoryVector, Topic, TopicMessage, UserAlias, UserProfile, UserProfileFact
@@ -21,7 +22,9 @@ from yggdrasil.db.session import get_session
 from yggdrasil.memory import curation, digest, llm, profiles, search
 from yggdrasil.memory.common import LOCAL_TZ, fact_weight, local, topic_weight
 
-GROUP = 990007
+pytestmark = pytest.mark.db
+
+GROUP = fresh_group()
 USER = 20003
 NAMES = {20001: "阿明", 20002: "小红", 20003: "老王"}
 

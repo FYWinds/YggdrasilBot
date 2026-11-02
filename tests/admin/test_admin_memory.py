@@ -7,12 +7,15 @@ import httpx
 import pytest
 from sqlalchemy import delete
 
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import UserProfile, UserProfileFact
 from yggdrasil.db.session import get_session
 from yggdrasil.memory.curation import cap_facts
 from yggdrasil.settings import MemorySettings
 
-GROUP, USER = 990093, 20003
+pytestmark = pytest.mark.db
+
+GROUP, USER = fresh_group(), 20003
 
 
 async def _cleanup() -> None:

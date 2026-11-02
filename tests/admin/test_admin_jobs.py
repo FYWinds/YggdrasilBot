@@ -10,15 +10,17 @@ import httpx
 import pytest
 from sqlalchemy import delete
 
-from yggdrasil.admin import sandbox_api
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import SandboxJob, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.sandbox import archive
-from yggdrasil.sandbox.jobs import ACTIVE_KEY, Job, JobEvent, JobRunner, JobStatus, job_key
+from yggdrasil.sandbox.jobs import ACTIVE_KEY, Job, JobEvent, JobStatus, job_key
 from yggdrasil.transcript import store
 from yggdrasil.transcript.schema import Entry, TextPart
 
-GROUP, OTHER = 990051, 990052
+pytestmark = pytest.mark.db
+
+GROUP, OTHER = fresh_group(), fresh_group()
 
 
 def _job(title: str, status: JobStatus, *, group: int = GROUP, ago: float = 0, job_id: str | None = None) -> Job:
@@ -53,10 +55,8 @@ class Jobs:
 
 
 @pytest.fixture
-async def jobs(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Jobs]:
+async def jobs(fake_redis: fakeredis.FakeAsyncRedis) -> AsyncIterator[Jobs]:
     tag = uuid.uuid4().hex[:8]
-    redis = fakeredis.FakeAsyncRedis(decode_responses=True)
-    monkeypatch.setattr(sandbox_api, "runner", lambda: JobRunner(redis=lambda: redis))  # pyright: ignore[reportArgumentType, reportReturnType]
     j = Jobs(
         tag,
         running=_job(f"训练 {tag}", "running", ago=10),
@@ -65,15 +65,14 @@ async def jobs(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Jobs]:
         both=_job(f"回报中 {tag}", "succeeded", ago=50),
     )
     for live in (j.running, j.both):
-        await redis.hset(job_key(live.id), mapping=live.to_hash())  # pyright: ignore[reportArgumentType, reportGeneralTypeIssues]
-        await redis.sadd(ACTIVE_KEY, live.id)  # pyright: ignore[reportGeneralTypeIssues]
+        await fake_redis.hset(job_key(live.id), mapping=live.to_hash())  # pyright: ignore[reportArgumentType, reportGeneralTypeIssues]
+        await fake_redis.sadd(ACTIVE_KEY, live.id)  # pyright: ignore[reportGeneralTypeIssues]
     events = [JobEvent(at=time.time() - 90 + i, text=f"事件 {i}") for i in range(50)]
     for done in (j.done, j.failed_other_group, j.both):
         await archive.archive_job(done, events)
     yield j
     async with get_session() as session:
         await session.execute(delete(SandboxJob).where(SandboxJob.title.like(f"%{tag}")))
-    await redis.aclose()
 
 
 async def _list(client: httpx.AsyncClient, **params: str | int) -> tuple[list[str], int]:

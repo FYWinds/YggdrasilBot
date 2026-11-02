@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from nonebot.adapters.onebot.v11 import ActionFailed, NetworkError
 
+from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
 from yggdrasil.delivery import send
@@ -22,7 +23,7 @@ from yggdrasil.napcat.models import (
 )
 from yggdrasil.settings import InteractionSettings
 
-GROUP = 990001
+GROUP = fresh_group()
 SELF = 10000
 FORWARD_ID = 41
 TEXT_ID = 42

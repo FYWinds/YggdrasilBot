@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 
 from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
+from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
 from yggdrasil.agent import tools
 from yggdrasil.agent.deps import Deps
@@ -23,7 +24,9 @@ from yggdrasil.napcat.api import node_seg, text_seg
 from yggdrasil.napcat.models import ForwardResult
 from yggdrasil.settings import ContextSettings, InteractionSettings, Settings
 
-GROUP = 990021
+pytestmark = pytest.mark.db
+
+GROUP = fresh_group()
 SELF = 10000
 HEADER = re.compile(r"^\[\d{2}-\d{2} \d{2}:\d{2}\] ")  # a chat line's time
 MINUTE = timedelta(minutes=1)

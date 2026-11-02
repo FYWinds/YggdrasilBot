@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 
 from tests.support.db import purge_groups
 from tests.support.files import png
+from tests.support.groups import fresh_group
 from tests.support.models import streaming_model
 from yggdrasil.db.models import Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
@@ -22,7 +23,9 @@ from yggdrasil.stickers import collect, tagging
 from yggdrasil.stickers.collect import COLLECTOR, TOO_LARGE, PendingFetch
 from yggdrasil.tools.errors import ToolError
 
-GROUP_A, GROUP_B = 990021, 990022
+pytestmark = pytest.mark.db
+
+GROUP_A, GROUP_B = fresh_group(), fresh_group()
 TOP = 10**12  # seen_count that puts test stickers first in the tagging queue
 
 

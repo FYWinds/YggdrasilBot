@@ -1,21 +1,21 @@
 """One answer per tldr target. Prod answered twice when two members replied "tldr" to one message a second apart and
 when someone pasted the same link again (two separate QQ messages each time, not a redelivered event)."""
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import fakeredis
 import pytest
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 
+from tests.support.groups import fresh_group
 from tests.support.onebot import group_message
-from yggdrasil.pipeline import invoke, ratelimit, repeats
+from yggdrasil.pipeline import invoke
 from yggdrasil.runtime import GroupInfo, Snapshot
 from yggdrasil.settings import InteractionSettings
 from yggdrasil.triggers.index import Resolved
 
-GROUP, SELF, ALICE, BOB, OWNER = 990001, 10001, 20001, 20002, 20003
+GROUP, SELF, ALICE, BOB, OWNER = fresh_group(), 10001, 20001, 20002, 20003
 QUOTED, OTHER_QUOTED = 500, 501
 TLDR = Resolved("tldr", 1, "", (), "quoted_or_self", 0, False)
 CHAT = Resolved("chat", 2, "", (), "quoted_or_self", 0, False)
@@ -31,11 +31,8 @@ class Group:
 
 
 @pytest.fixture
-async def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> AsyncIterator[Group]:
+def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> Group:
     g = Group()
-    conn = fakeredis.FakeAsyncRedis(decode_responses=True)
-    monkeypatch.setattr(repeats, "redis_client", lambda: conn)
-    monkeypatch.setattr(ratelimit, "redis_client", lambda: conn)
     no_limits = {"ratelimit": {"user_per_minute": 0, "group_per_minute": 0}}
     snapshot(groups={GROUP: GroupInfo(GROUP, "g", True, no_limits)}, superusers=frozenset({OWNER}))
 
@@ -48,8 +45,7 @@ async def group(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapsho
 
     monkeypatch.setattr(invoke, "react", react)
     monkeypatch.setattr(invoke.Invocator, "run", run)
-    yield g
-    await conn.aclose()
+    return g
 
 
 def message(

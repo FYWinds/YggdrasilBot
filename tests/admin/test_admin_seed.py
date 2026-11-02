@@ -9,11 +9,14 @@ import httpx
 import pytest
 from sqlalchemy import delete, func, select
 
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import Invocation, Message, Transcript
 from yggdrasil.db.session import get_session
 from yggdrasil.devtools import seed
 
-OTHER = 990091
+pytestmark = pytest.mark.db
+
+OTHER = fresh_group()
 
 
 @pytest.fixture

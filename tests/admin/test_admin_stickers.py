@@ -8,10 +8,13 @@ import httpx
 import pytest
 from sqlalchemy import delete
 
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import Group, Sticker, StickerBlob, StickerUsage
 from yggdrasil.db.session import get_session
 
-GROUP, NAMED_GROUP = 990041, 990042
+pytestmark = pytest.mark.db
+
+GROUP, NAMED_GROUP = fresh_group(), fresh_group()
 
 
 @dataclass

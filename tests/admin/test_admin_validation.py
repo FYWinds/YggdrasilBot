@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from tests.admin.helpers import ADMIN
+from tests.support.groups import fresh_group
 from tests.support.routes import Routes
 from yggdrasil.admin import providers as providers_api
 from yggdrasil.db.models import CommandTrigger, ConfigAudit, Group, Provider, SearchProvider, SettingsDoc, TaskRoute
@@ -46,6 +47,7 @@ async def test_trigger_validation_rejects(
     assert published == []
 
 
+@pytest.mark.db
 async def test_trigger_roundtrip_and_test_endpoint_unaffected_by_unknown_stored_handler(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None
 ) -> None:
@@ -68,6 +70,7 @@ async def test_trigger_roundtrip_and_test_endpoint_unaffected_by_unknown_stored_
             await s.execute(delete(CommandTrigger).where(CommandTrigger.id == rule["id"]))
 
 
+@pytest.mark.db
 @pytest.mark.parametrize(
     "doc",
     [
@@ -94,6 +97,7 @@ async def test_global_settings_put_rejects_invalid(client: httpx.AsyncClient, pu
         assert (dict(after.value) if after else None) == before_value
 
 
+@pytest.mark.db
 async def test_global_settings_roundtrip_is_sparse(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None
 ) -> None:
@@ -121,10 +125,11 @@ async def test_global_settings_roundtrip_is_sparse(
                 doc.value = before_value
 
 
+@pytest.mark.db
 async def test_group_settings_validated_over_global(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None
 ) -> None:
-    gid = 900_000_000_000 + uuid.uuid4().int % 1_000_000
+    gid = fresh_group()
     try:
         assert (await client.put(f"/api/groups/{gid}", json={"name": "t", "enabled": False})).status_code == 200
         bad = await client.put(f"/api/settings/groups/{gid}", json={"ratelimit": {"user_per_minute": "many"}})
@@ -146,6 +151,7 @@ async def test_group_settings_validated_over_global(
             await s.execute(delete(Group).where(Group.group_id == gid))
 
 
+@pytest.mark.db
 async def test_provider_key_is_never_returned(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None
 ) -> None:
@@ -194,6 +200,7 @@ async def test_provider_key_is_never_returned(
             await s.execute(delete(Provider).where(Provider.id == pid))
 
 
+@pytest.mark.db
 async def test_search_provider_key_rules_and_default_endpoint(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None
 ) -> None:
@@ -247,6 +254,7 @@ _CATALOG = Catalog(
 )
 
 
+@pytest.mark.db
 async def test_aliases_resolve_caps_and_routes_reject_incapable_models(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -361,6 +369,7 @@ async def _restore_route(task: str, snap: dict | None) -> None:
             setattr(r, k, v)
 
 
+@pytest.mark.db
 async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -429,6 +438,7 @@ async def test_refresh_merges_openrouter_image_models_with_upstream_caps(
             await s.execute(delete(Provider).where(Provider.id == pid))
 
 
+@pytest.mark.db
 async def test_refresh_plain_openai_upstream_single_call_without_upstream_caps(
     client: httpx.AsyncClient, published: list[str], cleanup_audit: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

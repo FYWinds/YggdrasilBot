@@ -13,21 +13,26 @@ import pytest
 from sqlalchemy import select, text, update
 
 from tests.support.db import embed_space, insert_message, purge_groups, unit_vector
+from tests.support.groups import fresh_group
 from yggdrasil.db.models import Message, MessageChunk
 from yggdrasil.db.session import get_session
 from yggdrasil.llm import registry
 from yggdrasil.memory import chunking, vectors
 
-GROUP = 990041
+pytestmark = pytest.mark.db
+
+GROUP = fresh_group()
 
 
 async def _open_transactions() -> int:
-    """Other connections of this database sitting in an open transaction."""
+    """The test run's other connections sitting in an open transaction (all of them carry its application_name, so
+    a bot sharing the database doesn't count)."""
     async with get_session() as s:
         return int(
             await s.scalar(
                 text(
                     "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND application_name = current_setting('application_name') "
                     "AND state LIKE 'idle in transaction%' AND pid <> pg_backend_pid()"
                 )
             )

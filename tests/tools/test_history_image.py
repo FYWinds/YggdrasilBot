@@ -11,6 +11,7 @@ from pydantic_ai import BinaryContent, ToolReturn
 from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups
 from tests.support.files import png
+from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
 from yggdrasil.agent import media, tools
 from yggdrasil.agent.deps import Handle
@@ -18,7 +19,7 @@ from yggdrasil.agent.tools import _resolve
 from yggdrasil.napcat.models import FileInfo, FileUrl, ForwardMsg, MessageRecord, Segment, Sender
 from yggdrasil.tools.errors import ToolError
 
-GROUP, OTHER = 990011, 990012
+GROUP, OTHER = fresh_group(), fresh_group()
 
 
 def _img(name: str) -> dict[str, Any]:
@@ -46,6 +47,7 @@ async def ids() -> AsyncIterator[dict[str, int]]:
     await purge_groups(GROUP, OTHER)
 
 
+@pytest.mark.db
 async def test_a_message_ref_picks_the_kth_attachment_of_the_wanted_kind(ids: dict[str, int]) -> None:
     ctx = run_ctx(group_id=GROUP)
     first = await _resolve(ctx, f"#{ids['two']}", "image")
@@ -59,6 +61,7 @@ async def test_a_message_ref_picks_the_kth_attachment_of_the_wanted_kind(ids: di
     assert (await _resolve(ctx, f"#{ids['link']}", "url", "card")).data == {"url": "https://example.com/post"}
 
 
+@pytest.mark.db
 async def test_a_handle_of_another_kind_says_what_it_is(ids: dict[str, int]) -> None:
     ctx = run_ctx(group_id=GROUP)
     image = await _resolve(ctx, f"#{ids['two']}", "image")
@@ -66,6 +69,7 @@ async def test_a_handle_of_another_kind_says_what_it_is(ids: dict[str, int]) -> 
         await _resolve(ctx, image.key, "forward")
 
 
+@pytest.mark.db
 @pytest.mark.parametrize(
     ("ref", "why"),
     [
@@ -94,6 +98,7 @@ def _forwards() -> FakeNapCat:
     return FakeNapCat({"get_forward_msg": ForwardMsg(messages=[node])})
 
 
+@pytest.mark.db
 async def test_a_forward_from_the_history_opens_by_message_number(ids: dict[str, int]) -> None:
     # The prod failure: a remark replied to a forward that was only in the history; expand_forward("#<id>") said
     # "找不到句柄" because only fwd#N handles were accepted.
@@ -128,6 +133,7 @@ def _shown_image(result: Any) -> BinaryContent:
     return next(c for c in cast(list[Any], result.content) if isinstance(c, BinaryContent))
 
 
+@pytest.mark.db
 async def test_a_picture_sent_as_a_group_file_can_be_viewed(ids: dict[str, int], group_files: None) -> None:
     # The prod failure: view_image refused file#1 ("是文件，不是图片") and read_file sent the model back to view_image.
     ctx = run_ctx(group_id=GROUP, api=_files())
