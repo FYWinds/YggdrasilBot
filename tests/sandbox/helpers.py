@@ -14,7 +14,7 @@ import pytest
 from pydantic_ai.workspaces import CommandResult, FileEntry
 
 from tests.support.groups import fresh_group
-from yggdrasil.sandbox.backend import SandboxdWorkspace, _Exec
+from yggdrasil.sandbox.backend import ExecResult, SandboxdWorkspace
 from yggdrasil.sandbox.manager import _TREE_SCRIPT, WorkspaceManager
 from yggdrasil.settings import ToolSettings
 
@@ -121,15 +121,15 @@ class MemorySandboxd:
             assert ws.ref is not None
             return pods.files[ws.ref.id]
 
-        async def exec_(ws: SandboxdWorkspace, argv: Sequence[str], **_: Any) -> _Exec:
+        async def exec_(ws: SandboxdWorkspace, argv: Sequence[str], **_: Any) -> ExecResult:
             fs = await files(ws)
             if list(argv[:3]) == ["/bin/sh", "-c", _TREE_SCRIPT]:
                 root = argv[4].rstrip("/") + "/"
                 rows = [f"f\t{len(v)}\t0\t{k.removeprefix(root)}" for k, v in sorted(fs.items()) if k.startswith(root)]
-                return _Exec(0, "\n".join(rows).encode(), b"")
+                return ExecResult(0, "\n".join(rows).encode(), b"")
             if argv[-1].endswith("/NOTES.md"):
-                return _Exec(0, fs[argv[-1]], b"") if argv[-1] in fs else _Exec(1, b"", b"")
-            return _Exec(0, b"0\n", b"")
+                return ExecResult(0, fs[argv[-1]], b"") if argv[-1] in fs else ExecResult(1, b"", b"")
+            return ExecResult(0, b"0\n", b"")
 
         async def start(ws: SandboxdWorkspace, conn: Any, argv: list[str], env: Any, seconds: Any, note: Any):
             return CommandResult(exit_code=0, stdout="", stderr="")

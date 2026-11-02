@@ -63,8 +63,11 @@ def make_manager(kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) 
     """``make_manager(link_domain=None, redis=None)``: a ``WorkspaceManager`` on the fake API server and ``redis``
     (default the test's fake Redis), its pods always healthy."""
 
+    async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
+        return True
+
     def make(*, link_domain: str | None = None, redis: Any = None) -> WorkspaceManager:
-        manager = WorkspaceManager(
+        return WorkspaceManager(
             token="test",
             namespace="ns",
             warmpool="pool",
@@ -72,12 +75,7 @@ def make_manager(kube_client: KubeClient, fake_redis: fakeredis.FakeAsyncRedis) 
             kube=kube_client,
             redis=lambda: redis or fake_redis,
             endpoint=lambda _ip: Endpoint("http://127.0.0.1:9", "127.0.0.1:9"),
+            healthy=healthy,
         )
-
-        async def healthy(_http: httpx.AsyncClient, _ip: str) -> bool:
-            return True
-
-        manager._healthy = healthy  # pyright: ignore[reportAttributeAccessIssue]
-        return manager
 
     return make

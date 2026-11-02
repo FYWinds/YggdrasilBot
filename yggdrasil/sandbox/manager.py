@@ -60,7 +60,7 @@ from yggdrasil.sandbox.state import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from redis.asyncio import Redis
@@ -380,6 +380,7 @@ class WorkspaceManager:
         kube: KubeClient | None = None,
         redis: Callable[[], Redis] = redis_client,
         endpoint: Callable[[str], Endpoint] = Endpoint.for_pod,
+        healthy: Callable[[httpx.AsyncClient, str], Awaitable[bool]] | None = None,
     ) -> None:
         self._token = token
         self._ns = namespace
@@ -389,6 +390,8 @@ class WorkspaceManager:
         self._redis = redis
         # Pod IP -> sandboxd endpoint; tests map it onto a local sandboxd with published ports.
         self._endpoint = endpoint
+        # Whether sandboxd on a pod IP answers /v1/health; tests that have no sandboxd pass their own.
+        self._healthy = healthy or self._sandboxd_healthy
         self._local_locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @property
@@ -919,7 +922,7 @@ class WorkspaceManager:
         await self._save(m, "expires_at", "last_used")
         return True
 
-    async def _healthy(self, http: httpx.AsyncClient, ip: str) -> bool:
+    async def _sandboxd_healthy(self, http: httpx.AsyncClient, ip: str) -> bool:
         try:
             return (await http.get(f"{self._endpoint(ip).rest_url}/v1/health")).status_code == 200
         except httpx.HTTPError:

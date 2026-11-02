@@ -15,7 +15,7 @@ from yggdrasil.agent.tools.images import MAX_IMAGES, attach_image
 from yggdrasil.agent.tools.sandbox import format_py, format_sh, py, safe_name, sandbox_put, sh
 from yggdrasil.moderation.image import ImageVerdict, parse_answer
 from yggdrasil.sandbox import SandboxError
-from yggdrasil.sandbox.backend import _Exec
+from yggdrasil.sandbox.backend import ExecResult
 from yggdrasil.sandbox.state import Link
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.tools.errors import ToolError
@@ -218,13 +218,13 @@ class FakeBackend:
     async def exists(self, path: str) -> bool:
         return path in self.files
 
-    async def exec(self, argv: list[str], *, seconds: float = 60, audit: str | None = None, **_: Any) -> _Exec:
+    async def exec(self, argv: list[str], *, seconds: float = 60, audit: str | None = None, **_: Any) -> ExecResult:
         self.calls.append(list(argv))
         if audit is not None:
             self.audits.append(audit)
         if argv[1:3] == ["py", "restart"]:
-            return _Exec(0, b'{"killed": true}\n', b"")
-        return _Exec(0, (json.dumps(self.result) + "\n").encode(), b"")
+            return ExecResult(0, b'{"killed": true}\n', b"")
+        return ExecResult(0, (json.dumps(self.result) + "\n").encode(), b"")
 
 
 class FakeSession:
@@ -318,8 +318,8 @@ async def test_helper_failure_is_a_tool_error_text():
     assert "no such file" in text
 
 
-async def _broken(argv: list[str], **_: Any) -> _Exec:
-    return _Exec(127, b"", b"no such file")
+async def _broken(argv: list[str], **_: Any) -> ExecResult:
+    return ExecResult(127, b"", b"no such file")
 
 
 async def test_py_applies_effects_keeps_the_kernel_and_returns_images(monkeypatch: pytest.MonkeyPatch):

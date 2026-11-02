@@ -8,9 +8,9 @@ import pytest
 from pydantic_ai.workspaces import FileEntry
 
 from yggdrasil.sandbox.backend import (
+    CommandBudget,
     CommandLimits,
     Endpoint,
-    _Budget,
     is_protected,
     parse_listing,
     rest_path,
@@ -108,7 +108,7 @@ def _limits(**kw: float) -> CommandLimits:
 
 
 def test_budget_defaults_caps_and_counts() -> None:
-    budget = _Budget(_limits())
+    budget = CommandBudget(_limits())
     assert budget.admit(None) == (20.0, None)
     timeout, note = budget.admit(500)
     assert timeout == 50.0
@@ -124,7 +124,7 @@ def test_budget_defaults_caps_and_counts() -> None:
 
 
 def test_budget_refuses_when_time_is_spent() -> None:
-    budget = _Budget(_limits(max_commands=10))
+    budget = CommandBudget(_limits(max_commands=10))
     budget.seconds = 99.5
     with pytest.raises(SandboxToolError, match="总时长"):
         budget.admit(5)
@@ -132,8 +132,8 @@ def test_budget_refuses_when_time_is_spent() -> None:
 
 
 def test_unlimited_budget_passes_timeout_through() -> None:
-    assert _Budget(None).admit(None) == (None, None)
-    assert _Budget(None).admit(7) == (7, None)
+    assert CommandBudget(None).admit(None) == (None, None)
+    assert CommandBudget(None).admit(7) == (7, None)
 
 
 def test_shutdown_time_idle_links_and_hard_cap() -> None:

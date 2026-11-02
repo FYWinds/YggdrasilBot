@@ -14,7 +14,7 @@ from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef
 
 from tests.sandbox.helpers import GROUP, OTHER_GROUP, FakeKube, reserve
 from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, WorkspaceInfo, WorkspaceManager
-from yggdrasil.sandbox.backend import _Exec
+from yggdrasil.sandbox.backend import ExecResult
 from yggdrasil.sandbox.manager import Listener
 from yggdrasil.sandbox.state import LinkRecord, group_lock_key, index_key, keep_key, links_json, lock_key, ws_key
 from yggdrasil.settings import ToolSettings
@@ -31,12 +31,12 @@ class Reaper:
         self.started = asyncio.Event()
         self.hold: asyncio.Event | None = None
 
-    async def __call__(self, argv: Sequence[str], **_: Any) -> _Exec:
+    async def __call__(self, argv: Sequence[str], **_: Any) -> ExecResult:
         self.calls.append(list(argv))
         self.started.set()
         if self.hold is not None:
             await self.hold.wait()
-        return _Exec(0, b"0\n", b"")
+        return ExecResult(0, b"0\n", b"")
 
 
 class Locks:

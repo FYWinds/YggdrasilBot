@@ -212,7 +212,9 @@ class CommandLimits:
 
 
 @dataclass
-class _Budget:
+class CommandBudget:
+    """What one invocation's commands have used of its ``CommandLimits`` (``None``: unlimited)."""
+
     limits: CommandLimits | None
     commands: int = 0
     seconds: float = 0.0
@@ -244,14 +246,18 @@ class _Budget:
         return wanted, note
 
 
-class _Exec(NamedTuple):
+class ExecResult(NamedTuple):
+    """A helper command's exit code and raw output (``SandboxdWorkspace.exec``)."""
+
     exit_code: int
     stdout: bytes
     stderr: bytes
 
 
 @dataclass
-class _Conn:
+class Connection:
+    """The gRPC channel and REST client of one sandboxd endpoint."""
+
     endpoint: Endpoint
     channel: grpc.aio.Channel
     stub: process_pb2_grpc.ProcessServiceStub
@@ -354,6 +360,7 @@ class SandboxdWorkspace:
         env: Mapping[str, str] | None = None,
         limits: CommandLimits | None = None,
         audit: Mapping[str, Any] | None = None,
+        connect: Callable[[Endpoint], Connection] | None = None,
     ) -> None:
         if ref is not None and ref.provider != PROVIDER:
             raise ValueError(f"not a sandboxd workspace ref: {ref!r}")
@@ -366,12 +373,14 @@ class SandboxdWorkspace:
         self._root = root
         self._env = dict(env or {})
         _validate_env(self._env)
-        self._budget = _Budget(limits)
+        self._budget = CommandBudget(limits)
         self._audit = dict(audit or {})
-        self._conn: _Conn | None = None
-        self._acquiring: asyncio.Task[_Conn] | None = None
+        self._conn: Connection | None = None
+        self._acquiring: asyncio.Task[Connection] | None = None
         self._notice: str | None = None
         self._gone = False
+        # Opens the connection to an endpoint (sandboxd's gRPC and REST ports; tests pass fakes).
+        self._connect = connect or self._dial
 
     # --- lifecycle -------------------------------------------------------------------------------------
 
@@ -404,7 +413,7 @@ class SandboxdWorkspace:
         if self._ref is None:
             self._ref = ref
 
-    async def _ensure(self) -> _Conn:
+    async def _ensure(self) -> Connection:
         if self._conn is not None:
             return self._conn
         if self._gone:
@@ -422,7 +431,7 @@ class SandboxdWorkspace:
                 self._acquiring = None
         return task.result()
 
-    async def _acquire(self) -> _Conn:
+    async def _acquire(self) -> Connection:
         attachment = await self._resolver.acquire(self._ref, self._record_ref)
         if self._ref is None:
             raise WorkspaceError("sandbox resolver returned without a workspace ref")
@@ -430,7 +439,7 @@ class SandboxdWorkspace:
         self._conn = self._connect(attachment.endpoint)
         return self._conn
 
-    def _connect(self, endpoint: Endpoint) -> _Conn:
+    def _dial(self, endpoint: Endpoint) -> Connection:
         channel = grpc.aio.insecure_channel(
             endpoint.grpc_target,
             options=[
@@ -441,9 +450,9 @@ class SandboxdWorkspace:
         http = httpx.AsyncClient(
             base_url=endpoint.rest_url, headers=self._headers, timeout=httpx.Timeout(120.0, connect=5.0)
         )
-        return _Conn(endpoint, channel, process_pb2_grpc.ProcessServiceStub(channel), http)
+        return Connection(endpoint, channel, process_pb2_grpc.ProcessServiceStub(channel), http)
 
-    async def _recover(self, conn: _Conn, cause: BaseException) -> _Conn:
+    async def _recover(self, conn: Connection, cause: BaseException) -> Connection:
         """After a connection failure: raise ``WorkspaceUnavailableError`` if the sandbox is gone, else return
         a connection to its (possibly new) endpoint."""
         assert self._ref is not None
@@ -494,7 +503,7 @@ class SandboxdWorkspace:
         except Exception:
             LOGGER.opt(exception=True).warning("sandbox touch failed for {}", self._ref.id)
 
-    async def _with_retry[T](self, op: Callable[[_Conn], Awaitable[T]], *, retry: bool = True) -> T:
+    async def _with_retry[T](self, op: Callable[[Connection], Awaitable[T]], *, retry: bool = True) -> T:
         conn = await self._ensure()
         await self._touch()
         for delay in (*_RETRY_DELAYS, None) if retry else (None,):
@@ -543,7 +552,7 @@ class SandboxdWorkspace:
             self._log_command(command, outcome, elapsed)
 
     async def _run_with_retry(
-        self, conn: _Conn, argv: list[str], env: dict[str, str], seconds: float | None, note: str | None
+        self, conn: Connection, argv: list[str], env: dict[str, str], seconds: float | None, note: str | None
     ) -> CommandResult:
         for delay in (*_RETRY_DELAYS, None):
             try:
@@ -562,7 +571,7 @@ class SandboxdWorkspace:
         raise AssertionError("unreachable")
 
     async def _start(
-        self, conn: _Conn, argv: list[str], env: dict[str, str], seconds: float | None, note: str | None
+        self, conn: Connection, argv: list[str], env: dict[str, str], seconds: float | None, note: str | None
     ) -> CommandResult:
         request = process_pb2.StartRequest(config=process_pb2.ProcessConfig(command=argv, env_vars=env))
         stdout, stderr = bytearray(), bytearray()
@@ -649,7 +658,7 @@ class SandboxdWorkspace:
         retry: bool = True,
         once: bool = False,
         audit: str | None = None,
-    ) -> _Exec:
+    ) -> ExecResult:
         """Run a helper command and return raw bytes. ``retry=False`` fails fast while sandboxd is unreachable
         instead of backing off. ``once``: the command is not idempotent (starts a process, writes into a pipe), so
         it is only retried while the connection is not even established; once sent, a lost connection raises
@@ -658,7 +667,7 @@ class SandboxdWorkspace:
         ``admit`` pass it."""
         args = list(argv)
 
-        async def op(conn: _Conn) -> _Exec:
+        async def op(conn: Connection) -> ExecResult:
             request = process_pb2.ExecuteRequest(config=process_pb2.ProcessConfig(command=args))
             if once:
                 try:
@@ -677,11 +686,11 @@ class SandboxdWorkspace:
                 if code == grpc.StatusCode.DEADLINE_EXCEEDED:
                     raise WorkspaceTimeoutError(f"workspace helper command timed out after {seconds:g}s") from e
                 if code == grpc.StatusCode.NOT_FOUND:
-                    return _Exec(127, b"", (e.details() or "not found").encode())
+                    return ExecResult(127, b"", (e.details() or "not found").encode())
                 if code == grpc.StatusCode.PERMISSION_DENIED:
-                    return _Exec(126, b"", (e.details() or "permission denied").encode())
+                    return ExecResult(126, b"", (e.details() or "permission denied").encode())
                 raise self._rpc_error(e) from e
-            return _Exec(response.exit_code, response.stdout, response.stderr)
+            return ExecResult(response.exit_code, response.stdout, response.stderr)
 
         if audit is None:
             return await self._with_retry(op, retry=retry)
@@ -702,11 +711,11 @@ class SandboxdWorkspace:
             self._budget.seconds += elapsed
             self._log_command(audit, outcome, elapsed)
 
-    async def _script(self, script: str, *args: str) -> _Exec:
+    async def _script(self, script: str, *args: str) -> ExecResult:
         return await self.exec(["/bin/sh", "-c", script, "sh", *args])
 
     @staticmethod
-    def _raise_for(result: _Exec, path: str, what: str) -> None:
+    def _raise_for(result: ExecResult, path: str, what: str) -> None:
         code = result.exit_code
         if code == 0:
             return
@@ -736,7 +745,7 @@ class SandboxdWorkspace:
         if result.exit_code != _EXIT_LARGE or rel is None:
             self._raise_for(result, path, "read")
 
-        async def op(conn: _Conn) -> bytes:
+        async def op(conn: Connection) -> bytes:
             try:
                 response = await conn.http.get(f"/v1/files/{rel}")
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
@@ -759,7 +768,7 @@ class SandboxdWorkspace:
         params = {"mode": f"0{mode.zfill(3)[-3:]}"} if mode.isdigit() else None
         payload = bytes(data)
 
-        async def op(conn: _Conn) -> None:
+        async def op(conn: Connection) -> None:
             try:
                 response = await conn.http.put(
                     f"/v1/files/{rel}",
