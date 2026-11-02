@@ -6,7 +6,6 @@ import re
 import httpx
 
 from yggdrasil.tools.web.adapters.common import cn_count, fragment_text, optional_get, optional_json
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _HUGGING_FACE = "https://huggingface.co"
@@ -19,7 +18,6 @@ _FRONT_MATTER_RE = re.compile(r"\A---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", 
 _HF_MAX_FILES = 40
 
 
-@site_adapter("huggingface.co", "www.huggingface.co", "hf.co")
 async def repo(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     """A model or dataset: facts from the API, then its card (the README). The page opens with the "use this
     model" widgets or the dataset viewer, which extraction takes for the content."""

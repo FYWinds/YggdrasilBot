@@ -6,14 +6,12 @@ import httpx
 
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web.adapters.common import cn_datetime, fragment_text
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _MSN_CONTENT_RE = re.compile(r"/(?:ar|vi|gm|ss)-([A-Za-z0-9]{6,})/?$")
 _MSN_LOCALE_RE = re.compile(r"^[a-z]{2}-[a-z]{2}$", re.IGNORECASE)
 
 
-@site_adapter("www.msn.com", "msn.com")
 async def article(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     """An MSN article (or video / slideshow summary) from the content API its own pages load: the page is a script
     shell that shows a cookie-consent wall first."""

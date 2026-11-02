@@ -7,14 +7,12 @@ import httpx
 
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web.adapters.common import CN_TZ, cn_count, fmt_duration, no_transcript, optional_json, transcript
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import API_USER_AGENT, AdapterResult, Extracted
 
 _BILI_VIDEO_RE = re.compile(r"/video/(BV[0-9A-Za-z]{10}|av\d+)", re.IGNORECASE)
 _BILI_GONE_CODES = frozenset({-404, 62002, 62004, 62012})
 
 
-@site_adapter("b23.tv", "www.b23.tv", "bili2233.cn")
 async def short_link(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     resp = await client.get(url, follow_redirects=False)
     location = resp.headers.get("location")
@@ -23,7 +21,6 @@ async def short_link(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult
     return None
 
 
-@site_adapter("www.bilibili.com", "bilibili.com", "m.bilibili.com")
 async def video(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     match = _BILI_VIDEO_RE.search(url.path)
     if match is None:

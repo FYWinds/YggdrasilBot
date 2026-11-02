@@ -6,7 +6,6 @@ import httpx
 
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web.adapters.common import CN_TZ, fragment_text
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import API_USER_AGENT, AdapterResult, Extracted
 
 
@@ -14,7 +13,6 @@ def _cn_time(epoch: int) -> str:
     return f"{datetime.fromtimestamp(epoch, UTC).astimezone(CN_TZ):%Y-%m-%d %H:%M}"
 
 
-@site_adapter("news.ycombinator.com")
 async def item(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     item_id = url.params.get("id", "")
     if url.path != "/item" or not item_id.isdigit():

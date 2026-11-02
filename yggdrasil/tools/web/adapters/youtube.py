@@ -8,7 +8,6 @@ from typing import Any
 import httpx
 
 from yggdrasil.tools.web.adapters.common import no_transcript, optional_json, transcript
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -22,7 +21,6 @@ _YT_ANDROID_CLIENT = {"clientName": "ANDROID", "clientVersion": "20.10.38", "and
 _YT_ANDROID_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
 
 
-@site_adapter("www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be")
 async def video(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     vid = _youtube_video_id(url)
     if vid is None:

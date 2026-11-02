@@ -9,11 +9,10 @@ import httpx
 
 from yggdrasil.core.log import LOGGER
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web.adapters.registry import path_adapter
 from yggdrasil.tools.web.model import MB, AdapterResult, Extracted, read_capped
 
 # Atlassian Statuspage incidents, served on each status page's own domain (status.example.com/incidents/<id>).
-_STATUSPAGE_INCIDENT_RE = re.compile(r"^/incidents/([a-z0-9]{12})/?$")
+INCIDENT_PATH_RE = re.compile(r"^/incidents/([a-z0-9]{12})/?$")
 _STATUSPAGE_LABELS = {
     "investigating": "调查中",
     "identified": "已找到原因",
@@ -37,11 +36,10 @@ _STATUSPAGE_LABELS = {
 }
 
 
-@path_adapter(_STATUSPAGE_INCIDENT_RE)
 async def incident(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     """An incident from the status page's public API: without scripts the page shows only its subscribe dialog.
     Other sites with such paths answer the API with an error and take the generic path."""
-    match = _STATUSPAGE_INCIDENT_RE.match(url.path)
+    match = INCIDENT_PATH_RE.match(url.path)
     if match is None:
         return None
     incident_id = match.group(1)

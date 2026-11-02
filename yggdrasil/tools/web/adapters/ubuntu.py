@@ -6,7 +6,6 @@ import re
 import httpx
 
 from yggdrasil.tools.web.adapters.common import optional_json
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _UBUNTU_SECURITY = "https://ubuntu.com/security"
@@ -23,7 +22,6 @@ _UBUNTU_STATUSES = {
 }
 
 
-@site_adapter("ubuntu.com", "www.ubuntu.com")
 async def cve(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     """A CVE of the Ubuntu security tracker from its JSON API: extraction loses the values of the page's priority
     and CVSS boxes, and the page's status table runs to many pages."""

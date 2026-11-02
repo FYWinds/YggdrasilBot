@@ -6,7 +6,6 @@ import httpx
 
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web.adapters.common import cn_datetime, optional_get, optional_json, raw_file
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import MAX_HTML_BYTES, MB, AdapterResult, Extracted
 
 _GITHUB_RESERVED = frozenset(
@@ -38,7 +37,6 @@ _GITHUB_SUCCESSOR_RE = re.compile(
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
-@site_adapter("github.com", "www.github.com")
 async def page(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     segments = [s for s in url.path.split("/") if s]
     if not segments:

@@ -5,11 +5,9 @@ import httpx
 from yggdrasil.core.log import LOGGER
 from yggdrasil.tools import x
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 
-@site_adapter(*x.HOSTS)
 async def post(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     pid = x.post_id(str(url))
     if pid is None:

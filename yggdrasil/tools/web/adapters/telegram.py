@@ -7,13 +7,11 @@ import httpx
 
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web.adapters.common import CN_TZ, fragment_text
-from yggdrasil.tools.web.adapters.registry import site_adapter
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _TME_POST_RE = re.compile(r"^/(?:s/)?([A-Za-z0-9_]{3,32})/(\d+)/?$")
 
 
-@site_adapter("t.me", "telegram.me", "www.t.me")
 async def post(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
     match = _TME_POST_RE.match(url.path)
     if match is None:
