@@ -2,13 +2,14 @@
 
 ``render(key, **vars)`` uses the active database version if one exists, else the
 default file. Templates are Jinja2; unknown variables render empty so an edited
-prompt referencing a removed variable degrades instead of failing.
+prompt referencing a removed variable degrades instead of failing. ``parse`` and
+``compile_template`` take a template body as text (the dashboard's prompt editor).
 """
 
 from functools import cache
 from pathlib import Path
 
-from jinja2 import Environment, Template
+from jinja2 import Environment, Template, nodes
 
 from yggdrasil.runtime import snapshot
 
@@ -27,9 +28,14 @@ def default_body(key: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def parse(source: str) -> nodes.Template:
+    """The template's syntax tree; raises ``TemplateSyntaxError`` when the body isn't valid Jinja2."""
+    return _env.parse(source)
+
+
 @cache
-def _compile(body: str) -> Template:
-    return _env.from_string(body)
+def compile_template(source: str) -> Template:
+    return _env.from_string(source)
 
 
 def body(key: str) -> str:
@@ -37,4 +43,4 @@ def body(key: str) -> str:
 
 
 def render(key: str, **variables: object) -> str:
-    return _compile(body(key)).render(**variables).strip()
+    return compile_template(body(key)).render(**variables).strip()

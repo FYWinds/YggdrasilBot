@@ -71,7 +71,7 @@ def _variables(*bodies: str) -> list[str]:
     out: set[str] = set()
     for body in bodies:
         try:
-            out |= meta.find_undeclared_variables(prompts._env.parse(body))
+            out |= meta.find_undeclared_variables(prompts.parse(body))
         except TemplateError:
             continue
     return sorted(out)
@@ -148,7 +148,7 @@ async def _set_active(session: AsyncSession, key: str, version_id: int | None) -
 async def create_prompt_version(key: str, body: PromptVersionIn, actor: Actor) -> PromptVersionOut:
     _check_key(key)
     try:
-        prompts._env.parse(body.body)
+        prompts.parse(body.body)
     except TemplateError as e:
         raise _syntax_error(e) from e
     async with change(actor, "prompt", "create_version", key) as c:
@@ -199,7 +199,7 @@ async def preview_prompt(key: str, body: PreviewIn) -> PreviewOut:
             )
         source = source or default
     try:
-        rendered = prompts._compile(source).render(**body.variables).strip()
+        rendered = prompts.compile_template(source).render(**body.variables).strip()
     except TemplateError as e:
         raise _syntax_error(e) from e
     return PreviewOut(rendered=rendered)
