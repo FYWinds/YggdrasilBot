@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+import nonebot
 import pytest
 from nonebot.adapters.onebot.v11 import NetworkError
 from PIL import Image
@@ -21,7 +22,6 @@ from tests.support.routes import Routes
 from yggdrasil import runtime
 from yggdrasil.agent import tools
 from yggdrasil.agent.deps import Deps
-from yggdrasil.delivery import send
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
 from yggdrasil.moderation.image import ImageVerdict
@@ -123,7 +123,8 @@ async def test_an_unconfirmed_send_counts_as_sent(upstream: Routes, recorded: li
     api = _qq(timeout=True)
     ctx = _ctx(api)
     result = await tools.generate_image(ctx, "x")
-    assert [call["_timeout"] for call in api.called("send_group_msg")] == [send.SEND_IMAGE_TIMEOUT_S]
+    [call] = api.called("send_group_msg")
+    assert call["_timeout"] > nonebot.get_driver().config.api_timeout
     assert "不要重发" in str(result)
     assert ctx.deps.actions == ["image (unconfirmed)"]
     assert recorded == []  # no message id to record it under

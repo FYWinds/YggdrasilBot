@@ -14,7 +14,7 @@ from yggdrasil.config import APP_CONFIG
 from yggdrasil.llm.catalog import ModelCaps
 from yggdrasil.relay import grants, issue_token, relay_models, relay_url, relay_usage, revoke_token
 from yggdrasil.relay.grants import authenticate, pending_key, token_key
-from yggdrasil.relay.server import Relay, _clamp, _SseUsage, start_relay, stop_relay
+from yggdrasil.relay.server import Relay, start_relay, stop_relay
 from yggdrasil.runtime import ProviderInfo, Route, Snapshot
 
 REAL_KEY = "sk-real-provider-key"
@@ -89,12 +89,18 @@ async def _token(job_id: str = "job1", **kw: int) -> str:
     return await issue_token(group_id=10001, job_id=job_id, models=[MODEL], **args)
 
 
-def _sse_response(_request: httpx.Request) -> httpx.Response:
-    async def chunks() -> AsyncIterator[bytes]:
-        for i in range(0, len(SSE), 37):  # split mid-line and mid-character
-            yield SSE[i : i + 37]
+def _sse(size: int = 37) -> Callable[[httpx.Request], httpx.Response]:
+    """The upstream streaming ``SSE`` in pieces of ``size`` bytes (37 splits it mid-line and mid-character)."""
 
-    return httpx.Response(200, headers={"content-type": "text/event-stream", "request-id": "req_1"}, content=chunks())
+    def respond(_request: httpx.Request) -> httpx.Response:
+        async def chunks() -> AsyncIterator[bytes]:
+            for i in range(0, len(SSE), size):
+                yield SSE[i : i + size]
+
+        headers = {"content-type": "text/event-stream", "request-id": "req_1"}
+        return httpx.Response(200, headers=headers, content=chunks())
+
+    return respond
 
 
 async def test_token_lifecycle(fake_redis: fakeredis.FakeAsyncRedis) -> None:
@@ -173,7 +179,7 @@ async def test_model_outside_the_grant_is_forbidden(client: httpx.AsyncClient, u
 
 
 async def test_exhausted_budget_is_rejected(client: httpx.AsyncClient, upstream: Routes) -> None:
-    upstream.answers["gw.example.com"] = _sse_response
+    upstream.answers["gw.example.com"] = _sse()
     token = await _token(max_output_tokens=40)
     headers = {"authorization": f"Bearer {token}"}
     body = {"model": MODEL, "stream": True, "messages": []}
@@ -186,7 +192,7 @@ async def test_exhausted_budget_is_rejected(client: httpx.AsyncClient, upstream:
 
 
 async def test_stream_passes_through_and_usage_is_recorded(client: httpx.AsyncClient, upstream: Routes) -> None:
-    upstream.answers["gw.example.com"] = _sse_response
+    upstream.answers["gw.example.com"] = _sse()
     token = await _token()
     body = json.dumps({"model": MODEL, "stream": True, "max_tokens": 100, "messages": []})
     async with client.stream(
@@ -243,7 +249,7 @@ async def test_non_streaming_usage_is_recorded(client: httpx.AsyncClient, upstre
 
 async def test_primary_failure_falls_back_with_the_fallback_model(client: httpx.AsyncClient, upstream: Routes) -> None:
     upstream.answers["gw.example.com"] = lambda _r: httpx.Response(529, json={"type": "error"})
-    upstream.answers["backup.example.com"] = _sse_response
+    upstream.answers["backup.example.com"] = _sse()
     token = await _token()
     r = await client.post(
         "/v1/messages", json={"model": MODEL, "stream": True, "messages": []}, headers={"x-api-key": token}
@@ -287,11 +293,16 @@ async def test_models_lists_the_grant(client: httpx.AsyncClient) -> None:
     assert (await client.get("/v1/models")).status_code == 401
 
 
-def test_sse_usage_survives_any_chunking() -> None:
-    sse = _SseUsage()
-    for i in range(len(SSE)):
-        sse.feed(SSE[i : i + 1])
-    assert (sse.usage.total_input, sse.usage.cache_read, sse.usage.output) == (420, 300, 42)
+async def test_usage_is_read_from_a_stream_in_single_bytes(client: httpx.AsyncClient, upstream: Routes) -> None:
+    upstream.answers["gw.example.com"] = _sse(1)
+    token = await _token()
+    r = await client.post(
+        "/v1/messages", json={"model": MODEL, "stream": True, "messages": []}, headers={"x-api-key": token}
+    )
+    assert r.content == SSE
+    assert await relay_usage("job1") == grants.RelayUsage(
+        requests=1, input_tokens=420, cached_tokens=300, output_tokens=42
+    )
 
 
 async def test_parallel_requests_cannot_overrun_the_output_budget(
@@ -346,11 +357,17 @@ async def test_lapsed_reservations_stop_counting(
     assert await fake_redis.hgetall(pending_key("job1")) == {}
 
 
-def test_clamp_keeps_thinking_budget_below_max_tokens() -> None:
-    payload = {"model": MODEL, "max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 16000}}
-    assert _clamp(payload, 20000)["thinking"]["budget_tokens"] == 16000
-    clamped = _clamp(payload, 8000)
-    assert (clamped["max_tokens"], clamped["thinking"]["budget_tokens"]) == (8000, 7999)
+@pytest.mark.parametrize(("left", "thinking"), [(20000, 16000), (8000, 7999)])
+async def test_a_clamped_request_keeps_its_thinking_budget_below_max_tokens(
+    client: httpx.AsyncClient, upstream: Routes, left: int, thinking: int
+) -> None:
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(200, json={"usage": {"output_tokens": 1}})
+    token = await _token(max_output_tokens=left)
+    body = {"model": MODEL, "max_tokens": 32000, "thinking": {"type": "enabled", "budget_tokens": 16000}}
+    r = await client.post("/v1/messages", json={**body, "messages": []}, headers={"x-api-key": token})
+    assert r.status_code == 200
+    sent = json.loads(upstream.seen[0].content)
+    assert (sent["max_tokens"], sent["thinking"]["budget_tokens"]) == (left, thinking)
 
 
 async def test_stream_cut_before_message_delta_charges_an_estimate(client: httpx.AsyncClient, upstream: Routes) -> None:
@@ -377,10 +394,19 @@ async def test_stream_cut_before_message_delta_charges_an_estimate(client: httpx
     assert (await relay_usage("job1")).output_tokens == 300
 
 
-def test_sse_estimate_never_undercuts_message_start() -> None:
-    sse = _SseUsage()
-    sse.feed(SSE[: SSE.index(b"event: content_block_start")])
-    assert sse.usage.output == 1
+async def test_a_stream_cut_after_message_start_charges_what_it_reported(
+    client: httpx.AsyncClient, upstream: Routes
+) -> None:
+    cut = SSE[: SSE.index(b"event: content_block_start")]
+    upstream.answers["gw.example.com"] = lambda _r: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=cut
+    )
+    token = await _token()
+    r = await client.post(
+        "/v1/messages", json={"model": MODEL, "stream": True, "messages": []}, headers={"x-api-key": token}
+    )
+    assert r.content == cut
+    assert (await relay_usage("job1")).output_tokens == 1  # nothing generated yet: message_start's own count
 
 
 def _free_port() -> int:

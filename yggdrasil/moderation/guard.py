@@ -61,7 +61,7 @@ def _unchecked(stage: Stage, model: str) -> Verdict:
     return Verdict(stage, "Error", 0.0, action="review" if stage == "output" else "pass", model=model)
 
 
-def _score_from_logprobs(logprobs: list | None, verdict: str) -> float:
+def score_from_logprobs(logprobs: list | None, verdict: str) -> float:
     """Distribution over the token right after ``Safety:``."""
     fallback = {"Safe": 0.0, "Controversial": 0.5, "Unsafe": 1.0}.get(verdict, 0.0)
     if not logprobs:
@@ -136,7 +136,7 @@ async def moderate(stage: Stage, prompt: str, response: str | None = None, *, gr
             span.set_attribute("moderation.verdict", "Error")
             return _unchecked(stage, r.model)
         categories = _parse_categories(text) if verdict != "Safe" else []
-        score = _score_from_logprobs(choice.logprobs.content if choice.logprobs else None, verdict)
+        score = score_from_logprobs(choice.logprobs.content if choice.logprobs else None, verdict)
         action = decide_action(verdict, score, categories, policy)
         span.set_attributes({"moderation.verdict": verdict, "moderation.score": score, "moderation.action": action})
         if resp.usage:

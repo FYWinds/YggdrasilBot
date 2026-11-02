@@ -14,10 +14,11 @@ from tests.support.groups import fresh_group
 from tests.support.onebot import ScriptedBot, group_message
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.runtime import GroupInfo, Snapshot, TriggerRule
-from yggdrasil.triggers import bots
 
 GROUP, SELF = fresh_group(), 10001
 MEMBER, TAGGED, LISTED, OFFICIAL, OWNER, NEWCOMER = 20001, 20002, 20003, 20004, 20005, 20006
+# Senders of the lookup test alone: what QQ answered about a sender is remembered for the whole process.
+ROBOT, PERSON, STRANGER = 20007, 20008, 20009
 TLDR = TriggerRule(
     id=1,
     handler="tldr",
@@ -50,14 +51,13 @@ def _lookups(bot: ScriptedBot) -> list[int]:
 
 
 @pytest.fixture
-def plugin(monkeypatch: pytest.MonkeyPatch, snapshot: Callable[..., Snapshot]) -> ModuleType:
+def plugin(snapshot: Callable[..., Snapshot]) -> ModuleType:
     with warnings.catch_warnings():  # no adapter registered: routing doesn't need one
         warnings.filterwarnings("ignore", "No adapters found", RuntimeWarning)
         nonebot.require("nonebot_plugin_alconna")
         module = nonebot.require("yggdrasil.bot.plugin")
     group = GroupInfo(GROUP, "g", True, {"interaction": {"ignore_users": [LISTED]}})
     snapshot(groups={GROUP: group}, triggers=(TLDR,), superusers=frozenset({OWNER}))
-    monkeypatch.setattr(bots, "_official", {})
     return module
 
 
@@ -70,7 +70,7 @@ def message(
 async def routed(plugin: ModuleType, bot: ScriptedBot, event: GroupMessageEvent) -> str | None:
     """The command the message starts, if any."""
     state: dict[str, Any] = {}
-    await plugin._route(cast(Bot, bot), event, state)
+    await plugin.route(cast(Bot, bot), event, state)
     resolved = state.get(plugin.STATE_KEY)
     return resolved.handler if resolved else None
 
@@ -92,14 +92,14 @@ async def test_bots_never_trigger_but_their_messages_are_stored(
 async def test_qq_is_asked_once_per_sender_and_only_about_triggers(
     plugin: ModuleType, recorded: list[IncomingMessage]
 ) -> None:
-    bot = _connection(robots=frozenset({OFFICIAL}))
+    bot = _connection(robots=frozenset({ROBOT}))
     for _ in range(2):
-        assert await routed(plugin, bot, message(OFFICIAL, "小精灵")) is None
-        assert await routed(plugin, bot, message(MEMBER, "阿明")) == "tldr"
-    assert await routed(plugin, bot, message(NEWCOMER, "新人", "大家好")) is None  # no trigger, no lookup
-    assert _lookups(bot) == [OFFICIAL, MEMBER]
+        assert await routed(plugin, bot, message(ROBOT, "小精灵")) is None
+        assert await routed(plugin, bot, message(PERSON, "阿明")) == "tldr"
+    assert await routed(plugin, bot, message(STRANGER, "新人", "大家好")) is None  # no trigger, no lookup
+    assert _lookups(bot) == [ROBOT, PERSON]
 
     down = _connection(down=True)
     for _ in range(2):  # a failed lookup counts as a person, without delaying each request with another try
-        assert await routed(plugin, down, message(NEWCOMER, "新人")) == "tldr"
-    assert _lookups(down) == [NEWCOMER]
+        assert await routed(plugin, down, message(STRANGER, "新人")) == "tldr"
+    assert _lookups(down) == [STRANGER]

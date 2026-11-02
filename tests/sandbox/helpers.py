@@ -96,12 +96,11 @@ class FakeKube:
 
 class MemorySandboxd:
     """Stands in for the sandboxd behind every claim: files live in memory per workspace (keyed by claim), helper
-    commands are recorded and succeed. Only ``SandboxdWorkspace``'s gRPC / REST I/O is replaced; attaching,
-    renewal, the command budget and attach notices run for real."""
+    commands succeed. Only ``SandboxdWorkspace``'s gRPC / REST I/O is replaced; attaching, renewal, the command
+    budget and attach notices run for real."""
 
     def __init__(self) -> None:
         self.files: dict[str, dict[str, bytes]] = collections.defaultdict(dict)
-        self.commands: list[list[str]] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pods = self
@@ -114,7 +113,6 @@ class MemorySandboxd:
 
         async def exec_(ws: SandboxdWorkspace, argv: Sequence[str], **_: Any) -> _Exec:
             fs = await files(ws)
-            pods.commands.append(list(argv))
             if list(argv[:3]) == ["/bin/sh", "-c", _TREE_SCRIPT]:
                 root = argv[4].rstrip("/") + "/"
                 rows = [f"f\t{len(v)}\t0\t{k.removeprefix(root)}" for k, v in sorted(fs.items()) if k.startswith(root)]
@@ -124,7 +122,6 @@ class MemorySandboxd:
             return _Exec(0, b"0\n", b"")
 
         async def start(ws: SandboxdWorkspace, conn: Any, argv: list[str], env: Any, seconds: Any, note: Any):
-            pods.commands.append(argv)
             return CommandResult(exit_code=0, stdout="", stderr="")
 
         async def write_bytes(ws: SandboxdWorkspace, path: str, data: bytes) -> None:

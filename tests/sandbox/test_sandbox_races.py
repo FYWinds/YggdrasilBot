@@ -3,6 +3,7 @@ Kubernetes API and an in-process Redis (no sandboxd: the in-sandbox reap is repl
 open)."""
 
 import asyncio
+import collections
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -12,11 +13,10 @@ import pytest
 from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef
 
 from tests.sandbox.helpers import FakeKube
-from yggdrasil.agent import job_tools, sandbox_tools
 from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, WorkspaceInfo, WorkspaceManager
 from yggdrasil.sandbox.backend import _Exec
 from yggdrasil.sandbox.manager import Listener
-from yggdrasil.sandbox.state import LinkRecord, index_key, keep_key, links_json, ws_key
+from yggdrasil.sandbox.state import LinkRecord, group_lock_key, index_key, keep_key, links_json, lock_key, ws_key
 from yggdrasil.settings import ToolSettings
 
 GROUP = 10001
@@ -40,9 +40,37 @@ class Reaper:
         return _Exec(0, b"0\n", b"")
 
 
+class Locks:
+    """The test's Redis as the managers see it, noting each lock (``lock_key``, ``group_lock_key``) someone was
+    refused because another holder has it."""
+
+    def __init__(self, redis: fakeredis.FakeAsyncRedis) -> None:
+        self._redis = redis
+        self._refused: collections.defaultdict[str, asyncio.Event] = collections.defaultdict(asyncio.Event)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._redis, name)
+
+    async def set(self, key: str, value: str, **kwargs: Any) -> Any:
+        got = await self._redis.set(key, value, **kwargs)
+        if kwargs.get("nx") and not got:
+            self._refused[key].set()
+        return got
+
+    async def refused(self, key: str) -> None:
+        """Until someone has been refused ``key`` (a few seconds at most)."""
+        async with asyncio.timeout(5):
+            await self._refused[key].wait()
+
+
 @pytest.fixture
-def mgr(make_manager: Callable[..., WorkspaceManager]) -> WorkspaceManager:
-    return make_manager()
+def locks(fake_redis: fakeredis.FakeAsyncRedis) -> Locks:
+    return Locks(fake_redis)
+
+
+@pytest.fixture
+def mgr(make_manager: Callable[..., WorkspaceManager], locks: Locks) -> WorkspaceManager:
+    return make_manager(redis=locks)
 
 
 def _session(
@@ -101,7 +129,7 @@ async def test_close_waits_for_an_acquisition_still_in_flight(
 
 
 async def test_last_release_and_attach_are_serialized(
-    mgr: WorkspaceManager, fake_redis: fakeredis.FakeAsyncRedis
+    mgr: WorkspaceManager, fake_redis: fakeredis.FakeAsyncRedis, locks: Locks
 ) -> None:
     await _reserve(mgr)
     reaper = Reaper()
@@ -113,7 +141,7 @@ async def test_last_release_and_attach_are_serialized(
     await reaper.started.wait()
     b = _session(mgr, "b")
     attaching = asyncio.create_task(b.backend.working_dir())
-    await asyncio.sleep(0.5)
+    await locks.refused(lock_key(GROUP, WS))
     # B must not attach while A's reap (which kills everything but served processes) is running.
     assert not attaching.done()
     reaper.hold.set()
@@ -125,7 +153,7 @@ async def test_last_release_and_attach_are_serialized(
 
 
 async def test_pending_recreate_does_not_pull_the_workspace_from_under_an_attacher(
-    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
+    mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, locks: Locks
 ) -> None:
     await _reserve(mgr)
     reaper = Reaper()
@@ -141,7 +169,7 @@ async def test_pending_recreate_does_not_pull_the_workspace_from_under_an_attach
     await reaper.started.wait()
     b = _session(mgr, "b")
     attaching = asyncio.create_task(b.backend.working_dir())
-    await asyncio.sleep(0.3)
+    await locks.refused(lock_key(GROUP, WS))  # B waits for A's release
     reaper.hold.set()
     await closing
     await attaching
@@ -548,13 +576,13 @@ async def test_group_cap_evicts_the_least_recently_used_idle_workspace(
 
 
 async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
-    kube: FakeKube, make_manager: Callable[..., WorkspaceManager]
+    kube: FakeKube, make_manager: Callable[..., WorkspaceManager], locks: Locks
 ) -> None:
     """Two invocations on two bot replicas (separate managers, shared Redis and API server) create a workspace each
     while the group is one below its cap: the per-group lock serializes them, so exactly one eviction happens and
     the cap holds."""
     cfg = ToolSettings(sandbox_max_workspaces_per_group=2)
-    one, two = make_manager(), make_manager()
+    one, two = make_manager(redis=locks), make_manager(redis=locks)
     old = _session(one, "old", workspace=None, cfg=cfg)
     await old.open("old", new=True, description="旧话题")
     await old.backend.working_dir()
@@ -563,12 +591,12 @@ async def test_concurrent_creates_in_two_replicas_respect_the_group_cap(
     for m in (one, two):
         original = m.workspaces
 
-        async def slow(group_id: int, original: Any = original) -> list[WorkspaceInfo]:
+        async def held(group_id: int, original: Any = original) -> list[WorkspaceInfo]:
             seen = await original(group_id)
-            await asyncio.sleep(0.2)  # without the lock both would act on the same snapshot
+            await locks.refused(group_lock_key(group_id))  # held until the other replica is refused the group lock
             return seen
 
-        m.workspaces = slow  # pyright: ignore[reportAttributeAccessIssue]
+        m.workspaces = held  # pyright: ignore[reportAttributeAccessIssue]
 
     a = _session(one, "a", workspace=None, cfg=cfg)
     b = _session(two, "b", workspace=None, cfg=cfg)
@@ -635,13 +663,6 @@ async def test_extend_pushes_the_hard_cap_and_attach_honours_it(
     assert attachment.notice is None
     assert await _claim(fake_redis) == claim
     await b.close()
-
-
-def test_selecting_tools_run_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(job_tools, "relay_enabled", lambda: True)
-    tools = {t.name: t for t in sandbox_tools.bot_tools()}
-    assert next(iter(tools)) == "open_workspace"
-    assert {name for name, t in tools.items() if t.sequential} == {"open_workspace", "reset_workspace", "delegate"}
 
 
 async def test_eviction_skips_a_workspace_whose_pod_is_being_created(

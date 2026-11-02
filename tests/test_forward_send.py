@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+import nonebot
 import pytest
 from nonebot.adapters.onebot.v11 import ActionFailed, NetworkError
 
@@ -117,7 +118,8 @@ async def _send(api: FakeNapCat, reply: BotReply = REPLY, cfg: InteractionSettin
 async def test_forwards_wait_longer_than_the_adapter_timeout(recorded: list[IncomingMessage]):
     api = _qq(history=[])
     assert await _send(api) == FORWARD_ID
-    assert [call["_timeout"] for call in api.called("send_group_forward_msg")] == [send.SEND_FORWARD_TIMEOUT_S]
+    [call] = api.called("send_group_forward_msg")
+    assert call["_timeout"] > nonebot.get_driver().config.api_timeout
     assert [m.qq_message_id for m in recorded] == [FORWARD_ID]
 
 

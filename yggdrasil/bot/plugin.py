@@ -65,7 +65,7 @@ def _at_me(event: MessageEvent, self_id: str) -> bool:
 
 
 @event_preprocessor
-async def _route(bot: Bot, event: Event, state: T_State) -> None:
+async def route(bot: Bot, event: Event, state: T_State) -> None:
     if isinstance(event, HeartbeatMetaEvent):
         bot_state.heartbeat(bot.self_id)
         return

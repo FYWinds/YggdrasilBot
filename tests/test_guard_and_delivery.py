@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
 from yggdrasil.delivery.send import build_nodes, split_text, strip_markdown
-from yggdrasil.moderation.guard import _score_from_logprobs, decide_action, parse_verdict
+from yggdrasil.moderation.guard import decide_action, parse_verdict, score_from_logprobs
 from yggdrasil.settings import InteractionSettings, ModerationCategoryRule, ModerationSettings
 
 
@@ -19,12 +19,12 @@ def test_score_uses_token_after_safety_label_not_the_label_itself():
         tok(":", {":": 1.0}),
         tok(" Safe", {" Safe": 0.6, " Unsafe": 0.3, " Cont": 0.1}),
     ]
-    assert _score_from_logprobs(logprobs, "Safe") == round(0.3 + 0.05, 4)
+    assert score_from_logprobs(logprobs, "Safe") == round(0.3 + 0.05, 4)
 
 
 def test_score_falls_back_without_logprobs():
-    assert _score_from_logprobs(None, "Controversial") == 0.5
-    assert _score_from_logprobs([], "Unsafe") == 1.0
+    assert score_from_logprobs(None, "Controversial") == 0.5
+    assert score_from_logprobs([], "Unsafe") == 1.0
 
 
 def test_verdict_missing_when_guard_echoes_the_reply():

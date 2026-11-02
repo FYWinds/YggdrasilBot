@@ -36,17 +36,17 @@ class IncomingMessage:
 _NAME_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _clean_name(name: str) -> str:
+def clean_sender_name(name: str) -> str:
     return _NAME_CONTROL.sub("", name).strip()
 
 
-def _strip_nul(value: Any) -> Any:
+def strip_nul(value: Any) -> Any:
     if isinstance(value, str):
         return value.replace("\x00", "")
     if isinstance(value, dict):
-        return {k: _strip_nul(v) for k, v in value.items()}
+        return {k: strip_nul(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_strip_nul(v) for v in value]
+        return [strip_nul(v) for v in value]
     return value
 
 
@@ -103,9 +103,9 @@ class IngestWriter:
         stickers: dict[tuple[str, str], Sighting] = {}
         sticker_usage = Counter[UsageKey]()
         for m in batch:
-            segments = _strip_nul(m.segments)
+            segments = strip_nul(m.segments)
             norm = normalize(segments)
-            name = _clean_name(m.sender_name)
+            name = clean_sender_name(m.sender_name)
             rows.append(
                 {
                     "sent_at": m.sent_at,
