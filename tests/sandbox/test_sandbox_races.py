@@ -12,14 +12,13 @@ import fakeredis
 import pytest
 from pydantic_ai.workspaces import WorkspaceError, WorkspaceRef
 
-from tests.sandbox.helpers import FakeKube
+from tests.sandbox.helpers import GROUP, OTHER_GROUP, FakeKube, reserve
 from yggdrasil.sandbox import SandboxError, SandboxToolError, Session, WorkspaceInfo, WorkspaceManager
 from yggdrasil.sandbox.backend import _Exec
 from yggdrasil.sandbox.manager import Listener
 from yggdrasil.sandbox.state import LinkRecord, group_lock_key, index_key, keep_key, links_json, lock_key, ws_key
 from yggdrasil.settings import ToolSettings
 
-GROUP = 10001
 WS = "topic"
 CFG = ToolSettings()
 
@@ -87,10 +86,6 @@ def _session(
     return s
 
 
-async def _reserve(mgr: WorkspaceManager, name: str = WS, *, group: int = GROUP, cfg: ToolSettings = CFG) -> None:
-    await mgr.reserve(group, name, f"{name} 的说明", cfg)
-
-
 async def _active(redis: fakeredis.FakeAsyncRedis, name: str = WS, group: int = GROUP) -> int:
     return int(await redis.hget(ws_key(group, name), "active") or 0)  # pyright: ignore[reportGeneralTypeIssues]
 
@@ -110,7 +105,7 @@ async def _names(mgr: WorkspaceManager, group: int = GROUP) -> list[str]:
 async def test_close_waits_for_an_acquisition_still_in_flight(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     reaper = Reaper()
     s = _session(mgr, "a", reaper)
     kube.claim_gate = asyncio.Event()
@@ -131,7 +126,7 @@ async def test_close_waits_for_an_acquisition_still_in_flight(
 async def test_last_release_and_attach_are_serialized(
     mgr: WorkspaceManager, fake_redis: fakeredis.FakeAsyncRedis, locks: Locks
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     reaper = Reaper()
     a = _session(mgr, "a", reaper)
     await a.backend.working_dir()
@@ -155,7 +150,7 @@ async def test_last_release_and_attach_are_serialized(
 async def test_pending_recreate_does_not_pull_the_workspace_from_under_an_attacher(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, locks: Locks
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     reaper = Reaper()
     a = _session(mgr, "a", reaper)
     other = _session(mgr, "other")
@@ -183,7 +178,7 @@ async def test_pending_recreate_does_not_pull_the_workspace_from_under_an_attach
 async def test_failed_renewal_does_not_leak_active(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a")
     await a.backend.working_dir()
     await a.close()
@@ -202,7 +197,7 @@ async def test_failed_renewal_does_not_leak_active(
 async def test_failed_pod_is_replaced_under_the_same_name_with_a_notice(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a")
     await a.backend.working_dir()
     await a.close()
@@ -225,7 +220,7 @@ async def test_failed_pod_is_replaced_under_the_same_name_with_a_notice(
 async def test_aged_workspace_in_use_is_retired_not_destroyed(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a_reaper = Reaper()
     a = _session(mgr, "a", a_reaper)
     await a.backend.working_dir()
@@ -250,7 +245,7 @@ async def test_aged_workspace_in_use_is_retired_not_destroyed(
 async def test_reset_and_destroy_respect_other_users(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a")
     b = _session(mgr, "b")
     await a.backend.working_dir()
@@ -274,7 +269,7 @@ async def test_reset_and_destroy_respect_other_users(
 async def test_touch_renews_from_the_current_record_when_due(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a")
     await a.backend.working_dir()
     ref = a.backend.ref
@@ -296,7 +291,7 @@ async def test_touch_renews_from_the_current_record_when_due(
 async def test_keep_hash_is_spared_by_reap_and_cleared_with_the_workspace(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     await fake_redis.hset(keep_key(GROUP, WS), "kernel", "999")  # pyright: ignore[reportGeneralTypeIssues]  # a stale one
     reaper = Reaper()
     a = _session(mgr, "a", reaper)
@@ -318,7 +313,7 @@ async def test_keep_hash_is_spared_by_reap_and_cleared_with_the_workspace(
 async def test_backend_for_and_renew_never_create(mgr: WorkspaceManager, kube: FakeKube) -> None:
     assert await mgr.backend_for(GROUP, WS) is None
     assert not await mgr.renew(GROUP, WS, CFG)
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     assert await mgr.backend_for(GROUP, WS) is None  # pending: no pod yet
     assert kube.claims() == []
     a = _session(mgr, "a")
@@ -354,7 +349,7 @@ async def test_publish_links_the_listener_and_unpublish_removes_it(
     cfg = ToolSettings(sandbox_max_links=1)
     with pytest.raises(SandboxError, match="回收"):
         await mgr.publish(GROUP, WS, 8000, cfg, audit={})
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a", cfg=cfg)
     reaper = Reaper()
     a.backend.exec = reaper  # pyright: ignore[reportAttributeAccessIssue]
@@ -390,7 +385,7 @@ async def test_global_eviction_rechecks_idleness_atomically(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = ToolSettings(sandbox_max_workspaces=1)
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     a = _session(mgr, "a", cfg=cfg)
     await a.backend.working_dir()
     await a.close()
@@ -402,8 +397,8 @@ async def test_global_eviction_rechecks_idleness_atomically(
         return stale
 
     monkeypatch.setattr(mgr, "_all_mappings", snapshot)
-    await _reserve(mgr, "other", group=GROUP + 1, cfg=cfg)
-    other = _session(mgr, "other", workspace="other", cfg=cfg, group=GROUP + 1)
+    await reserve(mgr, "other", group=OTHER_GROUP, cfg=cfg)
+    other = _session(mgr, "other", workspace="other", cfg=cfg, group=OTHER_GROUP)
     with pytest.raises(SandboxError, match="上限"):
         await other.backend.working_dir()
     assert await _claim(fake_redis) in kube.claim_names()
@@ -414,7 +409,7 @@ async def test_background_jobs_keep_a_workspace_from_reset_and_eviction(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
     cfg = ToolSettings(sandbox_max_workspaces=1)
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     a = _session(mgr, "a", cfg=cfg)
     await a.backend.working_dir()
     claim = await _claim(fake_redis)
@@ -423,8 +418,8 @@ async def test_background_jobs_keep_a_workspace_from_reset_and_eviction(
         await a.reset()
     assert await fake_redis.hget(ws_key(GROUP, WS), "recreate") == "0"  # pyright: ignore[reportGeneralTypeIssues]
     await a.close()
-    await _reserve(mgr, "other", group=GROUP + 1, cfg=cfg)
-    other = _session(mgr, "other", workspace="other", cfg=cfg, group=GROUP + 1)
+    await reserve(mgr, "other", group=OTHER_GROUP, cfg=cfg)
+    other = _session(mgr, "other", workspace="other", cfg=cfg, group=OTHER_GROUP)
     with pytest.raises(SandboxError, match="上限"):
         await other.backend.working_dir()  # idle, but its job keeps it
     assert kube.claim_names() == [claim]
@@ -640,7 +635,7 @@ async def test_eviction_skips_a_workspace_an_invocation_attached_to_meanwhile(
 async def test_extend_pushes_the_hard_cap_and_attach_honours_it(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = _session(mgr, "a")
     await a.backend.working_dir()
     claim = await _claim(fake_redis)
@@ -671,7 +666,7 @@ async def test_eviction_skips_a_workspace_whose_pod_is_being_created(
     """A pending workspace another invocation is creating holds its lock: it is not evicted. And a created one is
     counted in ``active`` together with its claim, never seen unused in between."""
     cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     creating = _session(mgr, "creating", cfg=cfg)
     kube.claim_gate = asyncio.Event()
     attaching = asyncio.create_task(creating.backend.working_dir())
@@ -701,12 +696,12 @@ async def test_own_allowance_only_covers_the_callers_own_pod(
     """The caller attached to a pod that was then replaced under the same name by another invocation: that newer
     pod is in use by someone else and must not be evicted on the caller's allowance."""
     cfg = ToolSettings(sandbox_max_workspaces_per_group=1)
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     a = _session(mgr, "a", cfg=cfg)
     await a.backend.working_dir()
     old = await _claim(fake_redis)
     assert await mgr.destroy(GROUP, WS, reason="admin")
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     b = _session(mgr, "b", cfg=cfg)
     await b.backend.working_dir()
     new = await _claim(fake_redis)

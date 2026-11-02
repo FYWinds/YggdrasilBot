@@ -1,5 +1,5 @@
-"""Test doubles for the sandbox tests: a fake Kubernetes API, an in-memory sandboxd, and the local sandboxd settings
-the image tests (helpers, conformance) use."""
+"""Test doubles for the sandbox tests: a fake Kubernetes API, an in-memory sandboxd, the groups and workspace
+reservation the manager tests share, and the local sandboxd settings the image tests (helpers, conformance) use."""
 
 import asyncio
 import collections
@@ -13,14 +13,24 @@ import httpx
 import pytest
 from pydantic_ai.workspaces import CommandResult, FileEntry
 
+from tests.support.groups import fresh_group
 from yggdrasil.sandbox.backend import SandboxdWorkspace, _Exec
-from yggdrasil.sandbox.manager import _TREE_SCRIPT
+from yggdrasil.sandbox.manager import _TREE_SCRIPT, WorkspaceManager
+from yggdrasil.settings import ToolSettings
 
 SANDBOXD_REST = os.environ.get("YGG_TEST_SANDBOXD_REST")
 SANDBOXD_GRPC = os.environ.get("YGG_TEST_SANDBOXD_GRPC")
 SANDBOXD_TOKEN = os.environ.get("YGG_TEST_SANDBOXD_TOKEN")
 HAVE_SANDBOXD = bool(SANDBOXD_REST and SANDBOXD_GRPC and SANDBOXD_TOKEN)
 NO_SANDBOXD = "set YGG_TEST_SANDBOXD_REST / YGG_TEST_SANDBOXD_GRPC / YGG_TEST_SANDBOXD_TOKEN to run against a sandboxd"
+
+# The manager tests' groups; nothing of theirs reaches the database (Redis and the API server are per test).
+GROUP, OTHER_GROUP = fresh_group(), fresh_group()
+
+
+async def reserve(mgr: WorkspaceManager, name: str, *, group: int = GROUP, cfg: ToolSettings | None = None) -> None:
+    """Add workspace ``name`` (described as ``"<name> 的说明"``) as ``open_workspace(new=True)`` would."""
+    await mgr.reserve(group, name, f"{name} 的说明", cfg or ToolSettings())
 
 
 class FakeKube:

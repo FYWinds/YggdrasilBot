@@ -9,12 +9,11 @@ from typing import Any
 import fakeredis
 import pytest
 
-from tests.sandbox.helpers import FakeKube, MemorySandboxd
+from tests.sandbox.helpers import GROUP, OTHER_GROUP, FakeKube, MemorySandboxd, reserve
 from yggdrasil.sandbox import SandboxError, WorkspaceManager
 from yggdrasil.sandbox.state import ws_key
 from yggdrasil.settings import ToolSettings
 
-GROUP = 10001
 WS = "notes"
 
 
@@ -32,12 +31,6 @@ def mgr(pods: MemorySandboxd, make_manager: Callable[..., WorkspaceManager]) -> 
 
 def _cfg(**kw: Any) -> ToolSettings:
     return ToolSettings(**kw)
-
-
-async def _reserve(
-    mgr: WorkspaceManager, name: str = WS, *, group: int = GROUP, cfg: ToolSettings | None = None
-) -> None:
-    await mgr.reserve(group, name, "测试用", cfg or _cfg())
 
 
 async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, kube: FakeKube) -> None:
@@ -90,7 +83,7 @@ async def test_lazy_session_creates_renews_and_releases(mgr: WorkspaceManager, k
 async def test_expired_claim_is_dropped_or_replaced(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     first = mgr.session(GROUP, invocation_id="a", cfg=_cfg(), workspace=WS)
     await first.backend.working_dir()
     await first.close()
@@ -105,7 +98,7 @@ async def test_expired_claim_is_dropped_or_replaced(
     assert late.name is None
     await late.close()
 
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     second = mgr.session(GROUP, invocation_id="b", cfg=_cfg(), workspace=WS)
     await second.backend.working_dir()
     for key in [k for k in kube.objects if "/sandboxclaims/" in k]:
@@ -122,7 +115,7 @@ async def test_expired_claim_is_dropped_or_replaced(
 
 
 async def test_reset_defers_while_others_use_it(mgr: WorkspaceManager, kube: FakeKube) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     a = mgr.session(GROUP, invocation_id="a", cfg=_cfg(), workspace=WS)
     b = mgr.session(GROUP, invocation_id="b", cfg=_cfg(), workspace=WS)
     await a.backend.working_dir()
@@ -156,7 +149,7 @@ async def test_reset_defers_while_others_use_it(mgr: WorkspaceManager, kube: Fak
 
 
 async def test_bot_file_helpers(mgr: WorkspaceManager) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     s = mgr.session(GROUP, invocation_id="f", cfg=_cfg(), workspace=WS)
     path = await s.put_bytes("in/report.csv", b"a,b\n1,2\n")
     assert path == "/workspace/in/report.csv"
@@ -175,11 +168,11 @@ async def test_eviction_skips_active_workspaces(
     mgr: WorkspaceManager, kube: FakeKube, fake_redis: fakeredis.FakeAsyncRedis
 ) -> None:
     cfg = _cfg(sandbox_max_workspaces=1)
-    await _reserve(mgr, cfg=cfg)
+    await reserve(mgr, WS, cfg=cfg)
     busy = mgr.session(GROUP, invocation_id="busy", cfg=cfg, workspace=WS)
     await busy.backend.working_dir()
-    await _reserve(mgr, "other", group=GROUP + 1, cfg=cfg)
-    other = mgr.session(GROUP + 1, invocation_id="other", cfg=cfg, workspace="other")
+    await reserve(mgr, "other", group=OTHER_GROUP, cfg=cfg)
+    other = mgr.session(OTHER_GROUP, invocation_id="other", cfg=cfg, workspace="other")
     with pytest.raises(SandboxError, match="上限"):
         await other.backend.working_dir()
     await busy.close()
@@ -192,7 +185,7 @@ async def test_eviction_skips_active_workspaces(
 
 
 async def test_command_limits_surface_as_tool_errors(mgr: WorkspaceManager) -> None:
-    await _reserve(mgr)
+    await reserve(mgr, WS)
     s = mgr.session(GROUP, invocation_id="lim", cfg=_cfg(sandbox_max_commands=1), workspace=WS)
     await s.backend.run("true", shell=True)
     with pytest.raises(SandboxError, match="上限"):
