@@ -16,8 +16,9 @@ from yggdrasil.sandbox.backend import (
     rest_path,
     shell_argv,
 )
+from yggdrasil.sandbox.cluster import claim_ready
 from yggdrasil.sandbox.errors import SandboxError, SandboxToolError
-from yggdrasil.sandbox.manager import _claim_ready, parse_listener, reap_argv
+from yggdrasil.sandbox.manager import parse_listener, reap_argv
 from yggdrasil.sandbox.state import (
     Link,
     LinkRecord,
@@ -377,12 +378,12 @@ def test_claim_readiness() -> None:
             "sandbox": {"name": "sb", "podIPs": ["10.42.0.9"]},
         }
     }
-    assert _claim_ready(claim) == (True, "10.42.0.9", "sb", None)
+    assert claim_ready(claim) == (True, "10.42.0.9", "sb", None)
     pending = {"status": {"conditions": [{"type": "Ready", "status": "False", "reason": "DependenciesNotReady"}]}}
-    assert _claim_ready(pending) == (False, None, None, None)
+    assert claim_ready(pending) == (False, None, None, None)
     failed = {"status": {"conditions": [{"type": "Ready", "status": "False", "reason": "PodFailed"}]}}
-    assert _claim_ready(failed)[3] == "PodFailed"
-    assert _claim_ready({}) == (False, None, None, None)
+    assert claim_ready(failed)[3] == "PodFailed"
+    assert claim_ready({}) == (False, None, None, None)
 
 
 def test_format_tree_sorts_and_limits() -> None:

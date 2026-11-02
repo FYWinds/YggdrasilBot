@@ -15,7 +15,6 @@ import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -34,6 +33,7 @@ from yggdrasil.sandbox.backend import (
     SandboxdWorkspace,
     StaticResolver,
 )
+from yggdrasil.sandbox.cluster import Cluster, claim_ready
 from yggdrasil.sandbox.errors import SandboxError, SandboxNotConfigured, SandboxToolError
 from yggdrasil.sandbox.job_model import job_key
 from yggdrasil.sandbox.k8s import KubeClient, KubeError
@@ -67,13 +67,6 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
     from yggdrasil.settings import ToolSettings
-
-_LABELS = {"app.kubernetes.io/part-of": "yggdrasil", "app.kubernetes.io/component": "sandbox"}
-_LABEL_SELECTOR = ",".join(f"{k}={v}" for k, v in _LABELS.items())
-_GROUP_LABEL = "yggdrasil/group"
-_NAME_LABEL = "yggdrasil/workspace"
-_WORKSPACE_LABEL = "sandbox.users.io/workspace"
-"""Pod label carrying the claim name; link Services select on it."""
 
 READY_TIMEOUT = 60.0
 _LOCK_TTL = 150
@@ -185,26 +178,6 @@ class _ClaimLost(SandboxToolError):
         self.reason = reason
 
 
-def _rfc3339(ts: float) -> str:
-    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _claim_ready(claim: dict[str, Any]) -> tuple[bool, str | None, str | None, str | None]:
-    """(ready, pod ip, sandbox name, terminal failure reason) from a SandboxClaim object."""
-    status = claim.get("status") or {}
-    sandbox = status.get("sandbox") or {}
-    ips = [ip for ip in sandbox.get("podIPs") or [] if ip]
-    name = sandbox.get("name") or None
-    ready = False
-    failure = None
-    for cond in status.get("conditions") or []:
-        if cond.get("type") == "Ready":
-            ready = cond.get("status") == "True"
-            if not ready and cond.get("reason") in {"PodFailed", "PodSucceeded", "TemplateNotFound", "SandboxExpired"}:
-                failure = str(cond.get("reason"))
-    return ready and bool(ips), (ips[0] if ips else None), name, failure
-
-
 def reap_argv(keep: dict[str, str], links: Iterable[LinkRecord]) -> list[str]:
     """The end-of-invocation reap: spare every process tree in the keep hash (the kernel, background jobs) and
     each link's listener (its process group and its tree)."""
@@ -292,10 +265,8 @@ class WorkspaceManager:
         healthy: Callable[[httpx.AsyncClient, str], Awaitable[bool]] | None = None,
     ) -> None:
         self._token = token
-        self._ns = namespace
-        self._warmpool = warmpool
         self._link_domain = link_domain
-        self._kube_client = kube
+        self._cluster = Cluster(kube, namespace=namespace, warmpool=warmpool)
         self._redis = redis
         # Pod IP -> sandboxd endpoint; tests map it onto a local sandboxd with published ports.
         self._endpoint = endpoint
@@ -313,28 +284,6 @@ class WorkspaceManager:
             raise SandboxNotConfigured("工作区未配置（没有设置 YGG_SANDBOX_TOKEN）")
         return self._token
 
-    def _kube(self) -> KubeClient:
-        if self._kube_client is None:
-            self._kube_client = KubeClient()
-        return self._kube_client
-
-    # --- paths ------------------------------------------------------------------------------------------
-
-    def _claim_path(self, name: str = "") -> str:
-        base = f"/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/{self._ns}/sandboxclaims"
-        return f"{base}/{name}" if name else base
-
-    def _sandbox_path(self, name: str) -> str:
-        return f"/apis/agents.x-k8s.io/v1beta1/namespaces/{self._ns}/sandboxes/{name}"
-
-    def _service_path(self, name: str = "") -> str:
-        base = f"/api/v1/namespaces/{self._ns}/services"
-        return f"{base}/{name}" if name else base
-
-    def _route_path(self, name: str = "") -> str:
-        base = f"/apis/traefik.io/v1alpha1/namespaces/{self._ns}/ingressroutes"
-        return f"{base}/{name}" if name else base
-
     # --- public API ---------------------------------------------------------------------------------------
 
     def session(
@@ -351,7 +300,7 @@ class WorkspaceManager:
         m = await self._load(group_id, name)
         if m is None:
             return None
-        if not m.pending and await self._kube().get(self._claim_path(m.claim)) is None:
+        if not m.pending and await self._cluster.claim(m.claim) is None:
             await self._drop(m, reason="claim gone")
             return None
         return m.info(await self._job_ids(m))
@@ -360,7 +309,7 @@ class WorkspaceManager:
         """The group's workspaces (pending ones included), most recently used first; records whose claim is gone
         are dropped."""
         mappings = await self._group_mappings(group_id)
-        live = await self._live_claims(group_id) if any(not m.pending for m in mappings) else set()
+        live = await self._cluster.live_claims(group_id) if any(not m.pending for m in mappings) else set()
         out: list[WorkspaceInfo] = []
         for m in mappings:
             if not m.pending and m.claim not in live:
@@ -372,7 +321,7 @@ class WorkspaceManager:
     async def list(self) -> list[WorkspaceInfo]:
         """Every group's workspaces (console, metrics); pending ones included."""
         mappings = await self._all_mappings()
-        live = await self._live_claims()
+        live = await self._cluster.live_claims()
         return [m.info(await self._job_ids(m)) for m in mappings if m.pending or m.claim in live]
 
     async def listing(self, group_id: int, *, current: str | None = None) -> str:
@@ -493,13 +442,13 @@ class WorkspaceManager:
         mappings = await self._all_mappings()
         claims = {m.claim for m in mappings if not m.pending}
         try:
-            claims |= await self._live_claims()
+            claims |= await self._cluster.live_claims()
         except KubeError:
             LOGGER.exception("listing sandbox claims failed")
         destroyed = 0
         for claim in claims:
             try:
-                if await self._kube().delete(self._claim_path(claim)):
+                if await self._cluster.delete_claim(claim):
                     destroyed += 1
             except Exception:
                 LOGGER.exception("deleting sandbox claim {} failed", claim)
@@ -515,7 +464,7 @@ class WorkspaceManager:
             mappings = [m for m in await self._all_mappings() if not m.pending]
             if not mappings:
                 return
-            live = await self._live_claims()
+            live = await self._cluster.live_claims()
             for m in mappings:
                 if m.claim not in live:
                     await self._drop(m, reason="claim gone (reconcile)")
@@ -529,17 +478,17 @@ class WorkspaceManager:
         m = await self._load(group_id, name)
         if m is None or m.pending:
             return None
-        claim = await self._kube().get(self._claim_path(m.claim))
+        claim = await self._cluster.claim(m.claim)
         if claim is None:
             await self._drop(m, reason="claim gone")
             return None
-        _, ip, _, failure = _claim_ready(claim)
+        _, ip, _, failure = claim_ready(claim)
         if failure:
             return None
         claim_id = m.claim
 
         async def alive() -> bool:
-            return await self._kube().get(self._claim_path(claim_id)) is not None
+            return await self._cluster.claim(claim_id) is not None
 
         backend = SandboxdWorkspace(
             resolver=StaticResolver(self._endpoint(ip or m.pod_ip), claim_id, alive=alive),
@@ -590,7 +539,15 @@ class WorkspaceManager:
                 raise SandboxError(f"每个工作区最多 {cfg.sandbox_max_links} 个公开链接，先 unpublish 一个")
             listener = await self._listener(group_id, name, port)
             rid = link_id()
-            await self._create_link_objects(m, rid, port, domain)
+            await self._cluster.create_link(
+                group_id=m.group_id,
+                workspace=m.name,
+                claim_id=m.claim,
+                sandbox=m.sandbox,
+                rid=rid,
+                port=port,
+                domain=domain,
+            )
             link = LinkRecord(
                 id=rid,
                 port=port,
@@ -624,7 +581,7 @@ class WorkspaceManager:
             link = next((x for x in m.links if x.port == port), None) if m else None
             if m is None or link is None:
                 return False
-            await self._delete_link_objects(link.id)
+            await self._cluster.delete_link(link.id)
             m.links = [x for x in m.links if x.port != port]
             await self._save(m, "links")
             await self._renew(m, cfg)
@@ -737,15 +694,10 @@ class WorkspaceManager:
 
     # --- kubernetes -----------------------------------------------------------------------------------------
 
-    async def _live_claims(self, group_id: int | None = None) -> set[str]:
-        selector = _LABEL_SELECTOR if group_id is None else f"{_LABEL_SELECTOR},{_GROUP_LABEL}={group_id}"
-        items = await self._kube().list(self._claim_path(), label_selector=selector)
-        return {str(i.get("metadata", {}).get("name")) for i in items}
-
     async def _destroy_mapping(self, m: Mapping, *, reason: str) -> None:
         try:
             if not m.pending:
-                await self._kube().delete(self._claim_path(m.claim))
+                await self._cluster.delete_claim(m.claim)
         finally:
             await self._drop(m, reason=reason)
         self._audit(m.group_id, "destroy", workspace=m.name, claim=m.claim, reason=reason)
@@ -787,7 +739,7 @@ class WorkspaceManager:
         if result == 1:
             self._audit(m.group_id, "destroy", workspace=m.name, claim=m.claim, reason=reason, kept=keep_record)
             if not m.pending:
-                await self._kube().delete(self._claim_path(m.claim))
+                await self._cluster.delete_claim(m.claim)
         return result
 
     async def _retire(self, m: Mapping, *, reason: str) -> None:
@@ -812,7 +764,7 @@ class WorkspaceManager:
     async def _replace(self, m: Mapping, *, reason: str) -> None:
         """Delete a broken pod and make the record pending."""
         try:
-            await self._kube().delete(self._claim_path(m.claim))
+            await self._cluster.delete_claim(m.claim)
         finally:
             await self._retire(m, reason=reason)
 
@@ -820,10 +772,7 @@ class WorkspaceManager:
         """Push the claim's shutdownTime out; False when the claim is gone."""
         now = time.time()
         expires = shutdown_at(now=now, max_until=m.max_until, idle_s=cfg.sandbox_idle_min * 60, has_links=bool(m.links))
-        patched = await self._kube().merge_patch(
-            self._claim_path(m.claim), {"spec": {"lifecycle": {"shutdownTime": _rfc3339(expires)}}}
-        )
-        if patched is None:
+        if not await self._cluster.set_shutdown(m.claim, expires):
             return False
         m.expires_at, m.last_used = expires, now
         await self._save(m, "expires_at", "last_used")
@@ -840,10 +789,10 @@ class WorkspaceManager:
         Raises ``_ClaimLost`` when the claim disappears or its pod fails for good."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as http:
             while True:
-                claim = await self._kube().get(self._claim_path(name))
+                claim = await self._cluster.claim(name)
                 if claim is None:
                     raise _ClaimLost("工作区被回收了，稍后再试。", reason="claim gone")
-                ready, ip, sandbox, failure = _claim_ready(claim)
+                ready, ip, sandbox, failure = claim_ready(claim)
                 if failure:
                     raise _ClaimLost(f"工作区启动失败（{failure}），稍后再试。", reason=f"pod failed ({failure})")
                 if ready and ip and await self._healthy(http, ip):
@@ -883,20 +832,9 @@ class WorkspaceManager:
         claim = claim_name(m.group_id, m.name)
         max_until = now + cfg.sandbox_max_age_min * 60
         expires = shutdown_at(now=now, max_until=max_until, idle_s=cfg.sandbox_idle_min * 60, has_links=False)
-        labels = {**_LABELS, _GROUP_LABEL: str(m.group_id), _NAME_LABEL: m.name}
-        body = {
-            "apiVersion": "extensions.agents.x-k8s.io/v1beta1",
-            "kind": "SandboxClaim",
-            "metadata": {"name": claim, "labels": labels},
-            "spec": {
-                "warmPoolRef": {"name": self._warmpool},
-                "lifecycle": {"shutdownTime": _rfc3339(expires), "shutdownPolicy": "Delete"},
-                "additionalPodMetadata": {"labels": {_WORKSPACE_LABEL: claim}},
-            },
-        }
         started = time.monotonic()
         try:
-            await self._kube().create(self._claim_path(), body)
+            await self._cluster.create_claim(claim, m.group_id, m.name, shutdown=expires)
         except KubeError as e:
             LOGGER.error("creating sandbox claim for group {} workspace {} failed: {}", m.group_id, m.name, e)
             raise SandboxToolError("创建工作区失败（集群拒绝了请求），稍后再试。") from e
@@ -921,7 +859,7 @@ class WorkspaceManager:
                 raise WorkspaceMissing(f"工作区「{m.name}」在创建过程中被删除了。")
         except BaseException:
             try:
-                await asyncio.shield(self._kube().delete(self._claim_path(claim)))
+                await asyncio.shield(self._cluster.delete_claim(claim))
             except Exception:
                 LOGGER.exception("deleting failed sandbox claim {} failed", claim)
             raise
@@ -933,11 +871,11 @@ class WorkspaceManager:
     async def _usable(self, m: Mapping, cfg: ToolSettings) -> tuple[Mapping | None, str | None]:
         """Check a record with a pod (under its workspace lock): (record to use, notice or None), or (None,
         notice) after making it pending because its pod must not be used any more."""
-        claim = await self._kube().get(self._claim_path(m.claim))
+        claim = await self._cluster.claim(m.claim)
         if claim is None:
             await self._retire(m, reason="claim gone")
             return None, _GONE_NOTICE
-        ready, ip, sandbox, failure = _claim_ready(claim)
+        ready, ip, sandbox, failure = claim_ready(claim)
         if failure:
             # A failed pod (e.g. evicted for filling /workspace) never comes back: replace it now rather than
             # failing every invocation until the claim expires.
@@ -1010,11 +948,11 @@ class WorkspaceManager:
         m = await self._load(group_id, name)
         if m is None or m.pending:
             return None
-        claim = await self._kube().get(self._claim_path(m.claim))
+        claim = await self._cluster.claim(m.claim)
         if claim is None:
             await self._drop(m, reason="claim gone (describe)")
             return None
-        _, ip, _, _ = _claim_ready(claim)
+        _, ip, _, _ = claim_ready(claim)
         backend = SandboxdWorkspace(
             resolver=StaticResolver(self._endpoint(ip or m.pod_ip), m.claim),
             token=self.token,
@@ -1042,66 +980,6 @@ class WorkspaceManager:
             text = notes.stdout.decode("utf-8", "replace")[:_NOTES_CHARS]
             parts.append(f"NOTES.md 开头：\n{text.rstrip()}")
         return "\n\n".join(parts)
-
-    # --- links ----------------------------------------------------------------------------------------------
-
-    def _owner(self, sandbox: dict[str, Any]) -> list[dict[str, Any]]:
-        meta = sandbox.get("metadata") or {}
-        return [
-            {
-                "apiVersion": "agents.x-k8s.io/v1beta1",
-                "kind": "Sandbox",
-                "name": meta.get("name"),
-                "uid": meta.get("uid"),
-                "blockOwnerDeletion": False,
-            }
-        ]
-
-    async def _create_link_objects(self, m: Mapping, rid: str, port: int, domain: str) -> None:
-        sandbox_name = m.sandbox
-        if not sandbox_name:
-            claim = await self._kube().get(self._claim_path(m.claim))
-            sandbox_name = _claim_ready(claim)[2] if claim else None
-        sandbox = await self._kube().get(self._sandbox_path(sandbox_name)) if sandbox_name else None
-        if sandbox is None:
-            raise SandboxError("找不到工作区对应的沙箱对象，没法建立公开链接。")
-        owners = self._owner(sandbox)
-        name = link_name(rid)
-        labels = {**_LABELS, _GROUP_LABEL: str(m.group_id), _NAME_LABEL: m.name}
-        service = {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {"name": name, "labels": labels, "ownerReferences": owners},
-            "spec": {
-                "selector": {_WORKSPACE_LABEL: m.claim},
-                "ports": [{"name": "http", "port": 80, "targetPort": port, "protocol": "TCP"}],
-            },
-        }
-        route = {
-            "apiVersion": "traefik.io/v1alpha1",
-            "kind": "IngressRoute",
-            "metadata": {"name": name, "labels": labels, "ownerReferences": owners},
-            "spec": {
-                "entryPoints": ["websecure"],
-                "routes": [
-                    {"kind": "Rule", "match": f"Host(`{name}.{domain}`)", "services": [{"name": name, "port": 80}]}
-                ],
-            },
-        }
-        await self._kube().create(self._service_path(), service)
-        try:
-            await self._kube().create(self._route_path(), route)
-        except BaseException:
-            await asyncio.shield(self._delete_link_objects(rid))
-            raise
-
-    async def _delete_link_objects(self, rid: str) -> None:
-        name = link_name(rid)
-        for path in (self._route_path(name), self._service_path(name)):
-            try:
-                await self._kube().delete(path)
-            except Exception:
-                LOGGER.exception("deleting {} failed", path)
 
     @staticmethod
     def _audit(group_id: int | None, action: str, **fields: Any) -> None:
@@ -1285,13 +1163,13 @@ class Session:
         return Attachment(self._mgr._endpoint(m.pod_ip), notice)
 
     async def refresh(self, ref: WorkspaceRef) -> Endpoint | None:
-        claim = await self._mgr._kube().get(self._mgr._claim_path(ref.id))
+        claim = await self._mgr._cluster.claim(ref.id)
         if claim is None:
             if self._mapping is not None and self._mapping.claim == ref.id:
                 await self._mgr._drop(self._mapping, reason="claim gone mid-invocation")
                 self._counted = False
             return None
-        _, ip, _, _ = _claim_ready(claim)
+        _, ip, _, _ = claim_ready(claim)
         if ip:
             return self._mgr._endpoint(ip)
         return self._mgr._endpoint(self._mapping.pod_ip) if self._mapping else None
