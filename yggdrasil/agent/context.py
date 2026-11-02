@@ -270,6 +270,7 @@ async def build_context(
     recent: list[search.MessageView] = []
     if group_id is not None and (background or bare_tldr):
         try:
+            # Looked up through the module: devtools.seed swaps search.recent_messages to replay past triggers.
             recent = await search.recent_messages(group_id, limit=cfg.recent_messages, minutes=cfg.recent_minutes)
         except Exception:
             LOGGER.exception("recent_messages failed")
