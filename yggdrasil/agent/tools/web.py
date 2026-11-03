@@ -78,20 +78,36 @@ async def read_x(ctx: RunContext[Deps], url_or_id: str, page: int = 1) -> str:
 
 @chat_tool("search_x")
 async def search_x(ctx: RunContext[Deps], query: str, kind: Literal["news", "posts"] = "news", hours: int = 24) -> str:
-    """搜 X（推特）上的最新动态。kind="news"（默认）：X 用 Grok 根据帖子整理的新闻摘要，适合问“最近发生了什么”；
-    kind="posts"：最近 7 天按相关度排的原帖（最多 10 条），适合找某人、某话题的原话，按条计费，比 news 贵。
-    query 用英文关键词效果更好；posts 支持 X 搜索语法（from:用户名、lang:zh、"精确短语"、OR）。hours 是往前看几小时
-    （news 最多 720，posts 最多 168）。要看帖子全文、图片或评论上下文，再用 read_x。"""
+    """搜 X（推特）上的最新动态和讨论：Grok 在 X 上搜索后用中文总结，附上引用的帖子链接。很慢（常要 30–60 秒），
+    只在确实需要 X 上的内容时用，普通资料用 web_search。query 直接写想问的问题
+    （“某某最近说了什么”“XX 发布了吗，大家怎么评价”）。hours 是往前看几小时（最多 720）。Grok 不可用时改用 X API：
+    kind="news"（默认）是 X 整理的新闻摘要，kind="posts" 是最近 7 天按相关度排的原帖（最多 10 条）。
+    要看帖子全文、图片或评论上下文，再用 read_x。"""
+    from yggdrasil.core.log import LOGGER
     from yggdrasil.runtime import snapshot
-    from yggdrasil.tools import x
+    from yggdrasil.tools import grok, x
     from yggdrasil.tools.search import reserve_quota
 
     query = query.strip()
     if not query:
         raise ToolError("搜索关键词不能为空")
-    api = x.provider(snapshot().search_providers)
+    providers = snapshot().search_providers
+    api = x.provider(providers)
+    if (g := grok.provider(providers)) is not None:
+        try:
+            if not await reserve_quota(g):
+                raise ToolError("Grok 本月额度已用完")
+            answer = await grok.x_search(g, query, hours=hours)
+        except ToolError as e:
+            if api is None:
+                raise
+            LOGGER.warning("grok x_search failed, falling back to the X API: {}", e)
+        else:
+            hits = [Hit(title="Grok 总结", snippet=answer.text)] + [Hit(title=u, url=u) for u in answer.citations]
+            ctx.deps.notes.show(ctx.tool_call_id, HitsDisplay(query=query, hits=hits))
+            return grok.format_answer(answer)
     if api is None:
-        raise ToolError("没有配置 X API（控制台 → 搜索源 → 添加 X 类型）")
+        raise ToolError("没有配置 Grok 或 X API（控制台 → 搜索源 → 添加 Grok 或 X API 类型）")
     if kind == "news":
         n = ctx.deps.settings.tools.search_results
         stories = await x.search_news(api, query, hours=hours, n=n, reserve=reserve_quota)

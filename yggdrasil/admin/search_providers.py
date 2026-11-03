@@ -1,5 +1,5 @@
-"""Search providers (the pool behind ``web_search``, plus the X API key for ``search_x`` / ``read_x``): CRUD, this
-month's usage, test query, balance."""
+"""Search providers (the pool behind ``web_search``, plus the X API key for ``read_x`` / ``search_x`` and the xAI key
+for ``search_x``): CRUD, this month's usage, test query, balance."""
 
 import time
 from datetime import datetime
@@ -21,9 +21,9 @@ from yggdrasil.tools.search import DEFAULT_BASE_URLS, SearchBackendError, monthl
 
 router = APIRouter(prefix="/search-providers", tags=["search"])
 
-type SearchKind = Literal["searxng", "exa", "deepseek", "x"]
+type SearchKind = Literal["searxng", "exa", "deepseek", "x", "grok"]
 
-_KEYED = {"exa": "Exa", "deepseek": "DeepSeek", "x": "X API"}
+_KEYED = {"exa": "Exa", "deepseek": "DeepSeek", "x": "X API", "grok": "Grok"}
 
 
 class SearchProviderOut(BaseModel):

@@ -145,7 +145,7 @@ class ToolSettings(BaseModel):
         ],
         description="启用的工具；sandbox 表示整套工作区工具（sh、py、文件读改、后台任务等，只在群聊 chat 生效）；"
         "read_x 读 X 帖子（先走免费的 FxTwitter，读不到再用 X API）；"
-        "search_x 搜 X 新闻和帖子（需要在搜索源里配置 X API，按条计费）；"
+        "search_x 搜 X 上的动态（优先用搜索源里的 Grok，没有或失败时用 X API，都按条计费）；"
         "generate_image 画图（需要配置 image 路由，按张计费，默认不开）",
     )
     slow_tools: list[str] = Field(

@@ -74,9 +74,16 @@ const KINDS: {
   },
   {
     value: "x",
-    label: "X API（给 search_x / read_x 用，不参与 web_search）",
+    label: "X API（给 read_x 用，也是 search_x 的备用，不参与 web_search）",
     url: "留空使用 https://api.x.com；key 填 App 的 Bearer Token",
     params: {},
+    limit: 300,
+  },
+  {
+    value: "grok",
+    label: "Grok（给 search_x 用的 X 搜索，不参与 web_search）",
+    url: "留空使用 https://api.x.ai；key 填 xAI 的 API key",
+    params: { model: "grok-4.7" },
     limit: 300,
   },
 ];
@@ -258,7 +265,7 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
       </div>
       <Field
         label="参数"
-        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；DeepSeek、X API：不需要参数'
+        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；Grok：{"model": "grok-4.7"}；DeepSeek、X API：不需要参数'
       >
         <JsonEditor
           rows={3}

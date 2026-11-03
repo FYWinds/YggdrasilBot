@@ -7661,7 +7661,8 @@
           "searxng",
           "exa",
           "deepseek",
-          "x"
+          "x",
+          "grok"
         ]
       },
       "SearchProviderIn": {

@@ -2181,7 +2181,7 @@ export type RouteOut = {
     updated_at: string;
 };
 
-export type SearchKind = 'searxng' | 'exa' | 'deepseek' | 'x';
+export type SearchKind = 'searxng' | 'exa' | 'deepseek' | 'x' | 'grok';
 
 /**
  * SearchProviderIn

@@ -1,7 +1,8 @@
 """Web search: one function per backend kind, plus the provider pool behind the ``web_search`` tool.
 
 Providers are admin-configured (dashboard), so their URLs are trusted and get no SSRF guard. The ``x`` kind holds
-the X API token for ``search_x`` / ``read_x`` (``yggdrasil.tools.x``) and is not part of the ``web_search`` pool.
+the X API token for ``search_x`` / ``read_x`` (``yggdrasil.tools.x``) and the ``grok`` kind the xAI key for
+``search_x`` (``yggdrasil.tools.grok``); neither is part of the ``web_search`` pool.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -19,8 +20,13 @@ from yggdrasil.runtime import SearchProviderInfo
 from yggdrasil.tools.errors import ToolError
 
 WEB_KINDS = ("searxng", "exa", "deepseek")
-KINDS = (*WEB_KINDS, "x")
-DEFAULT_BASE_URLS = {"exa": "https://api.exa.ai", "deepseek": "https://api.deepseek.com", "x": "https://api.x.com"}
+KINDS = (*WEB_KINDS, "x", "grok")
+DEFAULT_BASE_URLS = {
+    "exa": "https://api.exa.ai",
+    "deepseek": "https://api.deepseek.com",
+    "x": "https://api.x.com",
+    "grok": "https://api.x.ai",
+}
 TIME_RANGES = frozenset({"day", "week", "month", "year"})
 _TIME_RANGE_DAYS = {"day": 1, "week": 7, "month": 31, "year": 366}
 _SNIPPET_CHARS = 300
@@ -99,9 +105,12 @@ async def search_with(
     time_range: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[SearchHit]:
-    """Query a single provider (no quota bookkeeping). An ``x`` provider answers with X News stories."""
+    """Query a single provider (no quota bookkeeping). An ``x`` provider answers with X News stories, a ``grok``
+    provider with Grok's X search summary and the posts it cited."""
     if p.kind == "x":
         return await _x_news_hits(p, query, n, client)
+    if p.kind == "grok":
+        return await _grok_hits(p, query, client)
     if p.kind == "searxng":
         request = _searxng_request(p, query, time_range)
         parse = parse_searxng
@@ -148,6 +157,19 @@ async def _x_news_hits(p: SearchProviderInfo, query: str, n: int, client: httpx.
         )
         for s in stories
     ]
+
+
+async def _grok_hits(p: SearchProviderInfo, query: str, client: httpx.AsyncClient | None) -> list[SearchHit]:
+    """Grok's X search of the last day: the summary, then the cited posts (the console's provider test)."""
+    from yggdrasil.tools import grok
+
+    try:
+        answer = await grok.x_search(p, query, hours=24, client=client)
+    except ToolError as e:
+        raise SearchBackendError(str(e)) from e
+    first = answer.citations[0] if answer.citations else ""
+    summary = SearchHit("Grok 总结", first, _clip(answer.text, _LONG_SNIPPET_CHARS), "grok")
+    return [summary, *(SearchHit(url, url, "", "grok") for url in answer.citations[1:])]
 
 
 # --- quota -------------------------------------------------------------------
