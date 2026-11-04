@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import time
+from datetime import timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -11,11 +12,11 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import UserContent
+from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from yggdrasil.agent.context import build_context
-from yggdrasil.agent.deps import Deps
+from yggdrasil.agent.context import build_context, build_followup_context
+from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.tools import action_tools, suite_enabled, tool_names, tools_for
@@ -32,6 +33,7 @@ from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit, record, repeats
+from yggdrasil.pipeline import session as sessions
 from yggdrasil.pipeline.prompt import inline_images, instructions
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
@@ -42,6 +44,8 @@ from yggdrasil.transcript.notes import TraceNotes
 from yggdrasil.triggers.index import Resolved
 
 Handler = Literal["chat", "tldr"]
+# How long before the answer's conversation was kept its newest seen chat message may have been sent.
+_SEEN_SLACK = timedelta(hours=1)
 
 
 async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handler, request_text: str) -> None:
@@ -137,6 +141,8 @@ class Invocator:
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
         self.sandbox: Session | None = None  # set when this run gets the workspace suite
+        # Block nonce of a chat/tldr run's prompt; set, the delivered answer's conversation is kept for replies to it.
+        self._session_nonce: str | None = None
         # The run's conversation for the console; every agent this invocator builds records into it.
         self.recorder = TranscriptRecorder()
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
@@ -221,15 +227,36 @@ class Invocator:
             global_settings=snapshot().settings(),
             configured=manager().configured,
         )
-        ctx = await build_context(
-            self.event,
-            self.resolved,
-            self.settings,
-            self_id=ident.self_id,
-            bot_name=persona,
-            request_text=self.request_text,
-            workspace=sandbox_on,
-        )
+        session = await self._session(ident.self_id)
+        if session is not None and isinstance(self.event, GroupMessageEvent) and self.event.reply is not None:
+            ctx = await build_followup_context(
+                self.event,
+                self.settings,
+                self_id=ident.self_id,
+                bot_name=persona,
+                request_text=self.request_text,
+                handles=session.handles,
+                nonce=session.nonce,
+                answer_qq_id=self.event.reply.message_id,
+                seen_message_id=session.seen_message_id,
+                # The id does the cut; the time only keeps the query on recent partitions.
+                since=session.created_at - (_SEEN_SLACK if session.seen_message_id is not None else timedelta()),
+                workspace=sandbox_on,
+            )
+            self.recorder.prior = session.messages
+            self.recorder.continued_from = str(session.invocation_id)
+        else:
+            session = None
+            ctx = await build_context(
+                self.event,
+                self.resolved,
+                self.settings,
+                self_id=ident.self_id,
+                bot_name=persona,
+                request_text=self.request_text,
+                workspace=sandbox_on,
+            )
+        self._session_nonce = ctx.nonce
         await self._start_row(self.request_text or ctx.trigger.text)
         try:
             resolved_model = chat_model(self.handler)
@@ -288,7 +315,9 @@ class Invocator:
         prompt = await inline_images(
             ctx, self.api, self.group_id, self.handler, self.settings.context.inline_images, self.notes
         )
-        return await self._execute(agent, prompt, deps, resolved_model, mod_text)
+        return await self._execute(
+            agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
+        )
 
     def _agent(
         self,
@@ -330,8 +359,11 @@ class Invocator:
         deps: Deps,
         resolved_model: ResolvedModel,
         mod_text: str,
+        *,
+        history: list[ModelMessage] | None = None,
     ) -> str:
-        """Run the agent next to input moderation, then moderate, deliver and record the reply."""
+        """Run the agent (after ``history``, an earlier answer's conversation) next to input moderation, then
+        moderate, deliver and record the reply."""
         tools_cfg = self.settings.tools
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         run_stats = RunStats()
@@ -339,6 +371,7 @@ class Invocator:
         agent_task = asyncio.create_task(
             agent.run(
                 prompt,
+                message_history=history,
                 deps=deps,
                 model_settings=resolved_model.settings,
                 usage_limits=self._usage_limits(tools_cfg),
@@ -394,6 +427,8 @@ class Invocator:
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
 
         if v_out.action == "pass":
+            if self._session_nonce is not None:
+                await self._keep_session(result.all_messages(), deps.handles)
             try:
                 await self.deliver(reply)
             except MessageDropped:
@@ -510,6 +545,35 @@ class Invocator:
         if self.handler != "chat" or self.group_id is None or r is None or r.sender.user_id != self_id:
             return None
         return r.message_id
+
+    async def _session(self, self_id: int) -> sessions.Session | None:
+        """The kept conversation of the bot answer this chat request replies to, when it is recent enough."""
+        answer = self._replied_bot_message(self_id)
+        minutes = self.settings.context.continue_minutes
+        if answer is None or self.group_id is None or minutes <= 0 or not self.settings.privacy.capture_llm_content:
+            return None
+        try:
+            found = await sessions.load(self.group_id, answer, timedelta(minutes=minutes))
+        except Exception:
+            LOGGER.exception("session lookup failed")
+            return None
+        if found is not None:
+            LOGGER.info("continuing the conversation of invocation {}", found.invocation_id)
+        return found
+
+    async def _keep_session(self, messages: list[ModelMessage], handles: Handles) -> None:
+        """Keep this answer's conversation for replies to it (``pipeline.session``)."""
+        if self.invocation_id is None or self.group_id is None or not self.settings.privacy.capture_llm_content:
+            return
+        from yggdrasil.memory.search import find_by_qq_id
+
+        try:
+            seen = await find_by_qq_id(self.group_id, self.trigger_message_id)
+        except Exception:
+            LOGGER.exception("trigger lookup failed")
+            seen = None
+        assert self._session_nonce is not None
+        await sessions.save(self.invocation_id, messages, handles, self._session_nonce, seen.id if seen else None)
 
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction

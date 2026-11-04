@@ -7,22 +7,20 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai import RunContext
 
-from yggdrasil.agent.context import chat_line, chat_tail
-from yggdrasil.agent.deps import Deps, Handles
+from yggdrasil.agent.context import chat_line, chat_tail, reply_targets
+from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.tools.base import chat_tool, people_for
-from yggdrasil.people import People
 from yggdrasil.tools.errors import ToolError
 
 if TYPE_CHECKING:
     from yggdrasil.memory.search import MessageView
 
 
-async def _people_for_messages(ctx: RunContext[Deps], msgs: "Sequence[MessageView]") -> People:
-    return await people_for(ctx, [m.user_id for m in msgs], [m.text for m in msgs])
-
-
-def _chat_lines(msgs: "Sequence[MessageView]", people: People, handles: Handles) -> str:
-    return "\n".join(chat_line(m, people, handles) for m in msgs)
+async def _chat_lines(ctx: RunContext[Deps], msgs: "Sequence[MessageView]") -> list[str]:
+    """``chat_line`` of each message, with one name lookup and one reply-target lookup for all of them."""
+    people = await people_for(ctx, [m.user_id for m in msgs], [m.text for m in msgs])
+    replies = await reply_targets(ctx.deps.group_id, msgs)
+    return [chat_line(m, people, ctx.deps.handles, replies) for m in msgs]
 
 
 @chat_tool("search_history")
@@ -71,7 +69,7 @@ async def get_messages_around(ctx: RunContext[Deps], message_id: int, before: in
         raise ToolError("私聊里不能检索群历史")
     msgs = await messages_around(ctx.deps.group_id, message_id, min(before, 40), min(after, 40))
     ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs])
-    return _chat_lines(msgs, await _people_for_messages(ctx, msgs), ctx.deps.handles) or "无"
+    return "\n".join(await _chat_lines(ctx, msgs)) or "无"
 
 
 @chat_tool("recent_chat")
@@ -86,8 +84,7 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
     msgs = await recent_messages(ctx.deps.group_id, limit=cfg.recent_messages, minutes=min(max(minutes, 1), 24 * 60))
     if not msgs:
         return "这段时间没有聊天记录"
-    people = await _people_for_messages(ctx, msgs)
-    lines = [chat_line(m, people, ctx.deps.handles) for m in msgs]
+    lines = await _chat_lines(ctx, msgs)
     first, text = chat_tail(lines, cfg.max_context_chars)
     ctx.deps.notes.messages(ctx.tool_call_id, [m.id for m in msgs[first:]])
     return text

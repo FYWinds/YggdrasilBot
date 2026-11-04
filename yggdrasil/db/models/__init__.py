@@ -27,6 +27,7 @@ from yggdrasil.db.models.memory import (
 from yggdrasil.db.models.ops import (
     BotEvent,
     Invocation,
+    InvocationSession,
     ModerationResult,
     ReviewItem,
     SandboxJob,
@@ -45,6 +46,7 @@ __all__ = [
     "GlossaryTerm",
     "Group",
     "Invocation",
+    "InvocationSession",
     "MemoryVector",
     "Message",
     "MessageChunk",

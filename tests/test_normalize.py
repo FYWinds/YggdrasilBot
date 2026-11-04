@@ -10,6 +10,12 @@ def test_self_sent_forward_card_becomes_forward_attachment():
     assert [(a.kind, a.data) for a in norm.attachments] == [("forward", {"id": "abc123"})]
 
 
+def test_a_forward_shows_the_title_on_its_card():
+    titled = normalize([{"type": "forward", "data": {"id": "r1", "title": " sudo-rs 不兼容 "}}])
+    assert titled.text == "[合并转发:sudo-rs 不兼容]"
+    assert normalize([{"type": "forward", "data": {"id": "r2"}}]).text == "[合并转发]"
+
+
 def test_other_json_cards_stay_cards():
     card = {"app": "com.tencent.miniapp", "prompt": "分享", "meta": {"x": {"title": "标题", "jumpUrl": "https://a.b"}}}
     norm = normalize([{"type": "json", "data": {"data": json.dumps(card)}}])

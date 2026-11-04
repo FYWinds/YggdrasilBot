@@ -62,6 +62,10 @@ class TranscriptRecorder(AbstractCapability[Any]):
     spans: list[tuple[float, float]] = field(default_factory=list)  # (start, end) of each answered model request
     tools: dict[str, ToolRecord] = field(default_factory=dict)
     failure: tuple[float, str] | None = None  # (when, error) of a model request that raised
+    # A run that continues an earlier answer's conversation: that conversation (sent as message history, shown by
+    # the earlier invocation's transcript, so left out of this one) and the earlier invocation's id.
+    prior: list[ModelMessage] = field(default_factory=list)
+    continued_from: str | None = None
 
     async def wrap_model_request(self, ctx: Any, *, request_context: Any, handler: Any) -> ModelResponse:
         self.history = list(request_context.messages)
@@ -207,7 +211,15 @@ def entries(recorder: TranscriptRecorder, notes: TraceNotes) -> list[Entry]:
     responses = 0
     returned: set[str] = set()
     first_user = True
+    # Message history comes back as copies (merged with the new request), so its parts are found by value.
+    prior = [p for m in recorder.prior for p in m.parts]
+    if recorder.continued_from:
+        text = f"接着调用 {recorder.continued_from} 的对话继续；之前的 {len(recorder.prior)} 条消息见那次调用"
+        out.append(Entry(kind="event", level="info", text=text))
     for msg in recorder.history:
+        parts = [p for p in msg.parts if p not in prior] if prior else list(msg.parts)
+        if not parts:
+            continue
         if isinstance(msg, ModelResponse):
             span = recorder.spans[responses] if responses < len(recorder.spans) else None
             responses += 1
@@ -226,7 +238,7 @@ def entries(recorder: TranscriptRecorder, notes: TraceNotes) -> list[Entry]:
             and rec.result.content
             for part in msg.parts
         )
-        for part in msg.parts:
+        for part in parts:
             if isinstance(part, SystemPromptPart):
                 out.append(Entry(kind="system", at=part.timestamp, parts=[text_part(part.content, full)]))
             elif isinstance(part, UserPromptPart):

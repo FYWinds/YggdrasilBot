@@ -121,6 +121,13 @@ class ContextSettings(BaseModel):
         le=10,
         description="被引用消息和触发消息里的图片，最多直接附几张给能看图的模型（0：不附，改由模型调用 view_image）",
     )
+    continue_minutes: int = Field(
+        default=60,
+        ge=0,
+        description="群友回复 bot 的回答（chat 或 tldr）时，这么多分钟内的回答接着原来的对话继续：模型看得到之前查过的"
+        "内容和说过的话，提示词只补上中间新增的群聊和这条请求。超过时间、对话太长或关闭了 privacy.capture_llm_content "
+        "时重新带完整上下文（0：不续接）",
+    )
 
 
 class ToolSettings(BaseModel):

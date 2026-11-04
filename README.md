@@ -31,6 +31,7 @@ Linux workspace. All of it is configured live from a web dashboard.
 |---|---|
 | **Answers when addressed** | Triggers on an @mention, a reply to the bot, or its name in the text. Trigger rules (keywords, regex, scope, roles, cooldowns, priorities) are data, edited and tested in the dashboard. Other bots never trigger it: accounts tagged `[bot]`, official QQ bots and an ignore list. |
 | **Checks before it answers** | The chat agent searches the web, reads the sources, and looks up the group's own history before it writes. Replies are QQ merged-forward cards with sections and cited sources. The agent may also decide a message wasn't meant for it and stay silent. |
+| **Follow-ups keep the thread** | Replying to one of its answers (chat or TL;DR) within an hour continues that answer's conversation: the model still has what it looked up and said, and only gets the chat since then plus the new question. The chat it sees marks who replies to whom. |
 | **TL;DR** | Reply `tldr` / `太长不看` / `总结一下` to a message, link, file or forwarded chat log and get a summary of it. Asking again for the same target within a few minutes gets a reaction instead of a second summary. |
 | **Persona and prompts** | Name, voice, reply style, quoting and status reactions per group; every prompt is a Jinja template you can override. |
 | **Operations by chat** | Superusers can ask the ops agent in private chat to inspect or change configuration in natural language, and approve or reject held replies with `通过` / `拒绝` / `改`. |

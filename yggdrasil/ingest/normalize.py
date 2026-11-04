@@ -130,7 +130,9 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
                 parts.append(f"[文件:{data.get('file') or data.get('name') or '未命名'}]")
                 out.attachments.append(Attachment("file", data))
             case "forward":
-                parts.append("[合并转发]")
+                # The bot's own forwards carry the title QQ shows on the card.
+                title = str(data.get("title") or "").strip()
+                parts.append(f"[合并转发:{title}]" if title else "[合并转发]")
                 out.attachments.append(Attachment("forward", data))
             case "json" if resid := multimsg_resid(str(data.get("data", ""))):
                 parts.append("[合并转发]")

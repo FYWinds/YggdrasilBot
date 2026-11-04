@@ -45,6 +45,22 @@ class Invocation(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class InvocationSession(Base):
+    """The agent conversation of a delivered answer, kept a short while so a reply to that answer continues it
+    (``pipeline.session``): pydantic-ai messages without thinking or image bytes, the run's handles, its block
+    nonce and the newest chat message it had seen."""
+
+    __tablename__ = "invocation_sessions"
+    __table_args__ = (Index("ix_invocation_sessions_created", "created_at"),)
+
+    invocation_id: Mapped[UUID] = mapped_column(ForeignKey("invocations.id", ondelete="CASCADE"), primary_key=True)
+    messages: Mapped[list[Any]]
+    handles: Mapped[dict[str, Any]]
+    nonce: Mapped[str] = mapped_column(Text)
+    seen_message_id: Mapped[int | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class ModerationResult(Base):
     __tablename__ = "moderation_results"
     __table_args__ = (Index("ix_moderation_results_created", "created_at"),)

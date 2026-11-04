@@ -5,7 +5,7 @@ Every query is scoped to one group and excludes recalled messages.
 
 import math
 import re
-from collections.abc import Hashable, Sequence
+from collections.abc import Collection, Hashable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -164,6 +164,18 @@ async def messages_around(group_id: int, message_id: int, before: int = 10, afte
     return [_view(r) for r in rows]
 
 
+async def messages_after(
+    group_id: int, after_id: int | None, since: datetime, *, limit: int = RECENT_CAP
+) -> list[MessageView]:
+    """The newest ``limit`` messages sent since ``since`` and newer than ``#after_id`` (when given). Chronological."""
+    query = select(*CHAT_COLUMNS).where(*_visible(group_id), Message.sent_at >= since)
+    if after_id is not None:
+        query = query.where(Message.id > after_id)
+    async with get_session() as session:
+        rows = await session.execute(query.order_by(Message.sent_at.desc(), Message.id.desc()).limit(limit))
+    return sorted(map(_view, rows), key=lambda v: (v.sent_at, v.id))
+
+
 async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None:
     """Resolve a NapCat message id (ids repeat over time, so only the last 7 days are searched)."""
     since = datetime.now(UTC) - QQ_ID_LOOKBACK
@@ -177,6 +189,20 @@ async def find_by_qq_id(group_id: int, qq_message_id: int) -> MessageView | None
             )
         ).first()
     return _view(row) if row else None
+
+
+async def find_by_qq_ids(group_id: int, qq_message_ids: Collection[int]) -> dict[int, MessageView]:
+    """:func:`find_by_qq_id` for many ids in one query: the newest message for each id found."""
+    if not qq_message_ids:
+        return {}
+    since = datetime.now(UTC) - QQ_ID_LOOKBACK
+    async with get_session() as session:
+        rows = await session.execute(
+            select(*CHAT_COLUMNS)
+            .where(*_visible(group_id), Message.qq_message_id.in_(list(qq_message_ids)), Message.sent_at >= since)
+            .order_by(Message.sent_at)
+        )
+    return {v.qq_message_id: v for v in map(_view, rows)}  # ascending, so the newest wins
 
 
 async def message_segments(group_id: int, ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:

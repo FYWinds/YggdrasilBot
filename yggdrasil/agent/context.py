@@ -22,7 +22,7 @@ from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from yggdrasil.memory.search import MessageView
 
@@ -66,8 +66,8 @@ class BuiltContext:
 
 
 class _Blocks:
-    def __init__(self) -> None:
-        self.nonce = secrets.token_hex(3)
+    def __init__(self, nonce: str | None = None) -> None:
+        self.nonce = nonce or secrets.token_hex(3)
         self.parts: list[str] = []
         self.tags: list[str] = []
 
@@ -179,14 +179,37 @@ async def _glossary_hits(group_id: int, texts: list[str]) -> list[Any]:
 _QUOTE_LEVELS = 3
 
 
-def chat_line(m: "MessageView", people: People, handles: Handles) -> str:
-    """A history message as the model sees it everywhere: ``[time] #id who: text (fwd#1, img#2)``.
+def chat_line(m: "MessageView", people: People, handles: Handles, replies: "Mapping[int, MessageView]") -> str:
+    """A history message as the model sees it everywhere: ``[time] #id who 回复 #id who: text (fwd#1, img#2)``.
 
     ``#id`` is the database id every history tool and ``#<id>`` ref takes; the handles make what the line shows
-    usable as is.
+    usable as is. ``replies`` (from :func:`reply_targets`) maps QQ ids to the messages replied to; a reply whose
+    message isn't in it reads as a reply to an older message.
     """
     who = people.who(m.user_id, m.sender_name, is_self=m.is_self)
+    if m.reply_to_qq_id is not None:
+        target = replies.get(m.reply_to_qq_id)
+        if target is not None:
+            who += f" 回复 #{target.id} {people.who(target.user_id, target.sender_name, is_self=target.is_self)}"
+        else:
+            who += " 回复一条更早的消息"
     return f"[{_ts(m.sent_at)}] #{m.id} {who}: {people.mentions(m.text)}{handles.register(m.segments or [])}"
+
+
+async def reply_targets(group_id: int | None, msgs: "Sequence[MessageView]") -> "dict[int, MessageView]":
+    """The messages ``msgs`` reply to, by QQ id: taken from ``msgs`` when there, the rest looked up (last 7 days)."""
+    from yggdrasil.memory import search
+
+    wanted = {m.reply_to_qq_id for m in msgs if m.reply_to_qq_id is not None}
+    if group_id is None or not wanted:
+        return {}
+    found = {m.qq_message_id: m for m in msgs if m.qq_message_id in wanted}
+    if missing := wanted - found.keys():
+        try:
+            found = {**await search.find_by_qq_ids(group_id, missing), **found}
+        except Exception:
+            LOGGER.exception("reply target lookup failed")
+    return found
 
 
 def chat_tail(lines: "Sequence[str]", budget: int) -> tuple[int, str]:
@@ -279,6 +302,7 @@ async def build_context(
     if quoted and group_id is not None:
         reply_to = quoted_row.reply_to_qq_id if quoted_row else normalize(target.segments).reply_to
         chain = await _reply_chain(group_id, reply_to)
+    replies = await reply_targets(group_id, [*chain, *recent])
     # One alias lookup for everyone this prompt names: senders, @mentions, quoted authors.
     try:
         people = await resolve(
@@ -304,14 +328,14 @@ async def build_context(
     request_text = people.mentions(request_text)
 
     # The messages the request is about register first: their handles are focus (attached up front).
-    chain_lines = [chat_line(m, people, handles) for m in chain]
+    chain_lines = [chat_line(m, people, handles, replies) for m in chain]
     target_suffix = handles.register(target.segments, urls=True) if quoted else ""
     trigger_suffix = handles.register(trigger.segments, urls=True)
     focus = list(handles.items)
 
     recent_ids: list[int] = []
     if recent:
-        lines = [chat_line(m, people, handles) for m in recent]
+        lines = [chat_line(m, people, handles, replies) for m in recent]
         first, text = chat_tail(lines, cfg.max_context_chars)
         recent_ids = [m.id for m in recent[first:]]
         blocks.add("最近群聊", text)
@@ -356,15 +380,7 @@ async def build_context(
             if topics:
                 blocks.add("进行中的话题", "\n".join(f"- {t.title}：{t.summary}" for t in topics))
         if workspace:
-            from yggdrasil.sandbox import manager
-
-            try:
-                listing = await manager().listing(group_id)
-            except Exception:
-                LOGGER.exception("workspace listing failed")
-                listing = None
-            if listing is not None:
-                blocks.add("工作区", listing or "本群还没有工作区。")
+            await _add_workspace_listing(blocks, group_id)
 
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
     focused = resolved.handler == "tldr" and quoted and bool(request_text)
@@ -406,6 +422,107 @@ async def build_context(
     return BuiltContext(
         "\n\n".join(blocks.parts),
         target,
+        trigger,
+        handles,
+        request_text,
+        mentioned,
+        nonce=blocks.nonce,
+        display=display,
+        focus=focus,
+    )
+
+
+async def _add_workspace_listing(blocks: _Blocks, group_id: int) -> None:
+    from yggdrasil.sandbox import manager
+
+    try:
+        listing = await manager().listing(group_id)
+    except Exception:
+        LOGGER.exception("workspace listing failed")
+        return
+    if listing is not None:
+        blocks.add("工作区", listing or "本群还没有工作区。")
+
+
+async def build_followup_context(
+    event: GroupMessageEvent,
+    settings: Settings,
+    *,
+    self_id: int,
+    bot_name: str,
+    request_text: str,
+    handles: Handles,
+    nonce: str,
+    answer_qq_id: int,
+    seen_message_id: int | None,
+    since: datetime,
+    workspace: bool = False,
+) -> BuiltContext:
+    """The prompt of a reply that continues the conversation of the bot answer it replies to (``pipeline.session``):
+    what the group said after that run, then the request. ``handles`` and ``nonce`` are that run's, so the handles and
+    block tags in its messages keep working; the chat is what came after ``#seen_message_id`` (sent since ``since``).
+    """
+    from yggdrasil.memory import search
+
+    group_id = event.group_id
+    cfg = settings.context
+    blocks = _Blocks(nonce)
+    trigger = trigger_message(event, self_id)
+    await WRITER.flush()
+    try:
+        newer = await search.messages_after(group_id, seen_message_id, since)
+    except Exception:
+        LOGGER.exception("messages_after failed")
+        newer = []
+    # The answer is the model's own last turn and the request comes on its own; what came after the request is not
+    # part of the conversation yet.
+    upto = next((i for i, m in enumerate(newer) if m.qq_message_id == trigger.qq_message_id), len(newer))
+    between = [m for m in newer[:upto] if not (m.is_self and m.qq_message_id == answer_qq_id)]
+    mentioned = normalize(trigger.segments).mentions
+    try:
+        people = await resolve(
+            group_id,
+            {trigger.user_id, *mentioned},
+            bot_name=bot_name,
+            self_id=self_id,
+            texts=[request_text, *(m.text for m in between)],
+        )
+    except Exception:
+        LOGGER.exception("name lookup failed")
+        people = People(bot_name, self_ids=frozenset({self_id}))
+    trigger.text = normalize(trigger.segments, people.mention).text
+    request_text = people.mentions(request_text)
+    known = set(handles.items)
+    trigger_suffix = handles.register(trigger.segments, urls=True)
+    focus = [key for key in handles.items if key not in known]
+
+    blocks.note(
+        "这条请求回复的是你上面的回答：接着上面的对话回答，上面已经查过、说过的不用重来。"
+        + ("「中间的新增对话」是那之后群里说的话，只是背景。" if between else "")
+    )
+    shown: list[int] = []
+    if between:
+        replies = await reply_targets(group_id, between)
+        lines = [chat_line(m, people, handles, replies) for m in between]
+        first, text = chat_tail(lines, cfg.max_context_chars)
+        shown = [m.id for m in between[first:]]
+        blocks.add("中间的新增对话", text)
+    if cfg.include_glossary:
+        try:
+            hits = await _glossary_hits(group_id, [trigger.text, request_text])
+        except Exception:
+            LOGGER.exception("glossary lookup failed")
+            hits = []
+        if hits:
+            blocks.add("群内黑话", "\n".join(f"- {t.term}：{t.definition}" for t in hits))
+    if workspace:
+        await _add_workspace_listing(blocks, group_id)
+    sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
+    blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
+    display = QQContextDisplay(recent=shown, trigger=trigger.snapshot(), blocks=blocks.tags)
+    return BuiltContext(
+        "\n\n".join(blocks.parts),
+        trigger,
         trigger,
         handles,
         request_text,
