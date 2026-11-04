@@ -1,0 +1,4 @@
+{# User-prompt note of a chat request that replies to one of the bot's own messages. vars: allowed (the speaker may have that message recalled) #}
+{% if allowed %}请求者回复的是你发过的消息，并且有权限让你撤回它。请求明确要你撤回、删掉这条消息时，调用 recall_message，然后选 mode=done，不发任何消息。只是批评内容、没要求撤回时不要调用。
+{% else %}请求者回复的是你发过的消息，但只有当初提问的人和群主、群管理员能让你撤回它。请求要你撤回或删掉这条消息时选 silent，不要调用 recall_message。
+{% endif %}

@@ -19,7 +19,7 @@ from yggdrasil.agent.context import build_context, build_followup_context
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
-from yggdrasil.agent.tools import action_tools, suite_enabled, tool_names, tools_for
+from yggdrasil.agent.tools import ALL_TOOLS, action_tools, suite_enabled, tool_names, tools_for
 from yggdrasil.agent.tools import sandbox as sandbox_tools
 from yggdrasil.bot.state import identity, should_quote
 from yggdrasil.core.log import LOGGER
@@ -34,7 +34,7 @@ from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
 from yggdrasil.pipeline import ratelimit, record, repeats
 from yggdrasil.pipeline import session as sessions
-from yggdrasil.pipeline.prompt import inline_images, instructions
+from yggdrasil.pipeline.prompt import inline_images, instructions, now_text
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
 from yggdrasil.settings import Settings, ToolSettings
@@ -141,8 +141,9 @@ class Invocator:
         self._finished = False
         self.images: list[tuple[bytes, str]] = []
         self.sandbox: Session | None = None  # set when this run gets the workspace suite
-        # Block nonce of a chat/tldr run's prompt; set, the delivered answer's conversation is kept for replies to it.
-        self._session_nonce: str | None = None
+        # How a chat/tldr run's agent was built and its prompt's block nonce: set, the delivered answer's run is kept
+        # for replies to it (``pipeline.session``).
+        self._keep: tuple[sessions.Setup, str] | None = None
         # The run's conversation for the console; every agent this invocator builds records into it.
         self.recorder = TranscriptRecorder()
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
@@ -220,52 +221,6 @@ class Invocator:
         ident = await identity(self.bot)
         persona = self.settings.persona.name
         self.notes.bot = (ident.self_id, persona)
-        sandbox_on = suite_enabled(
-            self.settings,
-            self.handler,
-            self.group_id,
-            global_settings=snapshot().settings(),
-            configured=manager().configured,
-        )
-        session = await self._session(ident.self_id)
-        if session is not None and isinstance(self.event, GroupMessageEvent) and self.event.reply is not None:
-            ctx = await build_followup_context(
-                self.event,
-                self.settings,
-                self_id=ident.self_id,
-                bot_name=persona,
-                request_text=self.request_text,
-                handles=session.handles,
-                nonce=session.nonce,
-                answer_qq_id=self.event.reply.message_id,
-                seen_message_id=session.seen_message_id,
-                # The id does the cut; the time only keeps the query on recent partitions.
-                since=session.created_at - (_SEEN_SLACK if session.seen_message_id is not None else timedelta()),
-                workspace=sandbox_on,
-            )
-            self.recorder.prior = session.messages
-            self.recorder.continued_from = str(session.invocation_id)
-        else:
-            session = None
-            ctx = await build_context(
-                self.event,
-                self.resolved,
-                self.settings,
-                self_id=ident.self_id,
-                bot_name=persona,
-                request_text=self.request_text,
-                workspace=sandbox_on,
-            )
-        self._session_nonce = ctx.nonce
-        await self._start_row(self.request_text or ctx.trigger.text)
-        try:
-            resolved_model = chat_model(self.handler)
-        except TaskNotConfigured:
-            LOGGER.warning("task {} has no model route; configure it in the dashboard", self.handler)
-            await react(self.api, self.trigger_message_id, self.settings.interaction.failure_emoji)
-            return "failed"
-
-        mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
         replied_bot_msg = self._replied_bot_message(ident.self_id)
         recall_target = (
             replied_bot_msg
@@ -274,13 +229,60 @@ class Invocator:
             and await may_recall(self.role, self.user_id, self.group_id, replied_bot_msg)
             else None
         )
+        # Replying to one of the bot's messages: the speaker may or may not have it recalled.
+        recall = None if replied_bot_msg is None else recall_target is not None
+        session = await self._session(replied_bot_msg)
+        if session is not None and replied_bot_msg is not None and isinstance(self.event, GroupMessageEvent):
+            # The answer's agent again (route, instructions, tools), so everything before the new turn is what the
+            # provider already has cached.
+            route, sandbox_on = session.setup.handler, session.setup.sandbox
+            ctx = await build_followup_context(
+                self.event,
+                self.settings,
+                self_id=ident.self_id,
+                bot_name=persona,
+                request_text=self.request_text,
+                handles=session.handles,
+                nonce=session.nonce,
+                answer_qq_id=replied_bot_msg,
+                seen_message_id=session.seen_message_id,
+                # The id does the cut; the time only keeps the query on recent partitions.
+                since=session.created_at - (_SEEN_SLACK if session.seen_message_id is not None else timedelta()),
+                now=now_text(),
+                recall=bool(recall),
+                workspace=sandbox_on,
+            )
+            self.recorder.prior = session.messages
+            self.recorder.continued_from = str(session.invocation_id)
+        else:
+            session = None
+            route, sandbox_on = self.handler, self._suite_enabled(self.handler)
+            ctx = await build_context(
+                self.event,
+                self.resolved,
+                self.settings,
+                self_id=ident.self_id,
+                bot_name=persona,
+                request_text=self.request_text,
+                workspace=sandbox_on,
+                recall=recall,
+            )
+        await self._start_row(self.request_text or ctx.trigger.text)
+        try:
+            resolved_model = chat_model(route)
+        except TaskNotConfigured:
+            LOGGER.warning("task {} has no model route; configure it in the dashboard", route)
+            await react(self.api, self.trigger_message_id, self.settings.interaction.failure_emoji)
+            return "failed"
+
+        mod_text = f"{ctx.request_text or ctx.trigger.text}\n{ctx.target.text if ctx.target is not ctx.trigger else ''}"
         deps = Deps(
             self.api,
             self.group_id,
             self.user_id,
             self.settings,
             ctx.handles,
-            self.handler,
+            route,
             recall_target=recall_target,
             self_id=ident.self_id,
             bot_nickname=ident.nickname,
@@ -292,9 +294,8 @@ class Invocator:
         )
         if self.notes.full:
             self.notes.context = ctx.display
-        actions = action_tools(deps)
         tools_cfg = self.settings.tools
-        tool_list = tool_names(tools_cfg.enabled, self.handler)
+        tool_list = session.setup.tools if session else tool_names(tools_cfg.enabled, self.handler)
         suite = sandbox_tools.Suite()
         if sandbox_on and self.group_id is not None:
             self.sandbox = deps.sandbox = manager().session(
@@ -303,20 +304,40 @@ class Invocator:
                 cfg=tools_cfg,
             )
             suite = sandbox_tools.suite()
+        system = (
+            session.setup.instructions
+            if session
+            else instructions(
+                self.handler,
+                self.settings,
+                self.group_id,
+                tools=tool_list + suite.names,
+                sandbox=tools_cfg if sandbox_on else None,
+                report=False,
+                nonce=ctx.nonce,
+            )
+        )
+        self._keep = (sessions.Setup(route, system, tool_list, sandbox_on), ctx.nonce)
         agent = self._agent(
             resolved_model,
-            tools=tools_for(tool_list) + actions + suite.tools,
+            tools=tools_for(tool_list) + action_tools() + suite.tools,
             capabilities=suite.capabilities,
-            prompt_tools=tool_list + suite.names,
-            actions=[t.name for t in actions],
-            recall_denied=replied_bot_msg is not None and recall_target is None,
-            nonce=ctx.nonce,
+            instructions=system,
         )
         prompt = await inline_images(
-            ctx, self.api, self.group_id, self.handler, self.settings.context.inline_images, self.notes
+            ctx, self.api, self.group_id, route, self.settings.context.inline_images, self.notes
         )
         return await self._execute(
             agent, prompt, deps, resolved_model, mod_text, history=session.messages if session else None
+        )
+
+    def _suite_enabled(self, handler: str) -> bool:
+        return suite_enabled(
+            self.settings,
+            handler,
+            self.group_id,
+            global_settings=snapshot().settings(),
+            configured=manager().configured,
         )
 
     def _agent(
@@ -325,27 +346,13 @@ class Invocator:
         *,
         tools: list[Tool[Deps]],
         capabilities: list[AbstractCapability[Deps]],
-        prompt_tools: list[str],
-        actions: list[str],
-        recall_denied: bool,
-        nonce: str,
-        report: bool = False,
+        instructions: str,
     ) -> Agent[Deps, BotReply]:
         return Agent(
             resolved_model.model,
             output_type=BotReply,
             deps_type=Deps,
-            instructions=instructions(
-                self.handler,
-                self.settings,
-                self.group_id,
-                tools=prompt_tools,
-                sandbox=self.settings.tools if self.sandbox is not None else None,
-                actions=actions,
-                recall_denied=recall_denied,
-                report=report,
-                nonce=nonce,
-            ),
+            instructions=instructions,
             tools=tools,
             capabilities=[*capabilities, self.recorder],
             name=self.handler,
@@ -427,8 +434,7 @@ class Invocator:
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
 
         if v_out.action == "pass":
-            if self._session_nonce is not None:
-                await self._keep_session(result.all_messages(), deps.handles)
+            await self._keep_session(result.all_messages(), deps.handles)
             try:
                 await self.deliver(reply)
             except MessageDropped:
@@ -546,9 +552,9 @@ class Invocator:
             return None
         return r.message_id
 
-    async def _session(self, self_id: int) -> sessions.Session | None:
-        """The kept conversation of the bot answer this chat request replies to, when it is recent enough."""
-        answer = self._replied_bot_message(self_id)
+    async def _session(self, answer: int | None) -> sessions.Session | None:
+        """The kept run of the bot answer ``answer`` this chat request replies to, when it is recent enough and its
+        agent can still be rebuilt as it was."""
         minutes = self.settings.context.continue_minutes
         if answer is None or self.group_id is None or minutes <= 0 or not self.settings.privacy.capture_llm_content:
             return None
@@ -557,13 +563,25 @@ class Invocator:
         except Exception:
             LOGGER.exception("session lookup failed")
             return None
-        if found is not None:
-            LOGGER.info("continuing the conversation of invocation {}", found.invocation_id)
+        if found is None:
+            return None
+        setup = found.setup
+        if any(name not in ALL_TOOLS for name in setup.tools) or (
+            setup.sandbox and not self._suite_enabled(setup.handler)
+        ):
+            LOGGER.info("invocation {} used tools this run can't have; starting over", found.invocation_id)
+            return None
+        LOGGER.info("continuing the conversation of invocation {}", found.invocation_id)
         return found
 
     async def _keep_session(self, messages: list[ModelMessage], handles: Handles) -> None:
-        """Keep this answer's conversation for replies to it (``pipeline.session``)."""
-        if self.invocation_id is None or self.group_id is None or not self.settings.privacy.capture_llm_content:
+        """Keep this answer's run for replies to it (``pipeline.session``)."""
+        if (
+            self._keep is None
+            or self.invocation_id is None
+            or self.group_id is None
+            or not self.settings.privacy.capture_llm_content
+        ):
             return
         from yggdrasil.memory.search import find_by_qq_id
 
@@ -572,8 +590,8 @@ class Invocator:
         except Exception:
             LOGGER.exception("trigger lookup failed")
             seen = None
-        assert self._session_nonce is not None
-        await sessions.save(self.invocation_id, messages, handles, self._session_nonce, seen.id if seen else None)
+        setup, nonce = self._keep
+        await sessions.save(self.invocation_id, setup, messages, handles, nonce, seen.id if seen else None)
 
     async def deliver(self, reply: BotReply) -> None:
         cfg = self.settings.interaction

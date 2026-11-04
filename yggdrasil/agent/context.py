@@ -17,6 +17,7 @@ from yggdrasil.db.session import get_session
 from yggdrasil.ingest.normalize import normalize
 from yggdrasil.ingest.writer import WRITER
 from yggdrasil.people import People, resolve
+from yggdrasil.prompts import render
 from yggdrasil.settings import Settings
 from yggdrasil.transcript.schema import QQContextDisplay, QQMessage
 from yggdrasil.triggers.index import Resolved
@@ -262,8 +263,10 @@ async def build_context(
     bot_name: str,
     request_text: str,
     workspace: bool = False,
+    recall: bool | None = None,
 ) -> BuiltContext:
-    """``workspace``: this run has the sandbox suite, so list the group's workspaces (the model picks one)."""
+    """``workspace``: this run has the sandbox suite, so list the group's workspaces (the model picks one).
+    ``recall``: the request replies to one of the bot's messages, and whether the speaker may have it recalled."""
     from yggdrasil.memory import search
 
     handles = Handles()
@@ -389,6 +392,8 @@ async def build_context(
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:
         blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
+    if recall is not None:
+        blocks.note(render("recall_note", allowed=recall))
     if bare_tldr and recent_ids:
         blocks.note(
             "这条 tldr 没有引用消息：目标是「最近群聊」里请求之前的内容。请求前刚有人发了合并转发、链接、文件、"
@@ -456,11 +461,14 @@ async def build_followup_context(
     answer_qq_id: int,
     seen_message_id: int | None,
     since: datetime,
+    now: str,
+    recall: bool,
     workspace: bool = False,
 ) -> BuiltContext:
     """The prompt of a reply that continues the conversation of the bot answer it replies to (``pipeline.session``):
-    what the group said after that run, then the request. ``handles`` and ``nonce`` are that run's, so the handles and
-    block tags in its messages keep working; the chat is what came after ``#seen_message_id`` (sent since ``since``).
+    what changed since that run (the time ``now``, what the group said after it), then the request. ``handles`` and
+    ``nonce`` are that run's, so the handles and block tags in its messages keep working; the chat is what came after
+    ``#seen_message_id`` (sent since ``since``). ``recall``: whether the speaker may have the answer recalled.
     """
     from yggdrasil.memory import search
 
@@ -497,7 +505,8 @@ async def build_followup_context(
     focus = [key for key in handles.items if key not in known]
 
     blocks.note(
-        "这条请求回复的是你上面的回答：接着上面的对话回答，上面已经查过、说过的不用重来。"
+        f"现在是 {now}（北京时间），以这个时间为准。这条请求回复的是你上面的回答：直接接着上面的对话回应它，"
+        "不必沿用上一次的任务格式，上面查过、说过的不用重来。"
         + ("「中间的新增对话」是那之后群里说的话，只是背景。" if between else "")
     )
     shown: list[int] = []
@@ -519,6 +528,7 @@ async def build_followup_context(
         await _add_workspace_listing(blocks, group_id)
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
     blocks.add("请求", f"{request_text or trigger.text}{trigger_suffix}", sender)
+    blocks.note(render("recall_note", allowed=recall))
     display = QQContextDisplay(recent=shown, trigger=trigger.snapshot(), blocks=blocks.tags)
     return BuiltContext(
         "\n\n".join(blocks.parts),

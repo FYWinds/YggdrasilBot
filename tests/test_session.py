@@ -47,12 +47,16 @@ def _agent(respond: Any, recorder: TranscriptRecorder, instructions: str) -> Age
     return agent
 
 
-async def test_a_reply_continues_the_answers_conversation() -> None:
+def _wire(messages: list[ModelMessage]) -> list[Any]:
+    return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+
+
+async def test_a_reply_resends_the_answers_run_unchanged() -> None:
     def first(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if not any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
             return ModelResponse(
                 parts=[
-                    ThinkingPart("先读原文", signature="sig"),
+                    ThinkingPart("先读原文", signature="sig", provider_name="anthropic"),
                     ToolCallPart("read_url", {"url": "https://a.example"}),
                 ]
             )
@@ -62,9 +66,7 @@ async def test_a_reply_continues_the_answers_conversation() -> None:
         ["<请求-ab12cd>看看 img#1</请求-ab12cd>", "img#1：", BinaryContent(PNG, media_type="image/png")]
     )
     # What is kept goes through JSON, as it does through the database.
-    kept = ModelMessagesTypeAdapter.validate_python(
-        ModelMessagesTypeAdapter.dump_python(sessions.scrub(answer.all_messages()), mode="json")
-    )
+    kept = ModelMessagesTypeAdapter.validate_python(_wire(answer.all_messages()))
 
     seen: list[list[ModelMessage]] = []
 
@@ -75,23 +77,19 @@ async def test_a_reply_continues_the_answers_conversation() -> None:
     recorder = TranscriptRecorder(prior=kept, continued_from="inv-1")
     notes = TraceNotes()
     notes.context = QQContextDisplay(trigger=QQMessage(user_id=10001))
-    reply = await _agent(second, recorder, "chat 的规则").run("<请求-ab12cd>为什么</请求-ab12cd>", message_history=kept)
+    reply = await _agent(second, recorder, "tldr 的规则").run("<请求-ab12cd>为什么</请求-ab12cd>", message_history=kept)
     assert reply.output.title == "接着说"
 
-    # The model sees its earlier turns: the tool it called, a cut-down result, its answer, then the new request.
+    # Everything before the new turn is what the provider got last time (thinking, image and full tool result
+    # included), so its prompt cache hits; the new request joins the request that closed the answer.
     sent = seen[0]
-    parts = [p for m in sent for p in m.parts]
-    assert [p.tool_name for p in parts if isinstance(p, ToolCallPart)] == ["read_url", "final_result"]
-    page = next(p for p in parts if isinstance(p, ToolReturnPart) and p.tool_name == "read_url")
-    assert isinstance(page.content, str)
-    assert page.content.startswith("正文")
-    assert len(page.content) < len(PAGE)
-    assert "已省略" in page.content
-    assert not any(isinstance(p, ThinkingPart) for p in parts)  # another provider can't take its signature
-    old_prompt = next(p for p in parts if isinstance(p, UserPromptPart))
-    assert old_prompt.content == ["<请求-ab12cd>看看 img#1</请求-ab12cd>", "img#1：", sessions.OMITTED_IMAGE]
+    assert _wire(sent[: len(kept) - 1]) == _wire(kept[:-1])
+    assert sent[len(kept) - 1].parts[: len(kept[-1].parts)] == kept[-1].parts
+    assert any(isinstance(p, ThinkingPart) and p.signature == "sig" for m in sent for p in m.parts)
+    page = next(p for m in sent for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name == "read_url")
+    assert page.content == PAGE
     assert isinstance(sent[-1], ModelRequest)
-    assert sent[-1].instructions == "chat 的规则"
+    assert sent[-1].instructions == "tldr 的规则"
     assert [p.content for p in sent[-1].parts if isinstance(p, UserPromptPart)] == ["<请求-ab12cd>为什么</请求-ab12cd>"]
 
     # The console shows this run's turns; the earlier ones belong to the earlier invocation.
@@ -120,6 +118,7 @@ async def test_only_a_recent_delivered_answer_is_continued() -> None:
     messages = [ModelRequest(parts=[UserPromptPart("问题")]), ModelResponse(parts=[_answer("答案")])]
     handles = Handles()
     handles.add("forward", {"id": "res-1"})
+    setup = sessions.Setup("tldr", "tldr 的规则", ["read_url", "view_image"], sandbox=False)
 
     def answered(reply_qq_message_id: int, status: str) -> Invocation:
         return Invocation(
@@ -131,7 +130,7 @@ async def test_only_a_recent_delivered_answer_is_continued() -> None:
         s.add_all([ok, held, stale])
     try:
         for inv in (ok, held, stale):
-            await sessions.save(inv.id, messages, handles, "ab12cd", 4242)
+            await sessions.save(inv.id, setup, messages, handles, "ab12cd", 4242)
         async with get_session() as s:
             await s.execute(
                 update(InvocationSession)
@@ -141,6 +140,7 @@ async def test_only_a_recent_delivered_answer_is_continued() -> None:
         found = await sessions.load(group_id, answer, timedelta(hours=1))
         assert found is not None
         assert (found.invocation_id, found.nonce, found.seen_message_id) == (ok.id, "ab12cd", 4242)
+        assert found.setup == setup
         assert [type(m) for m in found.messages] == [ModelRequest, ModelResponse]
         assert found.handles.get("fwd#1") is not None
         assert await sessions.load(group_id, answer + 1, timedelta(hours=1)) is None  # held for review

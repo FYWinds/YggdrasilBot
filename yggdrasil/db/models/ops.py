@@ -46,14 +46,18 @@ class Invocation(Base):
 
 
 class InvocationSession(Base):
-    """The agent conversation of a delivered answer, kept a short while so a reply to that answer continues it
-    (``pipeline.session``): pydantic-ai messages without thinking or image bytes, the run's handles, its block
-    nonce and the newest chat message it had seen."""
+    """The agent run of a delivered answer, kept a short while so a reply to that answer continues it
+    (``pipeline.session``): how the agent was built (route, instructions, tool names, workspace suite), the
+    pydantic-ai messages exactly as sent, the run's handles, its block nonce and the newest chat message it had seen."""
 
     __tablename__ = "invocation_sessions"
     __table_args__ = (Index("ix_invocation_sessions_created", "created_at"),)
 
     invocation_id: Mapped[UUID] = mapped_column(ForeignKey("invocations.id", ondelete="CASCADE"), primary_key=True)
+    handler: Mapped[str] = mapped_column(Text)
+    instructions: Mapped[str] = mapped_column(Text)
+    tools: Mapped[list[Any]]
+    sandbox: Mapped[bool]
     messages: Mapped[list[Any]]
     handles: Mapped[dict[str, Any]]
     nonce: Mapped[str] = mapped_column(Text)

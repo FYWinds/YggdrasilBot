@@ -51,13 +51,11 @@ def instructions(
     *,
     tools: list[str],
     sandbox: ToolSettings | None,
-    actions: list[str],
-    recall_denied: bool,
     report: bool,
     nonce: str,
 ) -> str:
-    """The ``<handler>_system`` prompt. ``tools`` and ``actions`` name what the run may call; ``sandbox`` is the
-    settings of the workspace suite when the run has it."""
+    """The ``<handler>_system`` prompt. ``tools`` names what the run may call; ``sandbox`` is the settings of the
+    workspace suite when the run has it. Nothing about the request goes here (see ``pipeline.session``)."""
     group_name = ""
     if group_id is not None:
         info = snapshot().groups.get(group_id)
@@ -66,12 +64,10 @@ def instructions(
         f"{handler}_system",
         persona=settings.persona,
         group_name=group_name or "本群",
-        now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A"),
+        now=now_text(),
         tools=tools,
         sandbox=sandbox,
         sandbox_links=bool(APP_CONFIG.sandbox_link_domain),
-        actions=actions,
-        recall_denied=recall_denied,
         report=report,
         style=render("style_rules"),
         data_rules=render(
@@ -81,3 +77,7 @@ def instructions(
             sandbox=sandbox is not None,
         ),
     )
+
+
+def now_text() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %A")

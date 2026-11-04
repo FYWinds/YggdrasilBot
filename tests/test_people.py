@@ -272,6 +272,8 @@ async def test_a_follow_up_prompt_has_only_the_chat_since_the_answer(
         answer_qq_id=501,
         seen_message_id=86426,
         since=t0,
+        now="2026-11-04 09:18 Wednesday",
+        recall=False,
     )
     assert asked == [(86426, t0)]
     # The answer is the model's own last turn already; the request comes on its own; later chat isn't in yet.
@@ -280,6 +282,9 @@ async def test_a_follow_up_prompt_has_only_the_chat_since_the_answer(
     for absent in ("#86427", "#86429", "后来的话"):
         assert absent not in ctx.prompt
     assert '<请求-ab12cd 发送者="阿明(1000000002)">\n为什么 (img#2)' in ctx.prompt
+    # What changed since the answer travels in this turn: the time, and whether this speaker may have it recalled.
+    assert "现在是 2026-11-04 09:18 Wednesday" in ctx.prompt
+    assert "只有当初提问的人和群主、群管理员能让你撤回它" in ctx.prompt
     assert ctx.focus == ["img#2"]  # the earlier run's handles keep their numbers
     assert ctx.handles.get("fwd#1") is not None
     assert ctx.display is not None

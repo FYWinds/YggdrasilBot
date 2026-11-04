@@ -1,10 +1,10 @@
 """Agent tools; failures are returned as text so the model can adapt.
 
-Everything in ``ALL_TOOLS`` is read-only. Action tools (``action_tools``) change things and are only
-handed to a run when the code has already decided the speaker may do that action. The sandbox workspace
-suite lives in ``agent/tools/sandbox.py`` (its job tools in ``agent/tools/jobs.py``). This module never imports
-them, and the suite's gate ``suite_enabled`` sits here, next to the handler policy it reads, so they need nothing
-from it.
+Everything in ``ALL_TOOLS`` is read-only. Action tools (``action_tools``) change things; every chat and tldr run has
+them, and each acts only when the code has already decided the speaker may (``Deps.recall_target``). The sandbox
+workspace suite lives in ``agent/tools/sandbox.py`` (its job tools in ``agent/tools/jobs.py``). This module never
+imports them, and the suite's gate ``suite_enabled`` sits here, next to the handler policy it reads, so they need
+nothing from it.
 """
 
 from collections.abc import Awaitable, Callable
@@ -79,12 +79,13 @@ async def recall_message(ctx: RunContext[Deps]) -> str:
     """撤回被回复的那条消息（你自己发的）。成功后选 mode=done，不要再发消息；失败就照实说明。"""
     target = ctx.deps.recall_target
     if target is None:
-        raise ToolError("这次没有可以撤回的消息")
+        raise ToolError("这次没有可以撤回的消息：请求者没有回复你的消息，或者没有权限让你撤回")
     await ctx.deps.api.delete_msg(message_id=target)
     ctx.deps.actions.append(f"recall {target}")
     return "已撤回"
 
 
-def action_tools(deps: Deps) -> list[Tool[Deps]]:
-    """Action tools this run's speaker is allowed to use (decided in code before the run)."""
-    return [Tool(recall_message, takes_ctx=True)] if deps.recall_target is not None else []
+def action_tools() -> list[Tool[Deps]]:
+    """The action tools. The same in every run, so a reply that continues an answer sends the tools that answer had
+    (``pipeline.session``); whether this run may act is ``Deps``' business."""
+    return [Tool(recall_message, takes_ctx=True)]

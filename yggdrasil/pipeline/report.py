@@ -27,6 +27,7 @@ from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.people import member_label
 from yggdrasil.pipeline import ratelimit
 from yggdrasil.pipeline.invoke import Invocator
+from yggdrasil.pipeline.prompt import instructions
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import SandboxError, manager
 from yggdrasil.sandbox.job_model import KIND_TEXT, STATUS_TEXT, Job, ReportDeferred, fmt_duration
@@ -153,11 +154,15 @@ class ReportInvocator(Invocator):
             resolved_model,
             tools=tools_for(tool_list) + suite.tools,
             capabilities=suite.capabilities,
-            prompt_tools=tool_list + suite.names,
-            actions=[],
-            recall_denied=False,
-            nonce=nonce,
-            report=True,
+            instructions=instructions(
+                "chat",
+                self.settings,
+                self.group_id,
+                tools=tool_list + suite.names,
+                sandbox=tools_cfg if self.sandbox is not None else None,
+                report=True,
+                nonce=nonce,
+            ),
         )
         mod_text = f"{job.request_text}\n{job.result[:4000]}"
         return await self._execute(agent, prompt, deps, resolved_model, mod_text)
