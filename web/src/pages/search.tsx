@@ -83,7 +83,7 @@ const KINDS: {
     value: "grok",
     label: "Grok（给 search_x 用的 X 搜索，不参与 web_search）",
     url: "留空使用 https://api.x.ai；key 填 xAI 的 API key",
-    params: { model: "grok-4.7" },
+    params: { model: "grok-4.7", reasoning_effort: "low" },
     limit: 300,
   },
 ];
@@ -265,7 +265,7 @@ function SearchProviderDialog({ provider, onClose }: { provider: SearchProviderO
       </div>
       <Field
         label="参数"
-        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；Grok：{"model": "grok-4.7"}；DeepSeek、X API：不需要参数'
+        hint='Exa：{"type": "auto"}（可选 fast、instant）；SearXNG：{"language": "zh-CN"}；Grok：{"model": "grok-4.7", "reasoning_effort": "low"}（思考强度 low / medium / high / xhigh，不填为 low；越高越慢）；DeepSeek、X API：不需要参数'
       >
         <JsonEditor
           rows={3}

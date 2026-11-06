@@ -21,9 +21,12 @@ from yggdrasil.tools.errors import ToolError
 KIND = "grok"
 DEFAULT_BASE_URL = "https://api.x.ai"
 DEFAULT_MODEL = "grok-4.7"
+# grok-4.7 defaults to "high" (no "none"): 85–134 s per search in the 2026-11 trial, "low" 17–35 s at about half the
+# cost with comparable answers. Provider param ``reasoning_effort`` overrides it.
+DEFAULT_REASONING_EFFORT = "low"
 MAX_HOURS = 720
 _CN_TZ = timezone(timedelta(hours=8))
-# Grok decides how many searches to run; grok-4.7 took 46 s (9 searches) in the 2026-11 trial.
+# Grok decides how many searches to run; at "high" effort a search can outlast this.
 _TIMEOUT = httpx.Timeout(90, connect=10)
 _MAX_OUTPUT_TOKENS = 1500
 _CACHE_TTL = 600.0
@@ -46,7 +49,7 @@ class Answer:
     posts_fetched: int | None = None
 
 
-_cache: OrderedDict[tuple[str, str, str], tuple[float, Answer]] = OrderedDict()
+_cache: OrderedDict[tuple[str, str, str, str], tuple[float, Answer]] = OrderedDict()
 
 
 def provider(providers: Sequence[SearchProviderInfo]) -> SearchProviderInfo | None:
@@ -59,11 +62,13 @@ async def x_search(p: SearchProviderInfo, query: str, *, hours: int, client: htt
     hours = max(1, min(hours, MAX_HOURS))
     since = (datetime.now(_CN_TZ) - timedelta(hours=hours)).date().isoformat()
     model = str(p.params.get("model") or DEFAULT_MODEL)
-    key = (query, since, model)
+    effort = str(p.params.get("reasoning_effort") or DEFAULT_REASONING_EFFORT)
+    key = (query, since, model, effort)
     if (hit := _cache.get(key)) is not None and time.monotonic() - hit[0] <= _CACHE_TTL:
         return hit[1]
     body = {
         "model": model,
+        "reasoning": {"effort": effort},
         "input": [{"role": "system", "content": _INSTRUCTIONS}, {"role": "user", "content": query}],
         "tools": [{"type": "x_search", "from_date": since}],
         "max_output_tokens": _MAX_OUTPUT_TOKENS,

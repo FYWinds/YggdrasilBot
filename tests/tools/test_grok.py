@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from collections.abc import Callable
 from typing import Any
@@ -50,7 +51,7 @@ async def test_x_search_asks_grok_with_x_search_tool_and_parses_citations() -> N
     request = routes.seen[0]
     sent = json.loads(request.content)
     assert (request.url.path, request.headers["authorization"]) == ("/v1/responses", "Bearer xai-key")
-    assert sent["model"] == "grok-test"
+    assert (sent["model"], sent["reasoning"]) == ("grok-test", {"effort": "low"})
     assert [m["role"] for m in sent["input"]] == ["system", "user"]
     assert sent["input"][1]["content"] == "LongCat-2.5 发布了吗"
     assert sent["tools"][0]["type"] == "x_search"
@@ -61,6 +62,16 @@ async def test_x_search_asks_grok_with_x_search_tool_and_parses_citations() -> N
     formatted = grok.format_answer(answer)
     assert formatted.count(POST_A) == 1
     assert f"其他搜到的帖子：\n1. {POST_B}" in formatted
+
+
+async def test_x_search_reasoning_effort_comes_from_provider_params() -> None:
+    high = dataclasses.replace(GROK, params={"model": "grok-test", "reasoning_effort": "high"})
+    routes = Routes({"api.x.ai": httpx.Response(200, json=_response("t", []))})
+    async with routes.client() as client:
+        await grok.x_search(GROK, "q", hours=24, client=client)
+        await grok.x_search(high, "q", hours=24, client=client)  # not served from the "low" answer's cache entry
+
+    assert [json.loads(r.content)["reasoning"] for r in routes.seen] == [{"effort": "low"}, {"effort": "high"}]
 
 
 @pytest.mark.parametrize(

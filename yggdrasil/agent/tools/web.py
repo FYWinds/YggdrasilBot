@@ -78,7 +78,7 @@ async def read_x(ctx: RunContext[Deps], url_or_id: str, page: int = 1) -> str:
 
 @chat_tool("search_x")
 async def search_x(ctx: RunContext[Deps], query: str, kind: Literal["news", "posts"] = "news", hours: int = 24) -> str:
-    """搜 X（推特）上的最新动态和讨论：Grok 在 X 上搜索后用中文总结，附上引用的帖子链接。很慢（常要 30–60 秒），
+    """搜 X（推特）上的最新动态和讨论：Grok 在 X 上搜索后用中文总结，附上引用的帖子链接。很慢（常要 20–40 秒），
     只在确实需要 X 上的内容时用，普通资料用 web_search。query 直接写想问的问题
     （“某某最近说了什么”“XX 发布了吗，大家怎么评价”）。hours 是往前看几小时（最多 720）。Grok 不可用时改用 X API：
     kind="news"（默认）是 X 整理的新闻摘要，kind="posts" 是最近 7 天按相关度排的原帖（最多 10 条）。
