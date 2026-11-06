@@ -15,6 +15,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from yggdrasil.agent.budget import ToolBudget
 from yggdrasil.agent.context import build_context, build_followup_context
 from yggdrasil.agent.deps import Deps, Handles
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
@@ -37,7 +38,7 @@ from yggdrasil.pipeline import session as sessions
 from yggdrasil.pipeline.prompt import inline_images, instructions, now_text
 from yggdrasil.runtime import snapshot
 from yggdrasil.sandbox import Session, manager
-from yggdrasil.settings import Settings, ToolSettings
+from yggdrasil.settings import Settings
 from yggdrasil.transcript import store as transcripts
 from yggdrasil.transcript.capture import TranscriptRecorder
 from yggdrasil.transcript.notes import TraceNotes
@@ -354,7 +355,7 @@ class Invocator:
             deps_type=Deps,
             instructions=instructions,
             tools=tools,
-            capabilities=[*capabilities, self.recorder],
+            capabilities=[*capabilities, self._budget(), self.recorder],
             name=self.handler,
             retries=2,
         )
@@ -371,7 +372,7 @@ class Invocator:
     ) -> str:
         """Run the agent (after ``history``, an earlier answer's conversation) next to input moderation, then
         moderate, deliver and record the reply."""
-        tools_cfg = self.settings.tools
+        budget = self._budget()
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         run_stats = RunStats()
         stats_token = RUN_STATS.set(run_stats)  # the task copies the context, sub-agents included
@@ -381,7 +382,7 @@ class Invocator:
                 message_history=history,
                 deps=deps,
                 model_settings=resolved_model.settings,
-                usage_limits=self._usage_limits(tools_cfg),
+                usage_limits=UsageLimits(request_limit=budget.requests),
                 usage=run_usage,
                 event_stream_handler=drain_events,
                 workspace=self.sandbox.backend if self.sandbox is not None else None,
@@ -506,11 +507,12 @@ class Invocator:
             self._slow_marked = True
             await self._status(self.settings.interaction.slow_tool_emoji)
 
-    def _usage_limits(self, cfg: ToolSettings) -> UsageLimits:
+    def _budget(self) -> ToolBudget:
         # Workspace sessions (write, run, read the error, fix) need far more steps than a plain reply.
+        cfg = self.settings.tools
         if self.sandbox is not None:
-            return UsageLimits(request_limit=cfg.sandbox_request_limit, tool_calls_limit=cfg.sandbox_tool_calls_limit)
-        return UsageLimits(request_limit=cfg.request_limit, tool_calls_limit=cfg.tool_calls_limit)
+            return ToolBudget(requests=cfg.sandbox_request_limit, tool_calls=cfg.sandbox_tool_calls_limit)
+        return ToolBudget(requests=cfg.request_limit, tool_calls=cfg.tool_calls_limit)
 
     def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
         """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""
