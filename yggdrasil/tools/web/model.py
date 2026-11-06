@@ -46,9 +46,17 @@ class Extracted:
 
 
 class Unreadable(ToolError):
-    """The page could not be read from here (wall, block page, HTTP error, network failure, nothing rendered);
-    unlike other tool errors (not a web page, file too large, gone per an official API), a remote fetcher may
-    still get it."""
+    """The page could not be read from here (wall, block page, HTTP error other than 404/410, network failure,
+    nothing rendered); unlike other tool errors (not a web page, file too large, 404/410 or gone per an official
+    API), a remote fetcher may still get it."""
+
+
+class ImageLink(ToolError):
+    """The URL is an image, not a page: the caller hands ``url`` (the final URL) to the image tools instead."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__("这是图片链接，不是网页")
+        self.url = url
 
 
 type RemoteFetch = Callable[[str], Awaitable[Extracted | None]]

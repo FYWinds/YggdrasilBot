@@ -20,7 +20,16 @@ from yggdrasil.tools.ssrf import GuardedResponse, check_url, guarded_client, imp
 from yggdrasil.tools.web.adapters import adapter_for
 from yggdrasil.tools.web.blocks import JS_CHALLENGES, detect_wall, is_challenge, raise_if_blocked, raise_if_wall
 from yggdrasil.tools.web.extract import MIN_TEXT_CHARS, extract_html, json_text
-from yggdrasil.tools.web.model import MAX_HTML_BYTES, MB, Extracted, PageResult, RemoteFetch, Unreadable, read_capped
+from yggdrasil.tools.web.model import (
+    MAX_HTML_BYTES,
+    MB,
+    Extracted,
+    ImageLink,
+    PageResult,
+    RemoteFetch,
+    Unreadable,
+    read_capped,
+)
 from yggdrasil.tools.web.page import Anchor, find_anchor, fragment_view, paginate
 
 USER_AGENT = (
@@ -34,6 +43,7 @@ _HEADERS = {
 }
 MAX_DOC_BYTES = 20 * MB
 _BROWSER_RETRY_STATUSES = frozenset({401, 403, 429, 503})
+_GONE_STATUSES = frozenset({404, 410})
 # Network timeouts apply to single reads, so a server that trickles bytes never trips them: each adapter call and
 # each page download gets at most this many request timeouts in all.
 _DEADLINE_TIMEOUTS = 3
@@ -192,6 +202,8 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     if body is None:
         if status in _BROWSER_RETRY_STATUSES and browser_url:
             return await _render_or_raise(final_url, browser_url, timeout_s, None)
+        if status in _GONE_STATUSES:  # the server says so itself: no other tier would find the page
+            raise ToolError(f"网页不存在或已删除（HTTP {status}）")
         raise Unreadable(f"网页返回错误（HTTP {status}）")
 
     if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
@@ -225,7 +237,7 @@ async def _download(resp: GuardedResponse) -> _Body:
     ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     filename = _filename(resp.headers, resp.url)
     if ctype.startswith("image/"):
-        raise ToolError("这是图片链接，不是网页，请用看图工具查看")
+        raise ImageLink(str(resp.url))
     if ctype.startswith(("audio/", "video/")):
         raise ToolError("这是音视频文件链接，无法读取内容")
     json_type = ctype == "application/json" or ctype.endswith("+json")

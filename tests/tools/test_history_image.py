@@ -195,3 +195,14 @@ async def test_files_are_not_resigned(downloads: list[str]) -> None:
     h = Handle("file#1", "file", {"file": "a.pdf", "url": "https://files.example.com/a.pdf?rkey=old"})
     with pytest.raises(httpx.HTTPStatusError):
         await media.media_bytes(_images("unused"), None, h, 1024)
+
+
+async def test_an_image_link_pillow_cannot_read_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Review finding: an SVG from read_url's img#N reached the vision model labelled as JPEG and failed the run.
+    async def svg(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
+        return b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+
+    monkeypatch.setattr(media, "download", svg)
+    h = Handle("img#1", "image", {"url": "https://example.com/badge.svg", "source": "web"})
+    with pytest.raises(ToolError, match="不是能识别的图片格式"):
+        await media.load_image(_images(None), GROUP, h)

@@ -13,7 +13,7 @@ from tests.support.files import text_pdf
 from tests.support.routes import Answer, Routes
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.web import Extracted, RemoteFetch, read_url
-from yggdrasil.tools.web.model import Unreadable
+from yggdrasil.tools.web.model import ImageLink, Unreadable
 
 type LocalTier = Callable[[Extracted | Exception], list[str]]
 
@@ -84,6 +84,24 @@ async def test_pdf_link_is_parsed_as_document(web_page: Routes) -> None:
     result = await read_url("https://example.com/files/paper.pdf")
     assert (result.via, result.title) == ("document:pdf", "paper.pdf")
     assert "Linked PDF body" in result.text
+
+
+async def test_an_image_link_reports_its_final_url(web_page: Routes) -> None:
+    web_page.answers["example.com"] = httpx.Response(200, content=b"\x89PNG", headers={"content-type": "image/png"})
+    with pytest.raises(ImageLink) as raised:
+        await read_url("https://example.com/pic")
+    assert raised.value.url == "https://example.com/pic"
+
+
+@pytest.mark.parametrize(("status", "remote_calls"), [(404, []), (410, []), (500, ["https://example.com/x"])])
+async def test_only_a_gone_page_skips_the_remote_fetcher(
+    web_page: Routes, status: int, remote_calls: list[str]
+) -> None:
+    web_page.answers["example.com"] = httpx.Response(status, html="<p>error</p>")
+    calls: list[str] = []
+    with pytest.raises(ToolError, match=f"HTTP {status}"):
+        await read_url("https://example.com/x", remote=_remote(None, calls))
+    assert calls == remote_calls
 
 
 def _commit(sha: str, message: str) -> dict:

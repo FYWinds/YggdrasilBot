@@ -279,8 +279,10 @@ def _tile(frames: list[Image.Image], times: tuple[float, ...]) -> bytes:
 async def load_image(api: NapCatAPI, group_id: int | None, h: Handle) -> ModelImage:
     """An image handle, or a file handle whose content is a picture, ready for a vision model."""
     blob, name = await media_bytes(api, group_id, h, IMAGE_MAX_DOWNLOAD)
-    if h.kind == "file" and not is_image(blob):
-        raise ToolError(f"{name} 不是图片，用 read_file 读")
+    if not is_image(blob):
+        # Bytes Pillow can't place (SVG, HEIC, a web page) would reach a vision model labelled as JPEG and fail the
+        # whole run with a provider 400.
+        raise ToolError(f"{name} 不是图片，用 read_file 读" if h.kind == "file" else f"{name} 不是能识别的图片格式")
     return await asyncio.to_thread(model_image, blob)
 
 

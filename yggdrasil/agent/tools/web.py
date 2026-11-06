@@ -17,6 +17,7 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
     from yggdrasil.runtime import snapshot
     from yggdrasil.tools.remote_fetch import remote_fetcher
     from yggdrasil.tools.web import read_url as _read
+    from yggdrasil.tools.web.model import ImageLink
 
     url = url_or_handle
     if "#" in url_or_handle and not url_or_handle.startswith("http"):
@@ -25,13 +26,17 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
         if not url:
             raise ToolError("这个卡片没有链接")
     cfg = ctx.deps.settings.tools
-    res = await _read(
-        url,
-        max_chars=cfg.read_url_max_chars,
-        page=page,
-        browser_url=APP_CONFIG.browser_url if cfg.browser_fallback else None,
-        remote=remote_fetcher(snapshot().search_providers) if cfg.remote_fetch else None,
-    )
+    try:
+        res = await _read(
+            url,
+            max_chars=cfg.read_url_max_chars,
+            page=page,
+            browser_url=APP_CONFIG.browser_url if cfg.browser_fallback else None,
+            remote=remote_fetcher(snapshot().search_providers) if cfg.remote_fetch else None,
+        )
+    except ImageLink as e:
+        key = ctx.deps.handles.add("image", {"url": e.url, "source": "web"})
+        return f"这是图片链接，不是网页：已注册为 {key}，用 view_image({key}) 查看。"
     page_info = PageDisplay(
         url=url, final_url=res.final_url, title=res.title, via=res.via, page=res.page, pages=res.pages
     )
