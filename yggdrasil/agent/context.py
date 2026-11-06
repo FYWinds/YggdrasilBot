@@ -14,7 +14,7 @@ from yggdrasil.agent.deps import Handles
 from yggdrasil.core.log import LOGGER
 from yggdrasil.db.models import Message
 from yggdrasil.db.session import get_session
-from yggdrasil.ingest.normalize import normalize
+from yggdrasil.ingest.normalize import URL_RE, normalize
 from yggdrasil.ingest.writer import WRITER
 from yggdrasil.people import People, resolve
 from yggdrasil.prompts import render
@@ -386,8 +386,16 @@ async def build_context(
             await _add_workspace_listing(blocks, group_id)
 
     sender = f' 发送者="{people.who(trigger.user_id, trigger.sender_name)}"'
-    focused = resolved.handler == "tldr" and quoted and bool(request_text)
-    if focused:
+    # "tldr <link> <words>" without a quote: the link is the target and the words say what to focus on.
+    link_focus = ""
+    if resolved.handler == "tldr" and not quoted and (links := URL_RE.findall(request_text)):
+        rest = " ".join(URL_RE.sub(" ", request_text).split()).lstrip("，。！？、：；,.!?:; ")
+        link_focus = rest if any(c.isalnum() for c in rest) else ""
+    focused = resolved.handler == "tldr" and ((quoted and bool(request_text)) or bool(link_focus))
+    if link_focus:
+        blocks.add("请求", f"{' '.join(links)}{trigger_suffix}", sender)
+        blocks.add("关注点", link_focus, sender)
+    elif focused:
         # "tldr <words>" on a quoted message: the words say what to focus on.
         blocks.add("关注点", f"{request_text}{trigger_suffix}", sender)
     else:

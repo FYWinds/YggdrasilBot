@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -155,6 +156,36 @@ async def test_a_bare_tldr_gets_the_recent_chat_as_its_target(offline: None, mon
         request_text="qemu microvm",
     )
     assert "#68950" not in worded.prompt
+
+
+@pytest.mark.parametrize(
+    ("text", "request_block", "focus"),
+    [
+        # Prod review: the words after the link landed in 请求 with the plain-summary length, not as 关注点.
+        (
+            "https://example.com/post 这个方案和 nginx 比怎么样",
+            "https://example.com/post (url#1)",
+            "这个方案和 nginx 比怎么样",
+        ),
+        ("https://example.com/post 。", "https://example.com/post 。 (url#1)", None),
+        ("这个靠谱吗", "这个靠谱吗", None),
+    ],
+)
+async def test_words_after_a_link_in_a_tldr_are_its_focus(
+    offline: None, text: str, request_block: str, focus: str | None
+) -> None:
+    resolved = Resolved("tldr", 1, "", (), "self", 0, False)
+    ctx = await context.build_context(
+        _event(Message(f"tldr {text}")), resolved, Settings(), self_id=SELF, bot_name="耶梦加得", request_text=text
+    )
+
+    def block(tag: str) -> str | None:
+        found = re.search(rf"<{tag}-{ctx.nonce}[^>]*>\n(.*?)\n</{tag}-{ctx.nonce}>", ctx.prompt, re.DOTALL)
+        return found.group(1) if found else None
+
+    assert block("请求") == request_block
+    assert block("关注点") == focus
+    assert ("只回答关注点" in ctx.prompt) is (focus is not None)
 
 
 async def test_a_quoted_reply_brings_the_message_it_replies_to(offline: None, monkeypatch: pytest.MonkeyPatch) -> None:

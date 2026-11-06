@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-_URL = re.compile(r"https?://[^\s\u3000，。！？、）」』\])>\"']+")
+URL_RE = re.compile(r"https?://[^\s\u3000，。！？、）」』\])>\"']+")
 _RECORD_TYPES = {"record": "语音", "video": "视频"}
 
 
@@ -157,7 +157,7 @@ def normalize(segments: list[dict[str, Any]], mention: Callable[[int], str] | No
                 parts.append(f"[{kind}]")
     out.text = "".join(parts).strip()
     texts = [str(s.get("data", {}).get("text", "")) for s in segments if s.get("type") == "text"]
-    for url in _URL.findall(" ".join(texts)):
+    for url in URL_RE.findall(" ".join(texts)):
         if url not in out.urls:
             out.urls.append(url)
     return out
