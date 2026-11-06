@@ -67,6 +67,10 @@ class HistoryHit:
     msg_id: int | None = None
     user_id: int | None = None
     sender_name: str | None = None
+    media: bool = False
+    """A message with images, files, forwards or cards: only its own hit gives them handles."""
+    span: tuple[int, int, datetime, datetime] | None = None
+    """A chunk's first and last message id and its start and end time."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +239,13 @@ def rrf_fuse[K: Hashable](rankings: Sequence[Sequence[K]], k: int = RRF_K) -> li
     return sorted(scores.items(), key=lambda kv: -kv[1])
 
 
+# Segments that become handles (normalize's attachments).
+_MEDIA_PATH = (
+    '$[*] ? (@.type == "image" || @.type == "file" || @.type == "forward" || @.type == "json"'
+    ' || @.type == "video" || @.type == "record")'
+)
+
+
 async def _bm25(
     session: AsyncSession,
     group_id: int,
@@ -255,12 +266,15 @@ async def _bm25(
         conds.append("user_id = :u")
         params["u"] = user_id
     sql = (
-        "SELECT id, sent_at, user_id, sender_name, plain_text, pdb.score(id) AS score FROM messages "
+        "SELECT id, sent_at, user_id, sender_name, plain_text, pdb.score(id) AS score, "
+        f"jsonb_path_exists(segments, '{_MEDIA_PATH}') AS media FROM messages "
         f"WHERE {' AND '.join(conds)} ORDER BY score DESC, id DESC LIMIT :lim"
     )
     rows = (await session.execute(text(sql), params)).all()
     return [
-        HistoryHit("message", r.id, r.plain_text, r.sent_at, float(r.score), r.id, r.user_id, r.sender_name)
+        HistoryHit(
+            "message", r.id, r.plain_text, r.sent_at, float(r.score), r.id, r.user_id, r.sender_name, bool(r.media)
+        )
         for r in rows
     ]
 
@@ -277,7 +291,7 @@ _VECTOR_SQL = """
 SELECT v.kind, v.ref_id, v.embedding <=> CAST(:qv AS halfvec) AS dist,
        COALESCE(c.text, t.title || E'\\n' || t.summary, d.summary) AS body,
        COALESCE(c.start_at, t.start_at, d.day::timestamp AT TIME ZONE 'Asia/Shanghai') AS at,
-       t.weight
+       t.weight, c.first_msg_id, c.last_msg_id, c.end_at
 FROM memory_vectors v
 LEFT JOIN message_chunks c ON v.kind = 'chunk' AND c.id = v.ref_id
 LEFT JOIN topics t ON v.kind = 'topic' AND t.id = v.ref_id AND t.status <> 'archived'
@@ -318,7 +332,17 @@ async def _vector(
     rows = (await session.execute(stmt, params)).all()
     half_life = snapshot().settings(group_id).memory.weight_half_life_days
     now = datetime.now(UTC)
-    hits = [HistoryHit(r.kind, r.ref_id, r.body, r.at, 1.0 - float(r.dist)) for r in rows]
+    hits = [
+        HistoryHit(
+            r.kind,
+            r.ref_id,
+            r.body,
+            r.at,
+            1.0 - float(r.dist),
+            span=(r.first_msg_id, r.last_msg_id, r.at, r.end_at) if r.kind == "chunk" else None,
+        )
+        for r in rows
+    ]
     factors = [_topic_factor(r.weight, now - r.at, half_life) for r in rows]
     # Scores stay plain similarities (SEMANTIC_MIN_SIMILARITY applies to them); only the order counts the weight.
     order = sorted(range(len(hits)), key=lambda i: -hits[i].score * factors[i])
@@ -343,12 +367,39 @@ async def _rerank(query: str, hits: list[HistoryHit], top_k: int) -> list[Histor
     return [replace(hits[i], score=score) for i, score in ranked[:top_k] if 0 <= i < len(hits)]
 
 
-async def _query_terms(session: AsyncSession, query: str) -> list[str]:
-    """The query's words as the BM25 index tokenizes them (jieba, lowercased), without punctuation, and without
-    one-character words unless there is nothing else."""
+# Asking words: they say what kind of answer is wanted, not what was said, and match unrelated lines.
+_QUESTION_WORDS = frozenset(
+    "是谁 谁 谁说 什么 啥 怎么 怎么样 怎样 咋 为什么 为啥 为何 哪个 哪些 哪里 哪儿 多少 几 吗 呢 吧 啊 呀 了 的"
+    " 是 有 有没有 没有 说 说过 提过 提到 讲 讲过 过 一下 知道 记得 有人 谁提".split()
+)
+
+
+async def _query_words(session: AsyncSession, query: str) -> list[str]:
+    """The query's words as the BM25 index tokenizes them (jieba, lowercased), without punctuation and, unless
+    nothing else is left, without asking words."""
     rows = await session.scalars(text("SELECT unnest(CAST(CAST(:q AS pdb.jieba) AS text[]))"), {"q": query})
     words = list(dict.fromkeys(w for w in rows if any(c.isalnum() for c in w)))
-    return [w for w in words if len(w) > 1] or words
+    return [w for w in words if w not in _QUESTION_WORDS] or words
+
+
+def _terms(words: Sequence[str]) -> list[str]:
+    """The words that excerpts are cut around: one-character words only when there is nothing else."""
+    return [w for w in words if len(w) > 1] or list(words)
+
+
+def _covered(hits: list[HistoryHit]) -> list[HistoryHit]:
+    """``hits`` without the message hits that a chunk hit among them shows whole, as one of its excerpt lines (ids
+    and times both inside the chunk: backfilled messages get newer ids). Messages with attachments stay: only their
+    own hit gives the attachments handles and the message its ``#id``."""
+    chunks = [(h.span, {line[_said(line) :] for line in h.text.split("\n")}) for h in hits if h.span]
+
+    def shown(m: HistoryHit) -> bool:
+        said = m.text.strip()
+        return any(
+            lo <= m.ref_id <= hi and start <= m.when <= end and said in lines for (lo, hi, start, end), lines in chunks
+        )
+
+    return [h for h in hits if h.kind != "message" or h.media or not shown(h)]
 
 
 def _clip(s: str, limit: int) -> str:
@@ -442,9 +493,11 @@ async def search_history(
         LOGGER.warning("query embedding failed, BM25 only: {!r}", e)
         qv = None
     async with get_session() as session:
-        lexical = await _bm25(session, group_id, query, since, until, user_id)
+        words = await _query_words(session, query)
+        # BM25 gets the content words only: "XX 是谁" must not match every line that asks who someone is.
+        lexical = await _bm25(session, group_id, " ".join(words) or query, since, until, user_id)
+        terms = _terms(words)
         semantic = await _vector(session, group_id, *qv, since, until, user_id) if qv else []
-        terms = await _query_terms(session, query) if semantic or lexical else []
     lexical = [replace(h, text=_around(h.text, terms, HIT_MAX_CHARS)) for h in lexical]
     semantic = [s for h in semantic if (s := _shown(h, terms))]
     by_key = {(h.kind, h.ref_id): h for h in (*semantic, *lexical)}
@@ -453,8 +506,9 @@ async def search_history(
     if len(pool) > 1:
         reranked = await _rerank(query, pool, top_k)
         if reranked is not None:
-            return reranked
-    return pool[:top_k]
+            return _covered(reranked)
+    # Only a chunk that is returned may stand in for a message.
+    return _covered(pool[:top_k])
 
 
 # --- topics, glossary, profiles ---------------------------------------------------------------

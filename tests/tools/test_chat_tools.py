@@ -107,12 +107,12 @@ async def _message(text: str, *, ago: timedelta, qq: int = 1) -> int:
     return await insert_message(GROUP, text, user_id=20002, sent_at=datetime.now(UTC) - ago, qq_message_id=qq)
 
 
-async def _chunk(space_id: int, text: str, cos: float, *, ago: timedelta) -> int:
+async def _chunk(space_id: int, text: str, cos: float, *, ago: timedelta, msgs: tuple[int, int] = (1, 2)) -> int:
     async with get_session() as s:
         c = MessageChunk(
             group_id=GROUP,
-            first_msg_id=1,
-            last_msg_id=2,
+            first_msg_id=msgs[0],
+            last_msg_id=msgs[1],
             start_at=datetime.now(UTC) - ago - 30 * MINUTE,
             end_at=datetime.now(UTC) - ago,
             msg_count=text.count("\n") + 1,
@@ -199,6 +199,46 @@ async def test_search_history_shows_a_match_late_in_a_long_message(history: None
     assert f"#{message}" in result
     assert "泰山的西线人少一点" in result
     assert len(result) < 2000
+
+
+async def test_search_history_shows_a_line_once_and_ignores_asking_words(history: None, search_space: int) -> None:
+    # Prod review: the same message came back as a hit and inside a chunk, and "是谁" matched every line asking who.
+    said = await _message("老王是泰山脚下开民宿的", ago=240 * MINUTE)
+    asking = await _message("这人是谁啊", ago=230 * MINUTE)
+    lines = [_chat(i, f"闲聊第{i}句") for i in range(6)]
+    lines[3] = _chat(3, "老王是泰山脚下开民宿的")
+    chunk = await _chunk(search_space, "\n".join(lines), 0.5, ago=230 * MINUTE, msgs=(said - 3, asking))
+
+    result = str(await search_history(_ctx(), "老王是谁"))
+
+    assert f"chunk:{chunk}" in result
+    assert result.count("老王是泰山脚下开民宿的") == 1
+    assert f"#{said}" not in result
+    assert f"#{asking}" not in result
+
+
+async def test_search_history_keeps_message_hits_a_chunk_does_not_show_whole(history: None, search_space: int) -> None:
+    # Review findings: a message was dropped when a chunk merely contained its text, and its image lost its handle.
+    pic = await insert_message(
+        GROUP,
+        "老王的猫[图片]",
+        user_id=20002,
+        sent_at=datetime.now(UTC) - 240 * MINUTE,
+        segments=[
+            {"type": "text", "data": {"text": "老王的猫"}},
+            {"type": "image", "data": {"url": "https://example.com/c.png"}},
+        ],
+    )
+    short = await _message("老王", ago=239 * MINUTE)
+    lines = [_chat(i, f"闲聊第{i}句") for i in range(4)]
+    lines[1], lines[2] = _chat(1, "老王的猫[图片]"), _chat(2, "老王家又养了一只老王的猫")
+    await _chunk(search_space, "\n".join(lines), 0.5, ago=230 * MINUTE, msgs=(pic - 1, short + 1))
+
+    result = str(await search_history(_ctx(), "老王"))
+
+    assert f"#{pic}" in result
+    assert "img#" in result
+    assert f"#{short}" in result
 
 
 # --- recent_chat ------------------------------------------------------------------------------------
