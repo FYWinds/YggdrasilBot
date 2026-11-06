@@ -52,7 +52,7 @@ async def test_msn_article_comes_from_the_content_api() -> None:
     assert (result.title, result.via) == ("Storm closes the harbour", "msn")
     assert result.text == (
         "来源：Example News · 作者：Jane Doe\n"
-        "发布时间：2026-01-02 11:04\n"
+        "发布时间：2026-01-02 11:04（北京时间）\n"
         "原文：https://news.example.com/storm\n"
         "\n"
         "A storm closed the harbour on Monday.\n\nFerries resume on Wednesday."

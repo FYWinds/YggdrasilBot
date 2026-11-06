@@ -6,7 +6,7 @@ from datetime import datetime
 import httpx
 
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web.adapters.common import CN_TZ, fragment_text
+from yggdrasil.tools.web.adapters.common import cn_time, fragment_text
 from yggdrasil.tools.web.model import AdapterResult, Extracted
 
 _TME_POST_RE = re.compile(r"^/(?:s/)?([A-Za-z0-9_]{3,32})/(\d+)/?$")
@@ -38,7 +38,7 @@ def parse_telegram_embed(html: str, final_url: str) -> Extracted | None:
     owner = first_text("//*[contains(@class, 'tgme_widget_message_owner_name')]")
     lines = [f"频道：{owner}"] if owner else []
     if stamps := root.xpath("//time[@datetime]/@datetime"):
-        lines.append(f"发布时间：{datetime.fromisoformat(stamps[0]).astimezone(CN_TZ):%Y-%m-%d %H:%M}")
+        lines.append(f"发布时间：{cn_time(datetime.fromisoformat(stamps[0]))}")
     if views := first_text("//*[contains(@class, 'tgme_widget_message_views')]"):
         lines.append(f"浏览：{views}")
     found = False

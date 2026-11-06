@@ -22,7 +22,8 @@ def test_telegram_embed_yields_post_text_not_the_quoted_reply() -> None:
     result = telegram.parse_telegram_embed(TME_POST, "https://t.me/chan/7")
     assert result is not None
     assert result.text == (
-        "频道：Chan\n发布时间：2026-10-21 21:48\n浏览：1.2K\n\nline one  \nline **two** 🔥\n\n附件：图片 1 张"
+        "频道：Chan\n发布时间：2026-10-21 21:48（北京时间）\n浏览：1.2K\n\n"
+        "line one  \nline **two** 🔥\n\n附件：图片 1 张"
     )
 
 

@@ -173,9 +173,11 @@ async def test_github_issue_reads_the_thread_from_the_api() -> None:
     assert isinstance(result, Extracted)
     assert result.title == "Crash on start · Issue #7 · o/r"
     assert result.text == (
-        "Issue #7 · 已关闭（不计划处理）\n作者：reporter · 创建于 2026-10-25 18:02 · 关闭于 2026-10-26 08:00\n"
+        "Issue #7 · 已关闭（不计划处理）\n"
+        "作者：reporter · 创建于 2026-10-25 18:02（北京时间） · 关闭于 2026-10-26 08:00（北京时间）\n"
         "标签：bug、wontfix\n\n正文：\n\nIt crashes.\n\nSteps: run it.\n\n评论（2 条）：\n\n"
-        "【maint（维护者） · 2026-10-25 20:00】\nWorks for me.\n\n【spammer · 2026-10-25 21:00】\n（已被折叠：spam）"
+        "【maint（维护者） · 2026-10-25 20:00（北京时间）】\nWorks for me.\n\n"
+        "【spammer · 2026-10-25 21:00（北京时间）】\n（已被折叠：spam）"
     )
 
 
@@ -258,19 +260,21 @@ async def test_github_pull_request_has_state_branches_and_conversation(path: str
     assert result.text == (
         "PR #9 · 已关闭，未合并 · 草稿\n"
         "提示：dev 说「Moved to #12」，已转移或被取代：https://github.com/o/r/pull/12\n"
-        "作者：dev · 创建于 2026-10-24 22:51 · 关闭于 2026-10-25 02:59\n"
+        "作者：dev · 创建于 2026-10-24 22:51（北京时间） · 关闭于 2026-10-25 02:59（北京时间）\n"
         "分支：dev:feature → o:main\n改动：3 个提交 · 76 个文件 · +6494 −7\n\n正文：\n\nAdds a provider.\n\n"
         "评论（3 条；另有 2 条代码行内审查评论未列出）：\n\n"
-        "【ci[bot]（机器人） · 审查 · 2026-10-24 23:00】\nTests pass.\n\n"
-        "【lead（维护者） · 审查：批准 · 2026-10-25 00:00】\n\n"
-        "【dev（作者、维护者） · 2026-10-25 03:00】\nMoved to #12"
+        "【ci[bot]（机器人） · 审查 · 2026-10-24 23:00（北京时间）】\nTests pass.\n\n"
+        "【lead（维护者） · 审查：批准 · 2026-10-25 00:00（北京时间）】\n\n"
+        "【dev（作者、维护者） · 2026-10-25 03:00（北京时间）】\nMoved to #12"
     )
     assert "api.github.com/repos/o/r/pulls/9/comments" not in _paths(routes)  # inline review threads stay out
 
 
 def test_github_merged_pull_request_state() -> None:
     merged = {**PULL, "draft": False, "merged_at": "2026-10-28T12:00:00Z", "merged_by": {"login": "lead"}}
-    assert github.format_github_pull(merged, [], []).startswith("PR #9 · 已合并（2026-10-28 20:00，合并者 lead）\n")
+    assert github.format_github_pull(merged, [], []).startswith(
+        "PR #9 · 已合并，2026-10-28 20:00（北京时间），合并者 lead\n"
+    )
 
 
 async def test_github_pull_link_to_an_issue_number_is_redirected() -> None:

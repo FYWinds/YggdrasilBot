@@ -91,11 +91,16 @@ async def raw_file(
     return Extracted(raw, title, doc.text, via, capped=doc.truncated)
 
 
+def cn_time(moment: datetime) -> str:
+    """``moment`` in China time, labelled: models otherwise mix it up with the UTC times of other pages."""
+    return f"{moment.astimezone(CN_TZ):%Y-%m-%d %H:%M}（北京时间）"
+
+
 def cn_datetime(stamp: object) -> str:
     """An API timestamp (ISO 8601, UTC) in China time."""
     if not stamp:
         return "未知时间"
-    return f"{datetime.fromisoformat(str(stamp)).astimezone(CN_TZ):%Y-%m-%d %H:%M}"
+    return cn_time(datetime.fromisoformat(str(stamp)))
 
 
 def fragment_text(html: str) -> str:

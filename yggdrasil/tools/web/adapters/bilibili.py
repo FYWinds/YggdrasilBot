@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 import httpx
 
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web.adapters.common import CN_TZ, cn_count, fmt_duration, no_transcript, optional_json, transcript
+from yggdrasil.tools.web.adapters.common import (
+    cn_count,
+    cn_time,
+    fmt_duration,
+    no_transcript,
+    optional_json,
+    transcript,
+)
 from yggdrasil.tools.web.model import API_USER_AGENT, AdapterResult, Extracted
 
 _BILI_VIDEO_RE = re.compile(r"/video/(BV[0-9A-Za-z]{10}|av\d+)", re.IGNORECASE)
@@ -99,7 +106,7 @@ def format_bilibili_video(data: dict) -> str:
     stat = data.get("stat") or {}
     lines = [f"UP主：{owner.get('name', '未知')}"]
     if pubdate := data.get("pubdate"):
-        lines.append(f"发布时间：{datetime.fromtimestamp(pubdate, UTC).astimezone(CN_TZ):%Y-%m-%d %H:%M}")
+        lines.append(f"发布时间：{cn_time(datetime.fromtimestamp(pubdate, UTC))}")
     if duration := data.get("duration"):
         lines.append(f"时长：{fmt_duration(int(duration))}")
     if tname := data.get("tname") or data.get("tname_v2"):

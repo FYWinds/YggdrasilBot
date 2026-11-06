@@ -5,12 +5,8 @@ from datetime import UTC, datetime
 import httpx
 
 from yggdrasil.tools.errors import ToolError
-from yggdrasil.tools.web.adapters.common import CN_TZ, fragment_text
+from yggdrasil.tools.web.adapters.common import cn_time, fragment_text
 from yggdrasil.tools.web.model import API_USER_AGENT, AdapterResult, Extracted
-
-
-def _cn_time(epoch: int) -> str:
-    return f"{datetime.fromtimestamp(epoch, UTC).astimezone(CN_TZ):%Y-%m-%d %H:%M}"
 
 
 async def item(client: httpx.AsyncClient, url: httpx.URL) -> AdapterResult:
@@ -39,7 +35,7 @@ def format_hacker_news(item: dict) -> str:
         facts.append(f"{item['points']} 分")
     facts.append(f"{comments} 条评论")
     if created := item.get("created_at_i"):
-        facts.append(_cn_time(int(created)))
+        facts.append(cn_time(datetime.fromtimestamp(int(created), UTC)))
     lines = [" · ".join(facts)]
     if link := item.get("url"):
         lines.append(f"链接：{link}")

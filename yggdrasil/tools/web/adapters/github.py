@@ -312,7 +312,7 @@ def format_github_pull(pull: dict, comments: list[dict] | None, reviews: list[di
     the inline code review threads."""
     if pull.get("merged_at"):
         merger = f"，合并者 {_gh_login(pull['merged_by'])}" if pull.get("merged_by") else ""
-        state = f"已合并（{cn_datetime(pull['merged_at'])}{merger}）"
+        state = f"已合并，{cn_datetime(pull['merged_at'])}{merger}"
     elif pull.get("state") == "closed":
         state = "已关闭，未合并"
     else:

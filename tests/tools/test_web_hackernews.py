@@ -28,7 +28,7 @@ HN_ITEM = {
 
 def test_hacker_news_thread_keeps_tree_shape_through_pagination() -> None:
     text = hackernews.format_hacker_news(HN_ITEM)
-    assert text.startswith("作者 op · 42 分 · 5 条评论 · 2026-10-24 00:59\n链接：https://example.com/thing")
+    assert text.startswith("作者 op · 42 分 · 5 条评论 · 2026-10-24 00:59（北京时间）\n链接：https://example.com/thing")
     thread = "- alice：First paragraph.\n  Second paragraph.\n  - bob：Reply & more"
     orphan = "- [已删除]：[已删除]\n  - carol：orphan reply"
     # Deleted leaves vanish; deleted parents stay so their replies keep context. Indents survive pagination.
