@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from pydantic_ai import RunContext
 
@@ -13,11 +14,13 @@ from tests.support.agent import run_ctx
 from tests.support.db import insert_message, purge_groups, unit_vector
 from tests.support.groups import fresh_group
 from tests.support.onebot import FakeNapCat
+from tests.support.routes import Routes
 from yggdrasil.agent.deps import Deps
 from yggdrasil.agent.schema import BotReply, Section, SourceRef
 from yggdrasil.agent.tools.attachments import expand_forward
-from yggdrasil.agent.tools.history import recent_chat, search_history
-from yggdrasil.db.models import MemoryVector, MessageChunk, Topic
+from yggdrasil.agent.tools.history import lookup_glossary, recent_chat, search_history
+from yggdrasil.agent.tools.web import read_url
+from yggdrasil.db.models import GlossaryTerm, MemoryVector, MessageChunk, Topic
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.forward import send_forward
 from yggdrasil.ingest.writer import IncomingMessage
@@ -260,3 +263,39 @@ async def test_recent_chat_never_starts_inside_a_multi_line_message(history: Non
     assert "后面的第0条消息" in result
     assert "后面的第9条消息" in result
     assert len(result) <= 1000
+
+
+# --- lookup_glossary --------------------------------------------------------------------------------
+
+
+async def _term(term: str, definition: str, aliases: list[str] | None = None) -> None:
+    async with get_session() as s:
+        s.add(GlossaryTerm(group_id=GROUP, term=term, aliases=aliases or [], definition=definition))
+
+
+async def test_lookup_glossary_lists_terms_and_matches_latin_words_whole(history: None) -> None:
+    # Prod review: an empty lookup found nothing, and "CA" matched "Calling".
+    assert await lookup_glossary(_ctx(), "") == "本群词典还是空的"
+    await _term("Calling", "群里说的打电话连麦")
+    await _term("CA 证书", "签发证书的机构", ["根证书"])
+    await _term("摸鱼", "上班时间干别的")
+
+    listing = str(await lookup_glossary(_ctx(), " "))
+    assert listing.endswith("CA 证书（根证书）、Calling、摸鱼")
+    found = str(await lookup_glossary(_ctx(), "ca"))
+    assert found.startswith("CA 证书")
+    assert "Calling" not in found
+    assert "上班时间" in str(await lookup_glossary(_ctx(), "鱼"))  # Chinese still matches inside a term
+    await _term("2333", "大笑")
+    assert str(await lookup_glossary(_ctx(), "233")).startswith("2333")  # and so does number slang
+
+
+# --- read_url ---------------------------------------------------------------------------------------
+
+
+async def test_read_url_on_an_image_link_registers_an_image_handle(web_page: Routes) -> None:
+    web_page.answers["example.com"] = httpx.Response(200, content=b"\x89PNG", headers={"content-type": "image/png"})
+    ctx = _ctx()
+    result = str(await read_url(ctx, "https://example.com/cat"))
+    assert "img#1" in result
+    assert ctx.deps.handles.items["img#1"].data == {"url": "https://example.com/cat", "source": "web"}

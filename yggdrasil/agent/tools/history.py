@@ -15,6 +15,8 @@ from yggdrasil.tools.errors import ToolError
 if TYPE_CHECKING:
     from yggdrasil.memory.search import MessageView
 
+GLOSSARY_LIST_MAX = 200  # term names an empty lookup_glossary lists
+
 
 async def _chat_lines(ctx: RunContext[Deps], msgs: "Sequence[MessageView]") -> list[str]:
     """``chat_line`` of each message, with one name lookup and one reply-target lookup for all of them."""
@@ -93,10 +95,19 @@ async def recent_chat(ctx: RunContext[Deps], minutes: int = 30) -> str:
 @chat_tool("lookup_glossary")
 async def lookup_glossary(ctx: RunContext[Deps], term: str) -> str:
     """查本群黑话/梗词典。"""
+    from yggdrasil.memory.search import glossary_terms
     from yggdrasil.memory.search import lookup_glossary as _lookup
 
     if ctx.deps.group_id is None:
         raise ToolError("私聊里没有群词典")
+    if not term.strip():
+        entries = await glossary_terms(ctx.deps.group_id)
+        names = sorted((f"{t.term}（{'、'.join(t.aliases)}）" if t.aliases else t.term for t in entries), key=str.lower)
+        if not names:
+            return "本群词典还是空的"
+        shown = names[:GLOSSARY_LIST_MAX]
+        more = f"\n（共 {len(names)} 条，只列出前 {len(shown)} 条）" if len(names) > len(shown) else ""
+        return f"本群词典的词条（查释义时传入词条名）：\n{'、'.join(shown)}{more}"
     terms = await _lookup(ctx.deps.group_id, term)
     if not terms:
         return f"词典里没有「{term}」"

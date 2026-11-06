@@ -542,8 +542,17 @@ async def glossary_terms(group_id: int) -> list[GlossaryEntry]:
         return [_entry(g) for g in rows]
 
 
+def _contains(column: Any, term: str) -> Any:
+    """``column`` contains ``term``, case-insensitively. A Latin-letter term must be a whole word: "CA" does not match
+    "Calling". Chinese has no word boundaries, and number slang ("233" for "2333") is written longer, so other terms
+    match anywhere."""
+    if term.isascii() and any(c.isalpha() for c in term):
+        return column.regexp_match(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", flags="i")
+    return column.ilike(f"%{term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%")
+
+
 async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[GlossaryEntry]:
-    """Exact term/alias match (case-insensitive); else substring match; else nearest vectors."""
+    """Exact term/alias match (case-insensitive); else a match inside a term or definition; else nearest vectors."""
     term = term.strip()
     if not term:
         return []
@@ -564,10 +573,9 @@ async def lookup_glossary(group_id: int, term: str, limit: int = 3) -> list[Glos
         ).all()
         if exact:
             return [_entry(g) for g in exact]
-        pattern = f"%{term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         fuzzy = (
             await session.scalars(
-                scoped.where(or_(GlossaryTerm.term.ilike(pattern), GlossaryTerm.definition.ilike(pattern)))
+                scoped.where(or_(_contains(GlossaryTerm.term, term), _contains(GlossaryTerm.definition, term)))
                 .order_by(func.length(GlossaryTerm.term))
                 .limit(limit)
             )
