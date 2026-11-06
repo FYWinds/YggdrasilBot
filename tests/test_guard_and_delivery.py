@@ -58,6 +58,16 @@ def test_strip_markdown_keeps_text_and_link_targets():
     assert "print(1)" in out
 
 
+def test_strip_markdown_keeps_dunders_and_code_verbatim():
+    md = (
+        "用 __init__ 和 __call__，`*args` 和 `**kwargs`\n"
+        "```py\ndef __init__(self, *a, **k):\n    return a * 2 * 3\n```\n**结论**好"
+    )
+    assert strip_markdown(md) == (
+        "用 __init__ 和 __call__，*args 和 **kwargs\ndef __init__(self, *a, **k):\n    return a * 2 * 3\n\n结论好"
+    )
+
+
 def test_split_text_respects_limit_and_keeps_content():
     text = "\n\n".join(["段落" * 30] * 5)
     parts = split_text(text, 130)

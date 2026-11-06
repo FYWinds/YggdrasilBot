@@ -26,27 +26,36 @@ from yggdrasil.napcat.api import NapCatAPI, image_seg, markdown_seg, node_seg, t
 from yggdrasil.napcat.models import Segment
 from yggdrasil.settings import InteractionSettings
 
-_MD_FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
-_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
-_MD_BOLD = re.compile(r"(\*\*|__)(.+?)\1")
-_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?!\*)")
-_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+# Code is kept verbatim (only its fences and backticks go): emphasis rules would eat ``__init__`` or ``*args``.
+_MD_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)(?:```|\Z)", re.DOTALL)
 _MD_CODE = re.compile(r"`([^`\n]+)`")
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+# ``__x__`` is left alone: models bold with ``**``, and in prose ``__`` is a Python dunder far more often.
+_MD_BOLD = re.compile(r"\*\*(?!\s)(.+?)(?<!\s)\*\*")
+_MD_ITALIC = re.compile(r"(?<![*\w])\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 _MD_BULLET = re.compile(r"^(\s*)[*+]\s+", re.MULTILINE)
+_CODE_SLOT = re.compile("\x00(\\d+)\x00")
 # First line of the metadata node; expand_forward also uses it to skip that node in forwards stored before it was
 # left out of our records.
 META_TITLE = "⚙ 元数据"
 
 
 def strip_markdown(text: str) -> str:
-    text = _MD_FENCE.sub("", text)
+    code: list[str] = []
+
+    def stash(m: re.Match[str]) -> str:
+        code.append(m.group(1))
+        return f"\x00{len(code) - 1}\x00"
+
+    text = _MD_CODE_BLOCK.sub(stash, text.replace("\x00", ""))
+    text = _MD_CODE.sub(stash, text)
     text = _MD_HEADING.sub("", text)
-    text = _MD_BOLD.sub(r"\2", text)
+    text = _MD_BOLD.sub(r"\1", text)
     text = _MD_ITALIC.sub(r"\1", text)
     text = _MD_LINK.sub(r"\1 (\2)", text)
-    text = _MD_CODE.sub(r"\1", text)
     text = _MD_BULLET.sub(r"\1- ", text)
-    return text.strip()
+    return _CODE_SLOT.sub(lambda m: code[int(m.group(1))], text).strip()
 
 
 def split_text(text: str, limit: int) -> list[str]:
