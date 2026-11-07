@@ -355,7 +355,8 @@ class Invocator:
             deps_type=Deps,
             instructions=instructions,
             tools=tools,
-            capabilities=[*capabilities, self._budget(), self.recorder],
+            # The recorder sees every call, the budget's skipped ones too; the skipped ones reach no other wrapper.
+            capabilities=[self.recorder, self._budget(), *capabilities],
             name=self.handler,
             retries=2,
         )

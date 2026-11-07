@@ -1,53 +1,86 @@
-import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import UsageLimits
 
-from yggdrasil.agent.budget import ToolBudget
+from yggdrasil.agent.budget import SPENT, ToolBudget
 from yggdrasil.agent.schema import BotReply
 
 ANSWER = ToolCallPart("final_result", {"mode": "forward", "title": "答", "sections": [{"content": "根据已读内容"}]})
 
 
-async def _run(budget: ToolBudget, calls_per_step: int) -> tuple[BotReply, list[list[str]], int]:
-    """A model that keeps reading while any function tool is offered; the tools offered on each request."""
-    offered: list[list[str]] = []
-    read: list[int] = []
+class _Run:
+    """A model that reads ``calls_per_step`` pages per request while function tools are offered; ``heeds`` makes it
+    answer as soon as a call comes back unrun."""
 
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        offered.append([t.name for t in info.function_tools])
-        if not info.function_tools:
+    def __init__(self, budget: ToolBudget, calls_per_step: int, *, heeds: bool) -> None:
+        self.budget, self.calls_per_step, self.heeds = budget, calls_per_step, heeds
+        self.offered: list[list[str]] = []
+        self.results: list[list[str]] = []  # the tool results each request carried
+        self.reads = 0
+
+    def respond(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        self.offered.append([t.name for t in info.function_tools])
+        last = messages[-1]
+        parts = last.parts if isinstance(last, ModelRequest) else []
+        results = [str(p.content) for p in parts if isinstance(p, ToolReturnPart)]
+        if results:
+            self.results.append(results)
+        if not info.function_tools or (self.heeds and SPENT in results):
             return ModelResponse(parts=[ANSWER])
-        return ModelResponse(
-            parts=[ToolCallPart("read_url", {"url": f"https://example.com/{i}"}) for i in range(calls_per_step)]
-        )
+        step = len(self.offered)
+        calls = [
+            ToolCallPart("read_url", {"url": f"https://example.com/{step}/{i}"}) for i in range(self.calls_per_step)
+        ]
+        return ModelResponse(parts=calls)
 
-    agent = Agent(FunctionModel(respond), output_type=BotReply, capabilities=[budget])
+    async def run(self) -> BotReply:
+        agent = Agent(FunctionModel(self.respond), output_type=BotReply, capabilities=[self.budget])
 
-    @agent.tool_plain
-    async def read_url(url: str) -> str:
-        read.append(1)
-        return "正文"
+        @agent.tool_plain
+        async def read_url(url: str) -> str:  # pyright: ignore[reportUnusedParameter]
+            self.reads += 1
+            return "正文"
 
-    result = await agent.run("问题", usage_limits=UsageLimits(request_limit=budget.requests))
-    return result.output, offered, len(read)
+        result = await agent.run("问题", usage_limits=UsageLimits(request_limit=self.budget.requests))
+        return result.output
 
 
-@pytest.mark.parametrize(
-    ("budget", "calls_per_step", "requests", "reads"),
-    [
-        # 2 + 2 calls reach the cap of 3 (one batch may overshoot); the third request answers.
-        (ToolBudget(requests=12, tool_calls=3), 2, 3, 4),
-        # The last allowed request is kept for the answer although calls are left.
-        (ToolBudget(requests=3, tool_calls=16), 1, 3, 2),
-    ],
-)
-async def test_a_spent_budget_withdraws_the_tools_and_the_run_still_answers(
-    budget: ToolBudget, calls_per_step: int, requests: int, reads: int
-) -> None:
-    reply, offered, read = await _run(budget, calls_per_step)
+async def test_a_parallel_batch_past_the_budget_runs_only_the_calls_within_it() -> None:
+    run = _Run(ToolBudget(requests=12, tool_calls=3), 2, heeds=True)
+
+    reply = await run.run()
 
     assert reply.sections[0].content == "根据已读内容"
-    assert offered == [["read_url"]] * (requests - 1) + [[]]
-    assert read == reads
+    assert run.reads == 3
+    assert run.results == [["正文", "正文"], ["正文", SPENT]]
+
+
+async def test_a_model_that_keeps_calling_still_answers_in_the_last_request() -> None:
+    run = _Run(ToolBudget(requests=4, tool_calls=3), 2, heeds=False)
+
+    reply = await run.run()
+
+    assert reply.sections[0].content == "根据已读内容"
+    assert run.reads == 3
+    assert run.results[-1] == [SPENT, SPENT]
+    assert run.offered == [["read_url"]] * 3 + [[]]
+
+
+async def test_calls_feeding_the_last_request_are_not_run_although_calls_are_left() -> None:
+    run = _Run(ToolBudget(requests=3, tool_calls=16), 1, heeds=False)
+
+    reply = await run.run()
+
+    assert reply.sections[0].content == "根据已读内容"
+    assert run.reads == 1
+    assert run.results == [["正文"], [SPENT]]
+    assert run.offered == [["read_url"], ["read_url"], []]
+
+
+async def test_each_run_gets_a_fresh_count() -> None:
+    budget = ToolBudget(requests=12, tool_calls=3)
+    for _ in range(2):
+        run = _Run(budget, 2, heeds=True)
+        await run.run()
+        assert run.reads == 3
