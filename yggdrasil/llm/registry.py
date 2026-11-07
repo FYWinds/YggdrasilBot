@@ -190,30 +190,44 @@ def _omits_thinking(model: str) -> bool:
 
 
 class _AnthropicModel(AnthropicModel):
-    """Asks for summarized thinking wherever the request configures thinking, so transcripts and traces show what the
-    model reasoned instead of a bare signature. Requests without a thinking config are left as they are."""
+    """Asks for summarized thinking, so transcripts and traces show what the model reasoned instead of a bare
+    signature. A request without a thinking level to a model that thinks by default gets the adaptive thinking it
+    would have had anyway, with the summary asked for."""
 
     def _translate_thinking(
         self, model_settings: AnthropicModelSettings, model_request_parameters: ModelRequestParameters
     ) -> Any:
         thinking = super()._translate_thinking(model_settings, model_request_parameters)
-        if (
-            isinstance(thinking, dict)
-            and thinking.get("type") in ("enabled", "adaptive")
-            and "display" not in thinking
-            and _omits_thinking(self.model_name)
-        ):
-            return {**thinking, "display": "summarized"}
+        if not _omits_thinking(self.model_name):
+            return thinking
+        if isinstance(thinking, dict):
+            if thinking.get("type") in ("enabled", "adaptive") and "display" not in thinking:
+                return {**thinking, "display": "summarized"}
+            return thinking
+        if model_request_parameters.thinking is None and self.profile.get("thinking_enabled_by_default", False):
+            return {"type": "adaptive", "display": "summarized"}
         return thinking
 
 
+def _anthropic_profile(name: str, forced_tool_choice: bool) -> ModelProfile:
+    """pydantic-ai keys Claude's features (adaptive thinking, effort, structured output) by the bare model id, which
+    gateways prefix (``cvp/claude-opus-5-5``); unrecognized, a Claude 5 got budget thinking without effort.
+
+    Without ``forced_tool_choice`` structured output stays prompted (the schema in the instructions), as it was:
+    native JSON-schema output next to function tools made Opus 5.5 end tldr runs with a junk
+    ``render_markdown("x")`` call instead of the answer in about one run in seven, against one in forty prompted."""
+    profile = AnthropicProvider.model_profile(name.rsplit("/", 1)[-1]) or ModelProfile()
+    if forced_tool_choice:
+        return profile
+    return {**profile, **_NO_FORCED_TOOL_CHOICE, "default_structured_output_mode": "prompted"}
+
+
 def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
-    profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
     if p.api_format == "anthropic":
-        inner: Model = _AnthropicModel(
-            name, provider=AnthropicProvider(anthropic_client=anthropic_client(p)), profile=profile
-        )
+        provider = AnthropicProvider(anthropic_client=anthropic_client(p))
+        inner: Model = _AnthropicModel(name, provider=provider, profile=_anthropic_profile(name, forced_tool_choice))
     else:
+        profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
         inner = OpenAIChatModel(name, provider=OpenAIProvider(openai_client=openai_client(p)), profile=profile)
     return MeteredModel(inner, task=task, label=f"{p.name}/{name}", display=display_name(p, name))
 
