@@ -6,6 +6,7 @@ latter). Embeddings, rerank and model listing always use OpenAI-compatible route
 """
 
 import base64
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -13,8 +14,8 @@ from typing import Any
 import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
-from pydantic_ai.models import Model
-from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models import Model, ModelRequestParameters
+from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles import ModelProfile
@@ -178,10 +179,38 @@ def display_name(p: ProviderInfo, model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+_CLAUDE_VERSION = re.compile(r"claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?!\d)")
+
+
+def _omits_thinking(model: str) -> bool:
+    """Claude 4.7 and later send thinking blocks without their text unless the request asks for a summary (older
+    models summarize by default, and Opus / Sonnet 4.6 reject the ``display`` field). Gateway prefixes are fine."""
+    m = _CLAUDE_VERSION.search(model)
+    return m is not None and (int(m[1]), int(m[2] or 0)) >= (4, 7)
+
+
+class _AnthropicModel(AnthropicModel):
+    """Asks for summarized thinking wherever the request configures thinking, so transcripts and traces show what the
+    model reasoned instead of a bare signature. Requests without a thinking config are left as they are."""
+
+    def _translate_thinking(
+        self, model_settings: AnthropicModelSettings, model_request_parameters: ModelRequestParameters
+    ) -> Any:
+        thinking = super()._translate_thinking(model_settings, model_request_parameters)
+        if (
+            isinstance(thinking, dict)
+            and thinking.get("type") in ("enabled", "adaptive")
+            and "display" not in thinking
+            and _omits_thinking(self.model_name)
+        ):
+            return {**thinking, "display": "summarized"}
+        return thinking
+
+
 def _build_model(task: str, name: str, p: ProviderInfo, forced_tool_choice: bool) -> Model:
     profile = None if forced_tool_choice else _NO_FORCED_TOOL_CHOICE
     if p.api_format == "anthropic":
-        inner: Model = AnthropicModel(
+        inner: Model = _AnthropicModel(
             name, provider=AnthropicProvider(anthropic_client=anthropic_client(p)), profile=profile
         )
     else:
