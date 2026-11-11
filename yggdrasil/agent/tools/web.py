@@ -41,7 +41,7 @@ async def read_url(ctx: RunContext[Deps], url_or_handle: str, page: int = 1) -> 
         url=url, final_url=res.final_url, title=res.title, via=res.via, page=res.page, pages=res.pages
     )
     ctx.deps.notes.show(ctx.tool_call_id, page_info)
-    more = f"（第 {res.page}/{res.pages} 页，可用 page 参数翻页）" if res.pages > 1 else ""
+    more = _pages_note(res.page, res.pages, capped=res.truncated)
     return f"标题：{res.title}\n地址：{res.final_url}{more}\n\n{res.text}{_image_handles(ctx, res.images, 'web')}"
 
 
@@ -50,6 +50,13 @@ def _image_handles(ctx: RunContext[Deps], urls: list[str], source: str) -> str:
     keys = [ctx.deps.handles.add("image", {"url": url, "source": source}) for url in urls]
     shown = "、".join(f"图 {i} = {key}" for i, key in enumerate(keys, 1) if key)
     return f"\n\n图片句柄（用 view_image 查看）：{shown}" if shown else ""
+
+
+def _pages_note(page: int, pages: int, *, capped: bool) -> str:
+    """Where the model is in the text. A one-page text says so: otherwise models ask for a page 2 that is not there."""
+    if pages > 1:
+        return f"（第 {page}/{pages} 页，可用 page 参数翻页）"
+    return "" if capped else "（只有这一页，没有第 2 页）"
 
 
 @chat_tool("read_x")
@@ -76,7 +83,7 @@ async def read_x(ctx: RunContext[Deps], url_or_id: str, page: int = 1) -> str:
         ctx.tool_call_id,
         PageDisplay(url=ref, final_url=post.url, title=title, via=post.via, page=page, pages=len(pages)),
     )
-    more = f"（第 {page}/{len(pages)} 页，可用 page 参数翻页）" if len(pages) > 1 else ""
+    more = _pages_note(page, len(pages), capped=False)
     images = _image_handles(ctx, [m.url for m in post.images()], "x") if page == 1 else ""
     return f"标题：{title}\n地址：{post.url}{more}\n\n{pages[page - 1]}{images}"
 
