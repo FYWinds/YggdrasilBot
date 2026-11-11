@@ -23,6 +23,12 @@ def test_other_json_cards_stay_cards():
     assert norm.attachments[0].kind == "card"
 
 
+def test_a_link_stops_before_the_sentence_punctuation_after_it():
+    text = "看 https://example.com/new-spline/; 还有 https://example.com/a;b=1?q=2. 和 https://example.com/x!"
+    norm = normalize([{"type": "text", "data": {"text": text}}])
+    assert norm.urls == ["https://example.com/new-spline/", "https://example.com/a;b=1?q=2", "https://example.com/x"]
+
+
 def test_markdown_from_another_bot_shows_its_text_once():
     body = "查了，没有权限。\n不是我不愿意。"
     norm = normalize([{"type": "markdown", "data": {"content": body}}, {"type": "text", "data": {"text": body}}])

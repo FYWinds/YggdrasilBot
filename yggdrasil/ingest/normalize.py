@@ -11,7 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-URL_RE = re.compile(r"https?://[^\s\u3000，。！？、）」』\])>\"']+")
+# A link ends before trailing ASCII punctuation ("see https://a.example/x." or "…/x/;"): it belongs to the sentence.
+URL_RE = re.compile(r"https?://[^\s\u3000，。！？、）」』\])>\"']+(?<![.,;:!?])")
 _RECORD_TYPES = {"record": "语音", "video": "视频"}
 
 
