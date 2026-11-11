@@ -80,6 +80,8 @@ START_GRACE_S = 120.0
 """A job still ``starting`` after this long was abandoned mid-start (bot restarted): it is failed."""
 START_MARGIN_S = 180.0
 """Extra room a new job needs before the workspace's max age, on top of its run time (stopping it, polling)."""
+WRAP_UP_S = 120.0
+"""After an agent job's deadline: how long its "stop and summarize" turn may take before it is stopped outright."""
 REPORT_RETRY_S = 30.0
 REPORT_GIVE_UP_S = 3600.0
 """A report that could not even start (no bot connection, queue full) for this long is dropped."""
@@ -280,9 +282,10 @@ class JobRunner:
             raise SandboxError("工作区不可用")
         limit_s = (cfg.sandbox_job_command_min if kind == "command" else cfg.sandbox_job_agent_min) * 60
         # A later invocation retires a workspace with less than sandbox_invocation_s left before its cap (the
-        # manager's max-age rule), which would end the job: the cap must lie past the job's deadline by that much,
-        # plus time to stop it.
-        until = self._clock() + limit_s + cfg.sandbox_invocation_s + START_MARGIN_S
+        # manager's max-age rule), which would end the job: the cap must lie past the job's deadline (and an
+        # agent's wrap-up) by that much, plus time to stop it.
+        wrap_s = WRAP_UP_S if kind == "agent" else 0.0
+        until = self._clock() + limit_s + wrap_s + cfg.sandbox_invocation_s + START_MARGIN_S
         if await self._workspaces().extend(req.group_id, workspace, ref.id, until, cfg) is None:
             raise SandboxError("工作区刚被重置或回收，稍后再试")
         return ref.id, float(limit_s)
@@ -465,7 +468,11 @@ class JobRunner:
             ]
             await self._transcribe(job.id, opening, {}, full)
             argv, env = omp.launch(
-                group_id=req.group_id, model=model.id, rules_path=rules, max_time_s=int(limit_s) + 120, token=token
+                group_id=req.group_id,
+                model=model.id,
+                rules_path=rules,
+                max_time_s=int(limit_s + WRAP_UP_S) + 120,
+                token=token,
             )
             sent = True
             pid = await ops.start_rpc(job.dir, argv, env, cwd=omp.OMP_HOME)
@@ -595,14 +602,17 @@ class JobRunner:
             if job.cancel:
                 await self._stop(job, ops, "cancelled")
                 return
-            if now >= job.deadline:
+            over = now - job.deadline
+            # An agent past its deadline gets WRAP_UP_S to stop and summarize; a command (or a summary that
+            # overruns) is stopped.
+            if over >= (WRAP_UP_S if job.kind == "agent" else 0):
                 await self._stop(job, ops, "timeout")
                 return
             await self._renew(job)
             if job.kind == "command":
                 await self._step_command(job, ops)
             else:
-                await self._step_agent(job, ops)
+                await self._step_agent(job, ops, wrap_up=over >= 0)
         except WorkspaceError as e:
             # Unreachable or gone: a gone sandbox shows up as "claim changed / no workspace" on a later poll,
             # a restarting one recovers; the deadline bounds both.
@@ -663,19 +673,26 @@ class JobRunner:
             clock=self._clock,
         )
 
-    async def _step_agent(self, job: Job, ops: JobOps) -> None:
+    async def _step_agent(self, job: Job, ops: JobOps, *, wrap_up: bool = False) -> None:
         driver = self._driver(job, ops)
         try:
+            if wrap_up and driver.state.phase in ("prompting", "settling"):
+                await driver.wrap_up(render_wrap_up(job, links=bool(self._link_domain())))
+                await self._event(job, "时间到，已要求停下并总结")
             finished = await driver.step()
         finally:
             job.driver = driver.state.to_json()
             await self._save(job, "driver")
-        if finished is not None:
-            status: JobStatus = "succeeded" if finished.ok else "failed"
-            await self._finish(job, status, result=finished.text or "", error=finished.error)
+        if finished is None:
+            return
+        if wrap_up:
+            await self._finish(job, "timeout", result=finished.text or "", error=_timed_out(job, summarized=True))
+            return
+        status: JobStatus = "succeeded" if finished.ok else "failed"
+        await self._finish(job, status, result=finished.text or "", error=finished.error)
 
     async def _stop(self, job: Job, ops: JobOps, status: JobStatus) -> None:
-        result, error = "", ""
+        result = ""
         if job.kind == "agent":
             driver = self._driver(job, ops)
             finished = await driver.stop(wait=asyncio.sleep)
@@ -692,10 +709,7 @@ class JobRunner:
                 result = f"输出 {out.size} 字节（完整输出在 {job.dir}/out）\n{out.text}".rstrip()
             except Exception:
                 LOGGER.exception("reading the output of sandbox job {} failed", job.id)
-        if status == "timeout":
-            error = f"超过最长运行时间（{fmt_duration(job.deadline - job.created_at)}），已停止"
-        else:
-            error = "已按要求取消"
+        error = _timed_out(job, summarized=False) if status == "timeout" else "已按要求取消"
         await self._finish(job, status, result=result, error=error)
 
     async def _finish(self, job: Job, status: JobStatus, *, result: str = "", error: str = "") -> None:
@@ -886,6 +900,20 @@ def render_rules(settings: Settings, job: Job, *, links: bool) -> str:
         )
         + "\n"
     )
+
+
+def render_wrap_up(job: Job, *, links: bool) -> str:
+    """The prompt that replaces an agent job's task at its deadline."""
+    from yggdrasil.prompts import render
+
+    return render("job_wrap_up", minutes=int((job.deadline - job.created_at) // 60), links=links)
+
+
+def _timed_out(job: Job, *, summarized: bool) -> str:
+    limit = fmt_duration(job.deadline - job.created_at)
+    if summarized:
+        return f"超过最长运行时间（{limit}），已叫停；结果是它对已完成部分的总结"
+    return f"超过最长运行时间（{limit}），已停止"
 
 
 @cache

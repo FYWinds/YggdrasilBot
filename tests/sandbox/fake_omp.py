@@ -4,7 +4,9 @@ Behaviour is picked with ``FAKE_OMP_MODE``:
 
 - ``ok``: after ``prompt`` it calls the host tools ``show`` and ``progress`` (waiting for each result), then
   completes with ``sessionSettled: false`` followed by ``session_settled``; the final text quotes both results.
-- ``hang``: after ``prompt`` it works forever until ``abort``.
+- ``hang``: after ``prompt`` it works forever until ``abort`` (or ``abort_and_prompt``, whose prompt it answers
+  with one summary).
+- ``stubborn``: like ``hang``, and it keeps working on the ``abort_and_prompt`` prompt too, until ``abort``.
 - ``crash``: exits 3 right after acknowledging ``prompt``.
 - ``fail_setup``: rejects ``open_session``.
 
@@ -18,7 +20,7 @@ import sys
 MODE = os.environ.get("FAKE_OMP_MODE", "ok")
 LOG = os.environ.get("FAKE_OMP_LOG")
 
-state = {"results": [], "prompt": None, "hanging": False}
+state = {"results": [], "prompt": None, "hanging": False, "summary": None}
 
 
 def emit(frame: dict) -> None:
@@ -104,7 +106,7 @@ def handle(frame: dict) -> None:
             sys.stderr.write("boom: provider exploded\n")
             sys.stderr.flush()
             sys.exit(3)
-        if MODE == "hang":
+        if MODE in ("hang", "stubborn"):
             state["hanging"] = True
             return
         emit(
@@ -164,8 +166,27 @@ def handle(frame: dict) -> None:
         if state["hanging"]:
             state["hanging"] = False
             finish("aborted", settled=True)
+    elif kind == "abort_and_prompt":
+        # Like omp: the running prompt ends aborted first, then the new one runs (here: one answer, no tools).
+        if state["hanging"]:
+            state["hanging"] = False
+            finish("aborted", settled=True)
+        state["prompt"] = frame.get("id")
+        respond(frame)
+        if MODE == "stubborn":
+            state["hanging"] = True
+            return
+        state["summary"] = "到点了：页面做了一半，在 /workspace/site。"
+        emit(
+            {
+                "type": "message_end",
+                "messageId": "m9",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": state["summary"]}]},
+            }
+        )
+        finish("completed", settled=True)
     elif kind == "get_last_assistant_text":
-        text = "完成了。" + " | ".join(state["results"])
+        text = state.get("summary") or "完成了。" + " | ".join(state["results"])
         respond(frame, {"text": text})
     else:
         respond(frame, ok=False, error=f"unknown command {kind}")

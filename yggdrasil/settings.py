@@ -232,7 +232,10 @@ class ToolSettings(BaseModel):
         default=True, description="后台大任务（delegate）开关；关掉后仍有工作区和后台命令，只是不能委托给编程 agent"
     )
     sandbox_job_agent_min: int = Field(
-        default=20, ge=1, le=240, description="后台大任务（delegate）最长运行时间（分钟）"
+        default=10,
+        ge=1,
+        le=240,
+        description="后台大任务（delegate）最长运行时间（分钟）；到时让它停下并总结已完成的部分",
     )
     sandbox_job_max_input_tokens: int = Field(
         default=3_000_000, ge=10_000, description="每个后台大任务经中转最多消耗的输入 token"

@@ -118,7 +118,9 @@ def host_tools(*, links: bool) -> list[dict[str, Any]]:
     return [t for t in _HOST_TOOLS if links or t["name"] not in LINK_TOOLS]
 
 
-Phase = Literal["starting", "setup", "prompting", "settling", "collecting", "closing", "done"]
+Phase = Literal["starting", "setup", "prompting", "settling", "wrapping", "collecting", "closing", "done"]
+WRAP_UP_ID = "wrapup"
+"""Request id of the prompt that, at the deadline, replaces the running task with "stop and summarize"."""
 
 
 # --- launch -------------------------------------------------------------------------------------------------
@@ -519,9 +521,20 @@ class OmpDriver:
         if kind == "response":
             await self._response(frame)
             return
+        if kind == "prompt_result" and frame.get("id") == WRAP_UP_ID:
+            if s.phase == "wrapping":
+                if frame.get("status") == "error":
+                    err = frame.get("error") or {}
+                    s.error = f"模型请求失败：{_short(err.get('message', '') if isinstance(err, dict) else err, 500)}"
+                    s.status = "error"
+                else:
+                    s.status = "completed"  # the summary turn ended; its text is the answer either way
+                await self._collect()
+            return
         if kind == "prompt_result" and frame.get("id") == "prompt":
-            if s.status:
-                return  # the first result counts (a re-sent prompt may produce a second one)
+            if s.status or s.phase == "wrapping":
+                return  # the first result counts (a re-sent prompt may produce a second one); the task's own,
+                # aborted by the wrap-up, does not count at all
             s.status = str(frame.get("status", ""))
             if s.status == "error":
                 err = frame.get("error") or {}
@@ -597,11 +610,26 @@ class OmpDriver:
                 s.status = "completed"
                 await self._collect()
             return
+        if rid == WRAP_UP_ID and s.phase == "wrapping":
+            if not ok or (isinstance(frame.get("data"), dict) and frame["data"].get("agentInvoked") is False):
+                await self._collect()  # no summary turn: report the last answer there is
+            return
         if rid == "final" and s.phase == "collecting":
             data = frame.get("data")
             if ok and isinstance(data, dict) and isinstance(data.get("text"), str):
                 s.text = data["text"]
             await self._close()
+
+    async def wrap_up(self, message: str) -> None:
+        """The deadline passed: abort the running task and prompt ``message`` (stop, summarize what is done) in its
+        place, so the job ends with an answer instead of a cut-off. Only while the task is still running; the
+        caller bounds the summary turn with a hard stop."""
+        s = self.state
+        if s.phase not in ("prompting", "settling"):
+            return
+        await self._send({"id": WRAP_UP_ID, "type": "abort_and_prompt", "message": message})
+        self._enter("wrapping")
+        s.status = ""
 
     async def _collect(self) -> None:
         self._enter("collecting")

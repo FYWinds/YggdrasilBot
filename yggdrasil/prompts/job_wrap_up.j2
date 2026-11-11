@@ -1,0 +1,3 @@
+{# Sent to a delegated background task's omp in place of its task when the time limit is reached. vars: minutes, links #}
+时间到了（这个任务最长 {{ minutes }} 分钟），立刻停下。从现在起禁止做任何新操作：不要再调用任何工具，不要继续没做完的步骤，也不要检查或修补。
+直接用中文写最终回答：已经做成了什么、产出在哪（路径{% if links %}、公开链接{% endif %}）、怎么用，以及哪些没做完。只根据你已经做过的事写，不要编造。

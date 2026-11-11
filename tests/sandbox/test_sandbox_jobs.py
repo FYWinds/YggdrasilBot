@@ -28,7 +28,7 @@ from yggdrasil.sandbox.job_model import (
     running_key,
 )
 from yggdrasil.sandbox.job_ops import JobOps, Output
-from yggdrasil.sandbox.jobs import START_MARGIN_S, JobRunner
+from yggdrasil.sandbox.jobs import START_MARGIN_S, WRAP_UP_S, JobRunner
 from yggdrasil.sandbox.state import Link, keep_key
 from yggdrasil.settings import Settings, ToolSettings
 from yggdrasil.transcript.notes import Blob
@@ -690,5 +690,50 @@ async def test_agent_job_cancel_revokes_the_token(
     assert done.status == "cancelled"
     assert fake_relay["revoked"] == [job.id]
     assert done.result == "完成了。"  # the partial answer collected after abort
+    assert len(reports.jobs) == 1
+    assert not pod.rpcs[job.dir].running
+
+
+async def _prompting(runner: JobRunner, job_id: str) -> None:
+    async with asyncio.timeout(10):
+        while json.loads((await runner.get(job_id)).driver)["phase"] != "prompting":  # pyright: ignore[reportOptionalMemberAccess]
+            await runner.tick(wait=True)
+            await asyncio.sleep(0.01)
+
+
+async def test_an_agent_at_its_deadline_stops_and_summarizes(
+    runner: JobRunner, pod: Pod, clock: Clock, reports: Reports, fake_relay: dict[str, Any]
+) -> None:
+    pod.mode = "hang"
+    job = await runner.start_agent(REQ, FakeBackend(pod), workspace=WS, task="一直做", title="无尽")
+    assert job.deadline - job.created_at == 10 * 60
+    await _prompting(runner, job.id)
+    clock.offset += 10 * 60
+    done = await _until(runner, job.id)
+    # The task is replaced by "stop and summarize" (not cut off): the result is that summary.
+    assert done.status == "timeout"
+    assert done.result == "到点了：页面做了一半，在 /workspace/site。"
+    assert "总结" in done.error
+    assert "时间到，已要求停下并总结" in [e.text for e in await runner.events(job.id)]
+    assert len(reports.jobs) == 1
+    assert not pod.rpcs[job.dir].running
+
+
+async def test_a_summary_that_overruns_is_stopped(
+    runner: JobRunner, pod: Pod, clock: Clock, reports: Reports, fake_relay: dict[str, Any]
+) -> None:
+    pod.mode = "stubborn"
+    job = await runner.start_agent(REQ, FakeBackend(pod), workspace=WS, task="一直做", title="无尽")
+    await _prompting(runner, job.id)
+    clock.offset += 10 * 60
+    async with asyncio.timeout(10):
+        while json.loads((await runner.get(job.id)).driver)["phase"] != "wrapping":  # pyright: ignore[reportOptionalMemberAccess]
+            await runner.tick(wait=True)
+            await asyncio.sleep(0.01)
+    assert (await runner.get(job.id)).status == "running"  # pyright: ignore[reportOptionalMemberAccess]
+    clock.offset += WRAP_UP_S
+    done = await _until(runner, job.id)
+    assert done.status == "timeout"
+    assert done.error.endswith("已停止")
     assert len(reports.jobs) == 1
     assert not pod.rpcs[job.dir].running
