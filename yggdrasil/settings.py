@@ -228,6 +228,9 @@ class ToolSettings(BaseModel):
         default=2, ge=0, le=10, description="每群同时运行的后台任务上限（其中后台大任务最多 1 个）；0 关闭后台任务"
     )
     sandbox_job_command_min: int = Field(default=30, ge=1, le=600, description="后台命令最长运行时间（分钟）")
+    sandbox_delegate: bool = Field(
+        default=True, description="后台大任务（delegate）开关；关掉后仍有工作区和后台命令，只是不能委托给编程 agent"
+    )
     sandbox_job_agent_min: int = Field(
         default=20, ge=1, le=240, description="后台大任务（delegate）最长运行时间（分钟）"
     )

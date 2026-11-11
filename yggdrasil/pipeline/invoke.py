@@ -304,7 +304,7 @@ class Invocator:
                 invocation_id=str(self.invocation_id) if self.invocation_id is not None else None,
                 cfg=tools_cfg,
             )
-            suite = sandbox_tools.suite()
+            suite = sandbox_tools.suite(exclude=frozenset() if tools_cfg.sandbox_delegate else frozenset({"delegate"}))
         system = (
             session.setup.instructions
             if session
