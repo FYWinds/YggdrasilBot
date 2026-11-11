@@ -17,6 +17,7 @@ from yggdrasil.core.log import LOGGER
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import guarded_client
+from yggdrasil.transcript.store import blob as stored_blob
 
 IMAGE_MAX_DOWNLOAD = 20 * 1024 * 1024
 _IMAGE_MAX_SIDE = 1568  # Claude downsizes anything larger; also keeps payloads well under the 5 MB cap
@@ -49,13 +50,16 @@ async def download(url: str, max_bytes: int, *, guarded: bool = False) -> bytes:
 
 
 async def media_bytes(api: NapCatAPI, group_id: int | None, h: Handle, max_bytes: int) -> tuple[bytes, str]:
-    """Bytes + filename of an image/file handle, via URL in the segment or NapCat's get_file.
+    """Bytes + filename of an image/file handle: a picture the bot sent itself from our blob store, else via the URL
+    in the segment or NapCat's get_file.
 
     Handles registered by web tools carry a ``source`` (``x``, ...): their URLs come from third-party content and
     are fetched through the SSRF guard. QQ attachment URLs come from the protocol side and are fetched directly.
     """
     data = h.data
     name = str(data.get("file") or data.get("name") or "file")
+    if (sha := data.get("blob")) and (kept := await stored_blob(str(sha))) is not None:
+        return kept.data, name
     url = data.get("url")
     if h.kind == "file" and group_id and data.get("file_id"):
         try:

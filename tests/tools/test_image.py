@@ -6,6 +6,7 @@ import io
 import json
 import os
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -20,8 +21,10 @@ from tests.support.files import png
 from tests.support.onebot import FakeNapCat
 from tests.support.routes import Routes
 from yggdrasil import runtime
-from yggdrasil.agent.deps import Deps
+from yggdrasil.agent import media
+from yggdrasil.agent.deps import Deps, Handle
 from yggdrasil.agent.tools import images
+from yggdrasil.delivery import send
 from yggdrasil.ingest.writer import IncomingMessage
 from yggdrasil.llm import registry
 from yggdrasil.moderation.image import ImageVerdict
@@ -57,8 +60,9 @@ def _body(upstream: Routes) -> dict[str, Any]:
 
 
 def _qq(*, timeout: bool = False) -> FakeNapCat:
-    """QQ confirms the picture as message ``SENT`` (or never does), and keeps it as an image file with a URL."""
-    stored = Segment(type="image", data={"file": "abc.png", "url": "https://example.com/abc.png"})
+    """QQ confirms the picture as message ``SENT`` (or never does) and hands it back as SnowLuma does our own
+    pictures: a file name with an empty url."""
+    stored = Segment(type="image", data={"file": "abc.png", "url": ""})
     confirmed = NetworkError("WebSocket call api send_group_msg timeout") if timeout else SendResult(message_id=SENT)
     return FakeNapCat(
         {
@@ -66,6 +70,22 @@ def _qq(*, timeout: bool = False) -> FakeNapCat:
             "get_msg": lambda message_id, **_: MessageRecord(message_id=message_id, message=[stored]),
         }
     )
+
+
+@pytest.fixture(autouse=True)
+def kept(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
+    """The blob store the bot keeps the pictures it sent in."""
+    store: dict[str, bytes] = {}
+
+    async def put(blobs: dict[str, Any]) -> None:
+        store.update({sha: b.data for sha, b in blobs.items()})
+
+    async def get(sha: str) -> SimpleNamespace | None:
+        return SimpleNamespace(data=store[sha]) if sha in store else None
+
+    monkeypatch.setattr(send, "store_blobs", put)
+    monkeypatch.setattr(media, "stored_blob", get)
+    return store
 
 
 def _sent(api: FakeNapCat) -> list[list[dict[str, Any]]]:
@@ -110,11 +130,14 @@ async def test_the_picture_is_sent_replying_to_the_trigger(upstream: Routes, rec
 
     assert "$0.040" in str(result)
     assert ctx.deps.actions == [f"image {SENT}"]  # lets the run end with mode=done
-    # Our own record keeps the picture as QQ stored it, so a later "改一下这张图" can load it again.
+    # Our own record keeps the picture, so a later "改一下这张图" can load it again although QQ gave no url for it.
     [own] = recorded
     assert own.is_self
     assert own.qq_message_id == SENT
-    assert own.segments == [{"type": "image", "data": {"file": "abc.png", "url": "https://example.com/abc.png"}}]
+    [segment] = own.segments
+    assert (segment["type"], segment["data"]["file"]) == ("image", "abc.png")
+    again = await media.media_bytes(api, GROUP, Handle("img#1", "image", segment["data"]), 1 << 20)
+    assert again == (picture, "abc.png")
 
 
 async def test_an_unconfirmed_send_counts_as_sent(upstream: Routes, recorded: list[IncomingMessage]):

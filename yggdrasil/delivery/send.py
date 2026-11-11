@@ -7,9 +7,12 @@ from typing import Any
 
 from nonebot.adapters.onebot.v11 import ActionFailed, NetworkError
 
+from yggdrasil.agent.media import media_type
 from yggdrasil.core.log import LOGGER
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
 from yggdrasil.napcat.api import NapCatAPI, image_seg, reply_seg, text_seg
+from yggdrasil.transcript.notes import Blob, blob_id
+from yggdrasil.transcript.store import store_blobs
 
 
 def record_self(group_id: int, self_id: int, nickname: str, message_id: int, segments: list[dict[str, Any]]) -> None:
@@ -122,6 +125,23 @@ async def send_image(
         stored = [s.model_dump() for s in (await api.get_msg(message_id=res.message_id)).segments]
     except Exception as e:
         LOGGER.warning("get_msg after sending images failed: {}", e)
-        stored = [s if s["type"] != "image" else text_seg("[图片]") for s in segments]
-    record_self(group_id, self_id, nickname, res.message_id, stored)
+        stored = [s if s["type"] != "image" else {"type": "image", "data": {"summary": "[图片]"}} for s in segments]
+    record_self(group_id, self_id, nickname, res.message_id, await _keep_pictures(stored, images))
     return res.message_id
+
+
+async def _keep_pictures(segments: list[dict[str, Any]], pictures: list[bytes]) -> list[dict[str, Any]]:
+    """Stamp each image segment with the sha256 of the picture we sent, stored in ``transcript_blobs``: SnowLuma's
+    get_msg usually hands our own pictures back with an empty url, which left them unreadable to a later reply."""
+    shown = [s for s in segments if s.get("type") == "image"]
+    if len(shown) != len(pictures):
+        return segments
+    blobs = {blob_id(p): Blob(p, media_type(p)) for p in pictures}
+    try:
+        await store_blobs(blobs)
+    except Exception as e:
+        LOGGER.warning("keeping sent pictures failed: {}", e)
+        return segments
+    for seg, picture in zip(shown, pictures, strict=True):
+        seg["data"] = {**(seg.get("data") or {}), "blob": blob_id(picture)}
+    return segments
