@@ -35,7 +35,7 @@ from yggdrasil.bot.inflight import spawn as _spawn
 from yggdrasil.core.log import LOGGER
 from yggdrasil.core.metrics import TRIGGERS_MATCHED
 from yggdrasil.ingest.writer import WRITER, IncomingMessage
-from yggdrasil.pipeline import ratelimit
+from yggdrasil.pipeline import ratelimit, recalls
 from yggdrasil.runtime import snapshot
 from yggdrasil.triggers.bots import sent_by_bot
 from yggdrasil.triggers.index import MatchInput, Resolved, current
@@ -306,6 +306,7 @@ recall = on_notice(priority=1, block=False)
 
 @recall.handle()
 async def _recall(event: GroupRecallNoticeEvent) -> None:
+    recalls.recall(event.group_id, event.message_id)  # a run it triggered stops before answering
     if snapshot().group_enabled(event.group_id):
         _spawn(WRITER.mark_recalled(event.group_id, event.message_id))
 

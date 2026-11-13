@@ -33,7 +33,7 @@ from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
 from yggdrasil.napcat.api import NapCatAPI
 from yggdrasil.pipeline import ack as ack_mod
-from yggdrasil.pipeline import ratelimit, record, repeats
+from yggdrasil.pipeline import ratelimit, recalls, record, repeats
 from yggdrasil.pipeline import session as sessions
 from yggdrasil.pipeline.prompt import inline_images, instructions, now_text
 from yggdrasil.runtime import snapshot
@@ -71,27 +71,39 @@ async def run(bot: Bot, event: MessageEvent, resolved: Resolved, handler: Handle
             if settings.interaction.ratelimited_emoji:
                 await react(api, event.message_id, settings.interaction.ratelimited_emoji)
             return
-        async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
-            if not granted:
-                LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
-                INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
-                if settings.interaction.ratelimited_emoji:
-                    await react(api, event.message_id, settings.interaction.ratelimited_emoji)
-                return
-            if handler == "chat" and superuser and group_id is not None:
-                # A superuser talking to the bot may be giving an admin instruction: the ops agent
-                # (fast model) acts on it, or hands it back here when it's an ordinary question.
-                from yggdrasil.ops.agent import run_ops
-
-                if await run_ops(bot, event) != "handoff":
+        with recalls.watch(group_id, event.message_id) as watch:
+            async with ratelimit.slot(group_id, event.user_id, settings.ratelimit) as granted:
+                if not granted:
+                    LOGGER.info("request dropped: queue full or timed out user={} group={}", event.user_id, group_id)
+                    INVOCATIONS.add(1, {"handler": handler, "outcome": "busy"})
+                    if settings.interaction.ratelimited_emoji:
+                        await react(api, event.message_id, settings.interaction.ratelimited_emoji)
                     return
-            status = await Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role).run()
-            answered = status != "failed"
+                if watch.recalled:
+                    LOGGER.info("{} request recalled while queued user={} group={}", handler, event.user_id, group_id)
+                    INVOCATIONS.add(1, {"handler": handler, "outcome": "cancelled"})
+                    return
+                if handler == "chat" and superuser and group_id is not None:
+                    # A superuser talking to the bot may be giving an admin instruction: the ops agent
+                    # (fast model) acts on it, or hands it back here when it's an ordinary question.
+                    from yggdrasil.ops.agent import run_ops
+
+                    if await run_ops(bot, event) != "handoff":
+                        return
+                inv = Invocator(bot, api, event, resolved, handler, request_text, settings, group_id, role, watch=watch)
+                status = await inv.run()
+                answered = status not in ("failed", "cancelled")
     finally:
         if repeat is not None and not answered:
-            # Nothing came of it (rate limited, queue full, failed): asking again must work.
+            # Nothing came of it (rate limited, queue full, failed, recalled): asking again must work.
             with contextlib.suppress(Exception):
                 await repeats.forget(repeat)
+
+
+def _cancelling() -> bool:
+    """Whether the running task itself is being cancelled."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 class Invocator:
@@ -106,12 +118,16 @@ class Invocator:
         settings: Settings,
         group_id: int | None,
         role: Role = "member",
+        *,
+        watch: recalls.Watch | None = None,
     ) -> None:
         self._setup(
             bot, api, handler, settings, group_id, user_id=event.user_id, trigger_message_id=event.message_id, role=role
         )
         self.event, self.resolved, self.request_text = event, resolved, request_text
         self.rule_id = resolved.rule_id
+        if watch is not None:
+            self.watch = watch
 
     def _setup(
         self,
@@ -148,6 +164,8 @@ class Invocator:
         # The run's conversation for the console; every agent this invocator builds records into it.
         self.recorder = TranscriptRecorder()
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
+        # Recalling the trigger message stops the run before it answers; a run without one is never recalled.
+        self.watch = recalls.Watch()
 
     def elapsed(self) -> float:
         return time.perf_counter() - self.started
@@ -373,6 +391,8 @@ class Invocator:
     ) -> str:
         """Run the agent (after ``history``, an earlier answer's conversation) next to input moderation, then
         moderate, deliver and record the reply."""
+        if self.watch.recalled:
+            return await self._recalled()
         budget = self._budget()
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         run_stats = RunStats()
@@ -391,6 +411,8 @@ class Invocator:
         )
         RUN_STATS.reset(stats_token)
         input_task = asyncio.create_task(moderate("input", mod_text, group_id=self.group_id))
+        self.watch.guard(agent_task)
+        self.watch.guard(input_task)
         blocked: Verdict | None = None
         try:
             v_in = await input_task
@@ -399,11 +421,17 @@ class Invocator:
                 blocked = v_in
             else:
                 result = await agent_task
+        except asyncio.CancelledError:
+            # The recall cancelled what this run waits for; a cancel of the run itself (shutdown) goes on up.
+            if not self.watch.recalled or _cancelling():
+                raise
         finally:
             for t in (agent_task, input_task):
                 if not t.done():
                     t.cancel()
             self._account(resolved_model.label, run_usage, deps, run_stats)
+        if self.watch.recalled:
+            return await self._recalled()
 
         if blocked is not None:
             await self._status(self.settings.interaction.review_emoji)
@@ -434,6 +462,8 @@ class Invocator:
             checked.append(f"输出 {v_out.verdict}({v_out.score:.2f})")
         self.meta.moderation = " · ".join(checked)
         verdicts = {"input_verdict": v_in.as_dict(), "output_verdict": v_out.as_dict(), "reply": reply.model_dump()}
+        if self.watch.recalled:  # while output moderation ran; once the answer is going out, it goes out
+            return await self._recalled(**verdicts)
 
         if v_out.action == "pass":
             await self._keep_session(result.all_messages(), deps.handles)
@@ -547,6 +577,12 @@ class Invocator:
         await self._status(self.settings.interaction.silent_emoji)
         await self._finish("silent", None, reply=reply.model_dump())
         return "silent"
+
+    async def _recalled(self, **extra: object) -> str:
+        """The trigger message was recalled before the answer went out: stop, send nothing (not even a reaction)."""
+        LOGGER.info("{} trigger {} recalled; run stopped", self.handler, self.trigger_message_id)
+        await self._finish("cancelled", "原消息已撤回", **extra)
+        return "cancelled"
 
     def _replied_bot_message(self, self_id: int) -> int | None:
         """QQ id of the bot's own group message this chat request replies to (recall candidate)."""
