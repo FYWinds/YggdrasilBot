@@ -252,6 +252,44 @@ async def test_browser_reports_a_challenge_both_engines_saw(web_page: Routes) ->
     assert _engines(web_page) == ["patchright", "nodriver"]
 
 
+SPA_SHELL = (
+    '<html><head><title>Ore</title><script type="module" src="/app.js"></script></head>'
+    '<body><div id="root"></div></body></html>'
+)
+
+
+async def test_a_404_app_shell_is_rendered(web_page: Routes) -> None:
+    # A single-page app on GitHub Pages: every deep link is the app's 404.html, which renders the page.
+    web_page.answers.update(
+        {
+            "example.com": httpx.Response(404, html=SPA_SHELL),
+            "browser.example.com": _browser({"patchright": ARTICLE}),
+        }
+    )
+    result = await read_url("https://example.com/docs/content", browser_url=BROWSER)
+    assert (result.via, result.title) == ("browser", "测试文章")
+    assert result.text.startswith("（服务器对这个地址回复 HTTP 404")
+    assert "这是第 3 段正文" in result.text
+
+
+@pytest.mark.parametrize(
+    ("page", "rendered"),
+    [
+        (_page("404", "<p>File not found</p><script>track()</script>"), ARTICLE),  # a real error page has text
+        (SPA_SHELL, ""),  # the app renders nothing
+    ],
+)
+async def test_a_404_stays_gone_unless_an_app_renders_it(web_page: Routes, page: str, rendered: str) -> None:
+    web_page.answers.update(
+        {
+            "example.com": httpx.Response(404, html=page),
+            "browser.example.com": _browser({"patchright": rendered, "nodriver": rendered}),
+        }
+    )
+    with pytest.raises(ToolError, match="不存在或已删除"):
+        await read_url("https://example.com/docs/content", browser_url=BROWSER)
+
+
 @pytest.mark.parametrize(
     ("html", "renders"),
     [

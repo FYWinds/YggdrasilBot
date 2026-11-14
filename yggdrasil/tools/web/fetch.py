@@ -199,11 +199,15 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     ):
         final_url, status = resp.url, resp.status_code
         body = await _download(resp) if status < 400 else None
+        shell = status in _GONE_STATUSES and browser_url is not None and await _script_shell(resp)
     if body is None:
         if status in _BROWSER_RETRY_STATUSES and browser_url:
             return await _render_or_raise(final_url, browser_url, timeout_s, None)
+        gone = ToolError(f"网页不存在或已删除（HTTP {status}）")
+        if shell and browser_url:
+            return await _render_shell(final_url, browser_url, timeout_s, status, gone)
         if status in _GONE_STATUSES:  # the server says so itself: no other tier would find the page
-            raise ToolError(f"网页不存在或已删除（HTTP {status}）")
+            raise gone
         raise Unreadable(f"网页返回错误（HTTP {status}）")
 
     if body.is_doc or body.data[:1024].lstrip().startswith(b"%PDF-"):
@@ -231,6 +235,35 @@ async def _fetch_generic(url: str, browser_url: str | None, timeout_s: float) ->
     if not text:
         raise Unreadable("页面没有可读取的正文")
     return extracted
+
+
+async def _script_shell(resp: GuardedResponse) -> bool:
+    """Whether an error page is only a script shell with no text. A single-page app on a static host gets its
+    ``404.html`` (often the app itself) for every path the host has no file for, and the app renders the page."""
+    ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if ctype not in _HTML_TYPES:
+        return False
+    data, _ = await read_capped(resp.chunks, MAX_HTML_BYTES)
+    html = decode_html(data, resp.charset)
+    if "<script" not in html.lower():
+        return False
+    _, text = await asyncio.to_thread(extract_html, html, resp.url)
+    return not text
+
+
+async def _render_shell(url: str, browser_url: str, timeout_s: float, status: int, gone: ToolError) -> Extracted:
+    """Render the app behind a 404/410 script shell; ``gone`` when it renders nothing."""
+    try:
+        rendered = await _render_or_raise(url, browser_url, timeout_s, None)
+    except Unreadable:
+        raise gone from None
+    # The app may only be rendering its own "not found" page: say where the text came from.
+    note = (
+        f"（服务器对这个地址回复 HTTP {status}，以下是页面脚本在浏览器里渲染出的内容；"
+        "如果它说页面不存在，就是真的不存在）"
+    )
+    rendered.text = f"{note}\n\n{rendered.text}"
+    return rendered
 
 
 async def _download(resp: GuardedResponse) -> _Body:
