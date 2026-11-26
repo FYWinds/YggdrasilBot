@@ -22,6 +22,7 @@ from yggdrasil.db.models import Invocation
 from yggdrasil.db.session import get_session
 from yggdrasil.delivery.send import react, send_text
 from yggdrasil.ingest.normalize import normalize
+from yggdrasil.llm.errors import describe
 from yggdrasil.llm.registry import TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import drain_events
 from yggdrasil.ops.tools import OpsDeps, QuotedMessage, ops_tools
@@ -137,7 +138,7 @@ async def run_ops(qq: QQ, incoming: Incoming, instruction: str) -> Outcome:
             reply = result.output
             outcome = await _deliver(qq, incoming, reply, deps, settings.interaction)
         except Exception as e:
-            error = f"{type(e).__name__}: {e}"[:1000]
+            error = describe(e)[:1000]
             LOGGER.exception("ops run failed")
             span.record_exception(e)
             if group_id is not None:

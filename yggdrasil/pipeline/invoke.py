@@ -30,6 +30,7 @@ from yggdrasil.core.metrics import INVOCATION_ACK_LATENCY, INVOCATION_DURATION, 
 from yggdrasil.core.telemetry import TRACER, current_trace_id
 from yggdrasil.delivery.forward import send_forward, strip_markdown
 from yggdrasil.delivery.send import MessageDropped, react, send_plain, send_text
+from yggdrasil.llm.errors import describe, refusal
 from yggdrasil.llm.registry import ResolvedModel, TaskNotConfigured, chat_model, record_usage
 from yggdrasil.llm.streaming import RUN_STATS, RunStats, drain_events
 from yggdrasil.moderation.guard import Verdict, moderate
@@ -185,11 +186,12 @@ class Invocator:
                 self._slow = asyncio.create_task(self._mark_slow())
                 status = await self._run()
             except Exception as e:
-                error = f"{type(e).__name__}: {e}"[:1000]
+                error = describe(e)[:1000]
                 LOGGER.exception("invocation {} failed", self.record_handler)
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, error[:200]))
-                await self._status(self.settings.interaction.failure_emoji)
+                if not await self._notify_refusal(e):
+                    await self._status(self.settings.interaction.failure_emoji)
             finally:
                 self._stop_slow()
                 span.set_attribute("ygg.status", status)
@@ -545,6 +547,22 @@ class Invocator:
         if not emoji or self.group_id is None:
             return False
         await react(self.qq, self.group_id, self.trigger_message_id, emoji)
+        return True
+
+    async def _notify_refusal(self, exc: Exception) -> bool:
+        """The provider's content filter cut the answer off: say so in the chat with the provider's reason, where a
+        bare failure reaction reads as the bot breaking. False when there is nothing to say or it didn't go out."""
+        told = refusal(exc)
+        if told is None or not self.settings.interaction.refusal_notice:
+            return False
+        text = "模型拒绝了这个请求" + (f"（{told.category}）" if told.category else "")
+        if told.explanation:
+            text += f"：{told.explanation[:500]}"
+        try:
+            await self._send_text(text)
+        except Exception:
+            LOGGER.exception("refusal notice failed")
+            return False
         return True
 
     async def _mark_slow(self) -> None:

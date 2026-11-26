@@ -32,6 +32,7 @@ from pydantic_ai.messages import TextPart as AiTextPart
 from pydantic_ai.messages import ThinkingPart as AiThinkingPart
 from pydantic_ai.messages import ToolCallPart as AiToolCallPart
 
+from yggdrasil.llm.errors import describe
 from yggdrasil.transcript.notes import TraceNotes
 from yggdrasil.transcript.schema import (
     Entry,
@@ -75,7 +76,7 @@ class TranscriptRecorder(AbstractCapability[Any]):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.failure = (time.time(), f"{type(e).__name__}: {e}"[:2000])
+            self.failure = (time.time(), describe(e)[:2000])
             raise
         self.spans.append((started, time.time()))
         self.history.append(response)

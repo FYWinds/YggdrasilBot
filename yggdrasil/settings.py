@@ -43,6 +43,10 @@ class InteractionSettings(BaseModel):
         default=150, ge=50, le=2000, description="tldr 后面带了关注点时，正文的目标字数（只回答关注点）"
     )
     failure_emoji: str = Field(default="5", description="出错时贴的表情")
+    refusal_notice: bool = Field(
+        default=True,
+        description="模型因内容限制拒绝回答时，发一条消息说明原因（提供商给的分类和说明）；关掉则只贴 failure_emoji",
+    )
     ratelimited_emoji: str = Field(default="38", description="被限流或排队超时时贴的表情")
     quote_reply: Literal["always", "when_busy", "never"] = Field(
         default="when_busy",
