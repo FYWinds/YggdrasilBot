@@ -1,7 +1,7 @@
 """What a run's tools showed the model, recorded for the console while the run happens.
 
 Tools call into the run's :class:`TraceNotes` (``deps.notes``) with their ``ctx.tool_call_id``. Only references are
-kept during the run (message ids, image bytes); messages are snapshotted once when the transcript is saved. With
+kept during the run (message ids, image bytes); messages are snapshotted each time the transcript is saved. With
 ``full=False`` (``privacy.capture_llm_content`` off) nothing is collected but the outline of tool bridge calls (their
 callers leave out arguments and results then).
 """
@@ -43,6 +43,7 @@ class TraceNotes:
     message_ids: set[int] = field(default_factory=set)  # every stored message a display or the context names
     image_keys: dict[str, str] = field(default_factory=dict)  # image segment key -> sha256 of the bytes we loaded
     blobs: dict[str, Blob] = field(default_factory=dict)  # images to store, by sha256
+    stored: set[str] = field(default_factory=set)  # the ``blobs`` an earlier save of this run already wrote
     errors: set[str] = field(default_factory=set)  # tool calls whose tool turned an exception into error text
     bridge: dict[str, list[BridgeCall]] = field(default_factory=dict)  # tool bridge calls by the sh/py call making them
     context: QQContextDisplay | None = None

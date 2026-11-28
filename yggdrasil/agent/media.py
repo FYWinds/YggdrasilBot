@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePath, PurePosixPath
+from typing import Any
 
 import httpx
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageSequence, ImageStat
@@ -19,6 +20,7 @@ from yggdrasil.qq.client import QQ
 from yggdrasil.qq.model import QQError
 from yggdrasil.tools.errors import ToolError
 from yggdrasil.tools.ssrf import guarded_client
+from yggdrasil.transcript.notes import TraceNotes, image_key
 from yggdrasil.transcript.store import blob as stored_blob
 
 IMAGE_MAX_DOWNLOAD = 20 * 1024 * 1024
@@ -327,3 +329,31 @@ async def load_images(
         else:
             loaded.append((h.key, result))
     return loaded
+
+
+_KEEP_MAX = 12
+
+
+async def keep_context_images(qq: QQ, group_id: int | None, user_id: int, notes: TraceNotes) -> None:
+    """Keep the bytes of the pictures in the request's own messages (the trigger, the quoted message, what that
+    replies to) for the console, which can only show a QQ link until it expires.
+
+    The run loaded most of them for the model already; left are an ops run's, a route without vision's and those
+    past the inline limit. Up to ``_KEEP_MAX``; one that no longer downloads is skipped.
+    """
+    context = notes.context
+    if not notes.full or context is None:
+        return
+    wanted: dict[str, dict[str, Any]] = {}
+    for message in (context.trigger, context.quoted, *context.chain):
+        for segment in message.segments if message is not None else []:
+            data = segment.get("data")
+            # ``blob``: a picture the bot sent itself, kept when it was sent.
+            if segment.get("type") != "image" or not isinstance(data, dict) or data.get("blob"):
+                continue
+            key = image_key(data)
+            if key and key not in notes.image_keys:
+                wanted.setdefault(key, data)
+    handles = [Handle(key, "image", data) for key, data in list(wanted.items())[:_KEEP_MAX]]
+    for key, image in await load_images(qq, group_id, user_id, handles):
+        notes.image(image.data, image.content.media_type, segment=wanted[key])

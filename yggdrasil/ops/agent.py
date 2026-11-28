@@ -4,6 +4,7 @@ Entry points: ``@bot ops <instruction>`` (``ops <instruction>`` in private; trig
 「同意」/「拒绝」 that is not a review command (it answers a request notice).
 """
 
+import contextlib
 import secrets
 import time
 from datetime import datetime
@@ -13,6 +14,7 @@ from opentelemetry import trace
 from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from yggdrasil.agent.media import keep_context_images
 from yggdrasil.agent.schema import OpsReply
 from yggdrasil.bot.state import identity
 from yggdrasil.core.log import LOGGER
@@ -178,6 +180,8 @@ async def run_ops(qq: QQ, incoming: Incoming, instruction: str) -> Outcome:
         await s.flush()
         invocation_id = row.id
     if recorder.history or recorder.tools:
+        with contextlib.suppress(Exception):
+            await keep_context_images(qq, group_id, incoming.user_id, deps.notes)
         await transcripts.save_invocation(invocation_id, recorder, deps.notes, group_id)
     return outcome
 

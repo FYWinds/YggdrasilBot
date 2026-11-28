@@ -122,3 +122,20 @@ async def finish_row(
                     **extra,
                 )
             )
+
+
+async def progress_row(invocation_id: UUID, meta: Meta) -> None:
+    """What a run still going has spent so far, on its row; never touches a row that has its outcome."""
+    with contextlib.suppress(Exception):
+        async with get_session() as session:
+            await session.execute(
+                update(Invocation)
+                .where(Invocation.id == invocation_id, Invocation.status == "running")
+                .values(
+                    models=list(dict.fromkeys(meta.models)),
+                    tokens_in=meta.tokens_in,
+                    tokens_out=meta.tokens_out,
+                    tokens_cached=meta.tokens_cached,
+                    tool_calls=meta.tools,
+                )
+            )

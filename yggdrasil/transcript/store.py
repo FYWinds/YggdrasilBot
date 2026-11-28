@@ -1,10 +1,14 @@
 """Persist transcripts and their images.
 
-Invocations are saved once, when the run ends (any outcome). Jobs grow while they run: new entries are appended
-with ``entries || :new``. Saving never raises into the caller: a transcript is a record, not part of the reply.
+Invocations are written while they run (:class:`LiveWriter`, so the console can follow a run) and once more when
+the run ends (any outcome). Jobs grow while they run: new entries are appended with ``entries || :new``. Saving
+never raises into the caller: a transcript is a record, not part of the reply.
 """
 
+import asyncio
+import contextlib
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
@@ -98,12 +102,15 @@ async def build_context(notes: TraceNotes, group_id: int | None, items: list[Ent
 
 
 async def save_invocation(
-    invocation_id: UUID, recorder: TranscriptRecorder, notes: TraceNotes, group_id: int | None
+    invocation_id: UUID, recorder: TranscriptRecorder, notes: TraceNotes, group_id: int | None, *, live: bool = False
 ) -> None:
+    """Write the run's transcript, replacing what an earlier call wrote; ``live`` while the run is still going."""
     try:
-        items = entries(recorder, notes)
+        items = entries(recorder, notes, live=live)
         context = await build_context(notes, group_id, items)
-        await store_blobs(notes.blobs)
+        new = {sha: b for sha, b in notes.blobs.items() if sha not in notes.stored}
+        await store_blobs(new)
+        notes.stored.update(new)
         payload = dump(items)
         values = {
             "invocation_id": invocation_id,
@@ -123,6 +130,44 @@ async def save_invocation(
             await session.execute(stmt)
     except Exception:
         LOGGER.exception("saving the transcript of invocation {} failed", invocation_id)
+
+
+LIVE_INTERVAL_S = 2.0  # the console polls a running invocation every 3 s
+
+
+class LiveWriter:
+    """Writes a running invocation's transcript again whenever it changed: ``poke()`` after every step.
+
+    One write at a time, ``interval`` apart, each with the state of that moment, so a burst of steps costs one
+    write. ``stop()`` before the final save: nothing of this may land after it.
+    """
+
+    def __init__(self, write: Callable[[], Awaitable[None]], interval: float = LIVE_INTERVAL_S) -> None:
+        self._write, self._interval = write, interval
+        self._dirty = False
+        self._stopped = False
+        self._task: asyncio.Task[None] | None = None
+
+    def poke(self) -> None:
+        self._dirty = True
+        if not self._stopped and (self._task is None or self._task.done()):
+            self._task = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        while self._dirty:
+            self._dirty = False
+            try:
+                await self._write()
+            except Exception:
+                LOGGER.exception("writing a running transcript failed")
+            await asyncio.sleep(self._interval)
+
+    async def stop(self) -> None:
+        self._stopped = True
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
 
 
 async def append_job(

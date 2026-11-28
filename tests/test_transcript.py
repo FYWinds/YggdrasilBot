@@ -1,15 +1,23 @@
-"""Transcripts of real agent runs: what the console shows for tool images, retries, failures, cancellations, and with
-content capture off."""
+"""Transcripts of real agent runs: what the console shows for tool images, retries, failures, cancellations, runs
+still going, and with content capture off."""
 
 import asyncio
+import io
 import json
 from typing import Any
 
+import httpx
 import pytest
+from PIL import Image
 from pydantic_ai import Agent, BinaryContent, ModelRetry, RunContext, ToolReturn
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from tests.support.files import png
+from tests.support.qq import FakeQQ
+from tests.support.routes import Routes
+from yggdrasil.agent.media import keep_context_images
+from yggdrasil.qq.model import QQError
 from yggdrasil.transcript.capture import TranscriptRecorder, entries
 from yggdrasil.transcript.notes import TraceNotes, blob_id
 from yggdrasil.transcript.schema import Entry, ImagePart, QQContextDisplay, QQMessage
@@ -120,15 +128,19 @@ async def test_a_failed_run_keeps_what_happened_before_the_failure() -> None:
     assert "provider exploded" in (items[-1].text or "")
 
 
-async def test_a_cancelled_run_marks_the_running_tool_cancelled() -> None:
+async def test_a_running_tool_has_no_result_until_the_run_is_cancelled() -> None:
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[ToolCallPart("slow", {}, tool_call_id="c1")])
 
-    recorder = TranscriptRecorder()
+    steps: list[int] = []
+    recorder = TranscriptRecorder(on_change=lambda: steps.append(len(recorder.history)))
     notes = TraceNotes()
     started = asyncio.Event()
     task = asyncio.create_task(_agent(respond, recorder, started).run("跑个慢的", deps=notes))
     await started.wait()
+    # While the run goes: the call is there without a result (the console shows it as running).
+    assert _kinds(entries(recorder, notes, live=True)) == ["system", "user", "assistant"]
+    assert steps == [1, 2, 2]  # the request sent, its answer, the tool started
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -136,6 +148,28 @@ async def test_a_cancelled_run_marks_the_running_tool_cancelled() -> None:
     items = entries(recorder, notes)
     assert _kinds(items) == ["system", "user", "assistant", "tool:slow:cancelled"]
     assert items[-1].parts == []
+
+
+async def test_request_pictures_the_run_never_loaded_are_kept_for_the_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    def image(name: str) -> dict[str, Any]:
+        data = {"ref": name, "url": f"https://qq.example.com/{name}", "sha1": "", "sticker": False}
+        return {"type": "image", "data": data}
+
+    Routes({"https://qq.example.com/quoted.png": httpx.Response(200, content=png("orange"))}).install(monkeypatch)
+    qq = FakeQQ({"media_url": QQError("expired")})
+    notes = TraceNotes()
+    notes.context = QQContextDisplay(
+        trigger=QQMessage(user_id=2, segments=[image("seen.png"), {"type": "text", "data": {"text": "这是啥"}}]),
+        quoted=QQMessage(user_id=3, segments=[image("quoted.png"), image("gone.png")]),
+    )
+    seen = notes.image(png("red"), "image/png", segment=image("seen.png")["data"])  # the run showed it to the model
+
+    await keep_context_images(qq, 990001, 2, notes)
+
+    assert set(notes.image_keys) == {"seen.png", "quoted.png"}  # the one QQ no longer serves is left as a link
+    assert notes.image_keys["seen.png"] == seen
+    kept = Image.open(io.BytesIO(notes.blobs[notes.image_keys["quoted.png"]].data)).convert("RGB")
+    assert kept.getpixel((0, 0)) == (255, 165, 0)
 
 
 async def test_metadata_mode_keeps_shapes_without_content() -> None:

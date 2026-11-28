@@ -809,7 +809,7 @@ export function Transcript({ transcript: t, startedAt }: { transcript: Transcrip
     <TranscriptContext value={ctx}>
       {/* min-w-0: as a grid item it would otherwise grow to its widest unbreakable line (a long one-line command). */}
       <div className="flex min-w-0 flex-col gap-5">
-        {!t.available && (
+        {!t.available && !t.live && (
           <Alert>
             <InfoIcon />
             <AlertTitle>这次运行早于完整记录功能，只能显示请求和结果</AlertTitle>

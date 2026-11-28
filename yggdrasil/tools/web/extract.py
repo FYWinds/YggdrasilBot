@@ -31,14 +31,38 @@ def extract_html(html: str, url: str) -> tuple[str, str]:
         )
         or ""
     ).strip()
-    meta = trafilatura.extract_metadata(html, default_url=url)
-    title = (meta.title or "") if meta is not None else ""
+    title = _title(html)
     if len(text) < MIN_TEXT_CHARS:
         fallback_title, fallback = _readability(html)
         if len(fallback) > len(text):
             text = fallback
         title = title or fallback_title
     return title.strip(), _JUNK_LINE_RE.sub("", text).strip()
+
+
+def _title(html: str) -> str:
+    """The page's title: ``og:title``, else a title meta tag, else trafilatura's heading and ``<title>`` heuristics.
+
+    Not ``trafilatura.extract_metadata``: it also normalizes the authors, comparing every author with every other
+    again for each one it adds (cubic). An arXiv abstract page with 3,300 ``citation_author`` tags kept a thread
+    busy for over ten minutes, and with it the run that asked for the page.
+    """
+    from trafilatura.metadata import METANAME_TITLE, extract_title
+    from trafilatura.utils import load_html
+
+    tree = load_html(html)
+    if tree is None:
+        return ""
+    named = ""
+    for meta in tree.iterfind(".//head/meta[@content]"):
+        content = (meta.get("content") or "").strip()
+        if not content:
+            continue
+        if (meta.get("property") or "").lower() == "og:title":
+            return content
+        if not named and (meta.get("name") or "").lower() in METANAME_TITLE:
+            named = content
+    return named or extract_title(tree) or ""
 
 
 def _readability(html: str) -> tuple[str, str]:

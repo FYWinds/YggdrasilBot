@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import time
+from dataclasses import replace
 from datetime import timedelta
 from typing import Literal
 from uuid import UUID
@@ -18,6 +19,7 @@ from yggdrasil.agent import bridge
 from yggdrasil.agent.budget import ToolBudget
 from yggdrasil.agent.context import build_context, build_followup_context
 from yggdrasil.agent.deps import Deps, Handles
+from yggdrasil.agent.media import keep_context_images
 from yggdrasil.agent.permissions import Role, may_recall, speaker_role
 from yggdrasil.agent.schema import BotReply
 from yggdrasil.agent.skills import skill_names, skills_for
@@ -161,6 +163,11 @@ class Invocator:
         # The run's conversation for the console; every agent this invocator builds records into it.
         self.recorder = TranscriptRecorder()
         self.notes = TraceNotes(full=settings.privacy.capture_llm_content)
+        # The console follows a running invocation: every recorded step asks for the transcript to be written.
+        self._live = transcripts.LiveWriter(self._write_live)
+        self.recorder.on_change = self._live.poke
+        # The agent run under way (route label, usage so far, deps): what ``_tally`` needs for the row's numbers.
+        self._spending: tuple[str, RunUsage, Deps] | None = None
         # Recalling the trigger message stops the run before it answers; a run without one is never recalled.
         self.watch = recalls.Watch()
         self._slow: asyncio.Task[None] | None = None  # adds slow_emoji unless the run has its answer by then
@@ -194,6 +201,7 @@ class Invocator:
                     await self._status(self.settings.interaction.failure_emoji)
             finally:
                 self._stop_slow()
+                await self._live.stop()
                 span.set_attribute("ygg.status", status)
                 self.meta.total_s = self.elapsed()
                 INVOCATIONS.add(1, {"handler": self.record_handler, "outcome": status})
@@ -205,8 +213,20 @@ class Invocator:
                     with contextlib.suppress(Exception):
                         await self.sandbox.close()
                 if self.invocation_id is not None and (self.recorder.history or self.recorder.tools):
+                    with contextlib.suppress(Exception):
+                        await keep_context_images(self.qq, self.group_id, self.user_id, self.notes)
                     await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id)
         return status
+
+    async def _write_live(self) -> None:
+        """The run so far, for the console: its transcript, and on its row what the agent run has spent."""
+        if self.invocation_id is None:
+            return
+        await transcripts.save_invocation(self.invocation_id, self.recorder, self.notes, self.group_id, live=True)
+        if self._spending is not None:
+            meta = replace(self.meta, models=list(self.meta.models))
+            self._tally(meta, *self._spending)
+            await record.progress_row(self.invocation_id, meta)
 
     # --- bookkeeping -------------------------------------------------------
     async def _start_row(self, request_text: str) -> None:
@@ -411,6 +431,7 @@ class Invocator:
         run_usage = RunUsage()  # filled in place, so a failed or cancelled run still reports what it spent
         run_stats = RunStats()
         stats_token = RUN_STATS.set(run_stats)  # the task copies the context, sub-agents included
+        self._spending = (resolved_model.label, run_usage, deps)
         agent_task = asyncio.create_task(
             agent.run(
                 prompt,
@@ -444,6 +465,7 @@ class Invocator:
                 if not t.done():
                     t.cancel()
             self._stop_slow()  # the answer is in: moderation and sending are quick
+            self._spending = None
             self._account(resolved_model.label, run_usage, deps, run_stats)
             # No sh / py runs any more: the code it started can't call the bot from here on.
             await bridge.close_run(deps)
@@ -584,18 +606,23 @@ class Invocator:
             return ToolBudget(requests=cfg.sandbox_request_limit, tool_calls=cfg.sandbox_tool_calls_limit)
         return ToolBudget(requests=cfg.request_limit, tool_calls=cfg.tool_calls_limit)
 
+    @staticmethod
+    def _tally(meta: record.Meta, model_label: str, usage: RunUsage, deps: Deps) -> None:
+        """Add what an agent run has spent so far to ``meta``."""
+        meta.models.append(model_label)
+        meta.tokens_in += usage.input_tokens
+        meta.tokens_out += usage.output_tokens
+        meta.tokens_cached += usage.cache_read_tokens
+        for label, tin, tout in deps.vision_tokens:
+            meta.models.append(label)
+            meta.tokens_in += tin
+            meta.tokens_out += tout
+        meta.tools = dict(deps.tool_counts)
+        meta.tool_seconds = dict(deps.tool_seconds)
+
     def _account(self, model_label: str, usage: RunUsage, deps: Deps, stats: RunStats) -> None:
         """Add what the agent run spent to the invocation (also for failed or cancelled runs)."""
-        self.meta.models.append(model_label)
-        self.meta.tokens_in += usage.input_tokens
-        self.meta.tokens_out += usage.output_tokens
-        self.meta.tokens_cached += usage.cache_read_tokens
-        for label, tin, tout in deps.vision_tokens:
-            self.meta.models.append(label)
-            self.meta.tokens_in += tin
-            self.meta.tokens_out += tout
-        self.meta.tools = dict(deps.tool_counts)
-        self.meta.tool_seconds = dict(deps.tool_seconds)
+        self._tally(self.meta, model_label, usage, deps)
         self.meta.slow_tools = frozenset(self.settings.tools.slow_tools)
         self.meta.model_names = stats.models
         self.meta.ttft_s = stats.ttft

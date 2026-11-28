@@ -4,12 +4,14 @@
 ops). Each model request carries the whole history so far (``request_context.messages``, instructions included),
 so keeping the latest one plus its response gives the complete conversation even when the run fails or is
 cancelled later. Tool executions are timed per call id; that also covers tools that finished after the last model
-request (their results never went back to the model).
+request (their results never went back to the model). ``on_change`` is called at every step (a request sent or
+answered, a tool started or ended), so the transcript can be written while the run goes.
 """
 
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -67,9 +69,15 @@ class TranscriptRecorder(AbstractCapability[Any]):
     # the earlier invocation's transcript, so left out of this one) and the earlier invocation's id.
     prior: list[ModelMessage] = field(default_factory=list)
     continued_from: str | None = None
+    on_change: Callable[[], None] | None = None
+
+    def _changed(self) -> None:
+        if self.on_change is not None:
+            self.on_change()
 
     async def wrap_model_request(self, ctx: Any, *, request_context: Any, handler: Any) -> ModelResponse:
         self.history = list(request_context.messages)
+        self._changed()
         started = time.time()
         try:
             response = await handler(request_context)
@@ -77,13 +85,16 @@ class TranscriptRecorder(AbstractCapability[Any]):
             raise
         except Exception as e:
             self.failure = (time.time(), describe(e)[:2000])
+            self._changed()
             raise
         self.spans.append((started, time.time()))
         self.history.append(response)
+        self._changed()
         return response
 
     async def wrap_tool_execute(self, ctx: Any, *, call: Any, tool_def: Any, args: Any, handler: Any) -> Any:
         record = self.tools[call.tool_call_id] = ToolRecord(call.tool_name, time.time())
+        self._changed()
         try:
             result = await handler(args)
         except BaseException as e:
@@ -94,9 +105,11 @@ class TranscriptRecorder(AbstractCapability[Any]):
                 record.outcome, record.result = "retry", str(e)
             else:
                 record.outcome, record.result = "error", f"{type(e).__name__}: {e}"
+            self._changed()
             raise
         record.ended = time.time()
         record.result = result
+        self._changed()
         return result
 
 
@@ -205,8 +218,9 @@ def _tool_entry(
     )
 
 
-def entries(recorder: TranscriptRecorder, notes: TraceNotes) -> list[Entry]:
-    """The run's conversation; images referenced by the entries are added to ``notes.blobs``."""
+def entries(recorder: TranscriptRecorder, notes: TraceNotes, *, live: bool = False) -> list[Entry]:
+    """The run's conversation; images referenced by the entries are added to ``notes.blobs``. ``live``: the run is
+    still going, so a tool without a result is running, not cancelled, and gets no entry yet."""
     full = notes.full
     out: list[Entry] = []
     system: str | None = None
@@ -290,6 +304,8 @@ def entries(recorder: TranscriptRecorder, notes: TraceNotes) -> list[Entry]:
         text = _result_text(record.result) if record.result is not None else None
         entry = _tool_entry(call_id, record.name, text, record, notes, None)
         if record.ended is None:
+            if live:
+                continue
             entry.outcome = "cancelled"
         out.append(entry)
     if recorder.failure:
